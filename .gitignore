@@ -5,3 +5,4 @@ __pycache__/
 .pool_state.db-shm
 .pool_state.db-wal
 model.json
+*.pyc
