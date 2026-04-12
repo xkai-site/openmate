@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git协作指南"
+  short_description: "Git worktree、多分支协作、冲突处理与单模块合并指南"
+  default_prompt: "Use $git-collaboration-guide to inspect this repository worktree layout and plan or resolve a safe multi-branch merge."
