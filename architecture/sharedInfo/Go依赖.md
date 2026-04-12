@@ -2,75 +2,56 @@
 
 ## 1. 当前结论
 
-1. 按当前协作状态，`vos` 与 `pool` 都已从 Python 转向 Go。
-2. 当前 Go 模块 **没有第三方依赖**。
-3. `go list -m all` 的结果只有：
-   - `vos`
-4. 也就是说，当前 Go 代码只依赖：
-   - Go 工具链本身
-   - Go 标准库
+1. 当前已落地的 Go 模块为 `vos` 与 `pool`
+2. `schedule` 已确认采用 Go 技术栈，但尚未落地代码
+3. 当前根模块名为 `vos`
+4. 当前仓库已经存在第三方 Go 依赖：`github.com/mattn/go-sqlite3`
 
-补充说明：
-
-1. 上述 `go list -m all` 结果来自当前分支代码快照。
-2. 当前分支已落地的是 `vos`；`pool` 的 Go 代码以其对应分支为准。
-
-## 2. 模块信息
-
-当前 `go.mod`：
+## 2. 当前 `go.mod`
 
 ```go
 module vos
 
 go 1.26
+
+require github.com/mattn/go-sqlite3 v1.14.32
 ```
 
 说明：
 
-1. 模块名当前为 `vos`。
-2. 当前未引入 `require` 项。
-3. 如后续新增第三方库，应同步更新本文件。
+1. `vos` 使用仓库根模块，不单独拆 Go module
+2. `pool` 也复用同一根模块
+3. 后续 `schedule` 若落地 Go，也继续复用当前根模块
 
-## 3. 当前使用的标准库
+## 3. 当前 Go 依赖分层
 
-### 3.1 CLI 层
+### 3.1 标准库
 
-主要使用：
+当前主要依赖 Go 标准库，包括但不限于：
 
-1. `flag`
-2. `encoding/json`
-3. `fmt`
-4. `io`
-5. `strings`
-6. `errors`
+1. `context`
+2. `database/sql`
+3. `encoding/json`
+4. `errors`
+5. `flag`
+6. `fmt`
+7. `net/http`
+8. `os`
+9. `path/filepath`
+10. `sort`
+11. `strings`
+12. `time`
 
-### 3.2 领域与服务层
+### 3.2 第三方依赖
 
-主要使用：
+当前第三方依赖只有：
 
-1. `time`
-2. `fmt`
-3. `sort`
-4. `slices`
+1. `github.com/mattn/go-sqlite3`
 
-### 3.3 ID 与存储层
+用途：
 
-主要使用：
-
-1. `crypto/rand`
-2. `encoding/hex`
-3. `bytes`
-4. `os`
-5. `path/filepath`
-6. `runtime`
-
-### 3.4 测试层
-
-主要使用：
-
-1. `testing`
-2. `bytes`
-3. `strings`
+1. 为 `pool` 的 SQLite 运行态提供驱动
+2. 支撑并发治理、调用记录、usage 聚合等持久化逻辑
 
 ## 4. 环境依赖
 
@@ -78,13 +59,14 @@ go 1.26
 
 1. Go 1.26 或兼容版本
 2. 可用的 `go` 命令
-3. 可访问的模块代理或直连能力
+3. 可用的 CGO / C 编译环境
 
 建议验证：
 
 ```powershell
 go version
-go env GOPROXY
+go env CGO_ENABLED
+gcc --version
 ```
 
 ## 5. 当前构建与测试命令
@@ -94,18 +76,22 @@ go env GOPROXY
 ```powershell
 go test ./...
 go run ./cmd/vos --help
+go run ./cmd/openmate-pool --help
 ```
 
-如果默认 Go cache 目录无写权限，可使用仓库内缓存目录：
+若默认缓存目录无写权限，使用仓库内缓存：
 
 ```powershell
-$env:GOCACHE='D:\XuKai\Project\vos\.openmate\go-build'
-$env:GOMODCACHE='D:\XuKai\Project\vos\.openmate\go-mod'
+$env:GOCACHE = (Resolve-Path .\\.openmate).Path + '\\go-build-cache'
+$env:GOMODCACHE = (Resolve-Path .\\.openmate).Path + '\\go-mod-cache'
+New-Item -ItemType Directory -Force -Path $env:GOCACHE | Out-Null
+New-Item -ItemType Directory -Force -Path $env:GOMODCACHE | Out-Null
 go test ./...
 ```
 
 ## 6. 后续维护规则
 
-1. 如果新增第三方依赖，必须更新 `go.mod`。
-2. 如果新增第三方依赖，必须同步更新本文件的“当前结论”和“模块信息”。
-3. 如果 Go 版本要求变化，也要同步更新本文件。
+1. 新增第三方依赖时，必须同步更新 `go.mod`
+2. 新增第三方依赖时，必须同步更新 `go.sum`
+3. 新增第三方依赖时，必须同步更新本文件
+4. 若 Go 版本要求变化，也必须同步更新本文件
