@@ -1,5 +1,7 @@
 .venv/
+.openmate/
 __pycache__/
+.vos_state.json
 .pool_state.json
 .pool_state.db
 .pool_state.db-shm
