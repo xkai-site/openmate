@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from openmate_pool.models import InvokeRequest, InvokeResponse
+
 from .models import (
     AgentInput,
     ContextBundle,
@@ -37,3 +39,7 @@ class Assembler(Protocol):
 
 class AgentExecutor(Protocol):
     def execute(self, agent_input: AgentInput) -> str: ...
+
+
+class LlmGateway(Protocol):
+    def invoke(self, request: InvokeRequest) -> InvokeResponse: ...

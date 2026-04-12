@@ -1,25 +1,26 @@
-"""Domain errors for API pool."""
+"""Python-side errors for the Go-backed pool adapter."""
+
+from __future__ import annotations
+
+from .models import InvokeResponse
 
 
 class PoolError(Exception):
-    """Base error for pool operations."""
+    """Base error for pool adapter operations."""
 
 
-class ApiExistsError(PoolError):
-    """Raised when api id already exists."""
-
-
-class ApiNotFoundError(PoolError):
-    """Raised when api id does not exist."""
+class PoolTransportError(PoolError):
+    """Raised when invoking the Go CLI fails structurally."""
 
 
 class NoCapacityError(PoolError):
-    """Raised when no API capacity is available."""
+    """Raised when the gateway cannot reserve any provider slot."""
 
 
-class TicketNotFoundError(PoolError):
-    """Raised when ticket id does not exist."""
+class InvocationFailedError(PoolError):
+    """Raised when the gateway reaches provider execution but the call fails."""
 
-
-class InvalidStateError(PoolError):
-    """Raised when runtime state is invalid."""
+    def __init__(self, response: InvokeResponse) -> None:
+        self.response = response
+        message = response.error.message if response.error is not None else "invocation failed"
+        super().__init__(message)

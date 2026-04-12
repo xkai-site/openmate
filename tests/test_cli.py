@@ -5,21 +5,19 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import tempfile
+import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from openmate_pool.cli import main
-from openmate_pool.model_config import load_model_config
-from openmate_pool.store import PoolStateStore
 
 
-class CliTestCase(unittest.TestCase):
+class PoolCliTestCase(unittest.TestCase):
     @staticmethod
-    def _write_model_config(path: Path, *, threshold: int = 3) -> None:
+    def _write_model_config(path: Path, *, base_url: str, threshold: int = 3) -> None:
         path.write_text(
             json.dumps(
                 {
@@ -29,7 +27,7 @@ class CliTestCase(unittest.TestCase):
                         {
                             "api_id": "api-1",
                             "model": "gpt-4.1",
-                            "base_url": "https://api.openai.com/v1",
+                            "base_url": base_url,
                             "api_key": "sk-test",
                             "max_concurrent": 1,
                             "enabled": True,
@@ -40,16 +38,37 @@ class CliTestCase(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_help_available(self) -> None:
-        with self.assertRaises(SystemExit) as ctx:
-            main(["--help"])
-        self.assertEqual(ctx.exception.code, 0)
+    @staticmethod
+    def _request_json(node_id: str, *, content: str = "hello") -> str:
+        return json.dumps(
+            {
+                "request_id": f"req-{node_id}",
+                "node_id": node_id,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": content,
+                    }
+                ],
+            }
+        )
 
-    def test_config_driven_acquire_release_flow(self) -> None:
+    def test_help_available(self) -> None:
+        self.assertEqual(main(["--help"]), 0)
+
+    def test_invoke_records_and_cap_flow(self) -> None:
+        server, thread = _start_gateway_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_file = Path(tmpdir) / "pool_state.db"
             model_config = Path(tmpdir) / "model.json"
-            self._write_model_config(model_config)
+            self._write_model_config(
+                model_config,
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            )
             base = [
                 "--db-file",
                 str(db_file),
@@ -58,43 +77,13 @@ class CliTestCase(unittest.TestCase):
             ]
 
             self.assertEqual(
-                main(
-                    base
-                    + [
-                        "get",
-                        "--request-id",
-                        "req-1",
-                        "--node-id",
-                        "node-1",
-                    ]
-                ),
+                main(base + ["invoke", "--request-json", self._request_json("node-1", content="hello-cli")]),
                 0,
             )
-
-            store = PoolStateStore(db_file)
-            config = load_model_config(model_config)
-            tickets = store.list_tickets(config)
-            self.assertEqual(len(tickets), 1)
-            ticket_id = tickets[0].ticket_id
-
-            self.assertEqual(
-                main(
-                    base
-                    + [
-                        "done",
-                        "--ticket-id",
-                        ticket_id,
-                        "--result",
-                        "success",
-                        "--result-summary",
-                        "ok",
-                    ]
-                ),
-                0,
-            )
-
-            self.assertEqual(len(store.list_tickets(config)), 0)
-            self.assertEqual(len(store.usage_records(config)), 1)
+            self.assertEqual(main(base + ["records"]), 0)
+            self.assertEqual(main(base + ["usage"]), 0)
+            self.assertEqual(main(base + ["cap"]), 0)
+            self.assertEqual(main(base + ["sync"]), 0)
 
     def test_missing_model_config_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -107,21 +96,26 @@ class CliTestCase(unittest.TestCase):
                         str(db_file),
                         "--model-config",
                         str(missing_config),
-                        "get",
-                        "--request-id",
-                        "req-1",
-                        "--node-id",
-                        "node-1",
+                        "cap",
                     ]
                 ),
                 2,
             )
 
-    def test_release_failure_triggers_offline_after_threshold(self) -> None:
+    def test_invoke_failure_returns_error_code(self) -> None:
+        server, thread = _start_gateway_server(fail=True)
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_file = Path(tmpdir) / "pool_state.db"
             model_config = Path(tmpdir) / "model.json"
-            self._write_model_config(model_config, threshold=1)
+            self._write_model_config(
+                model_config,
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                threshold=1,
+            )
             base = [
                 "--db-file",
                 str(db_file),
@@ -130,65 +124,26 @@ class CliTestCase(unittest.TestCase):
             ]
 
             self.assertEqual(
-                main(base + ["get", "--request-id", "req-1", "--node-id", "node-1"]),
-                0,
-            )
-            store = PoolStateStore(db_file)
-            config = load_model_config(model_config)
-            ticket_id = store.list_tickets(config)[0].ticket_id
-
-            self.assertEqual(
-                main(
-                    base
-                    + [
-                        "done",
-                        "--ticket-id",
-                        ticket_id,
-                        "--result",
-                        "failure",
-                        "--error-message",
-                        "timeout",
-                    ]
-                ),
-                0,
-            )
-
-            self.assertEqual(
-                main(base + ["get", "--request-id", "req-2", "--node-id", "node-2"]),
+                main(base + ["invoke", "--request-json", self._request_json("node-fail")]),
                 2,
             )
-
-    def test_short_commands_for_query(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_file = Path(tmpdir) / "pool_state.db"
-            model_config = Path(tmpdir) / "model.json"
-            self._write_model_config(model_config)
-            base = [
-                "--db-file",
-                str(db_file),
-                "--model-config",
-                str(model_config),
-            ]
-
-            self.assertEqual(main(base + ["sync"]), 0)
-            self.assertEqual(main(base + ["cap"]), 0)
-            self.assertEqual(main(base + ["tickets"]), 0)
-            self.assertEqual(main(base + ["usage"]), 0)
+            self.assertEqual(
+                main(base + ["invoke", "--request-json", self._request_json("node-fail-2")]),
+                2,
+            )
 
     def test_old_alias_commands_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_file = Path(tmpdir) / "pool_state.db"
             model_config = Path(tmpdir) / "model.json"
-            self._write_model_config(model_config)
+            self._write_model_config(model_config, base_url="http://127.0.0.1:1/v1")
             base = [
                 "--db-file",
                 str(db_file),
                 "--model-config",
                 str(model_config),
             ]
-
-            with self.assertRaises(SystemExit):
-                main(base + ["acquire", "--request-id", "req-1", "--node-id", "node-1"])
+            self.assertEqual(main(base + ["get"]), 2)
 
 
 class AgentCliTests(unittest.TestCase):
@@ -262,7 +217,7 @@ class AgentCliTests(unittest.TestCase):
             self.assertIn('"success": true', edit_result.stdout)
 
     def test_tool_query_http(self) -> None:
-        server, thread = _start_test_server()
+        server, thread = _start_echo_server()
         self.addCleanup(server.server_close)
         self.addCleanup(thread.join, 1)
         self.addCleanup(server.shutdown)
@@ -368,8 +323,69 @@ class _EchoHandler(BaseHTTPRequestHandler):
         _ = (format, args)
 
 
-def _start_test_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
+class _GatewayHandler(BaseHTTPRequestHandler):
+    fail = False
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/v1/chat/completions":
+            self.send_error(404)
+            return
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
+        payload = json.loads(body)
+        if self.fail:
+            response = json.dumps({"error": {"message": "gateway failed"}}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+            return
+
+        messages = payload.get("messages", [])
+        text = ""
+        if messages and isinstance(messages, list) and isinstance(messages[-1], dict):
+            text = str(messages[-1].get("content", ""))
+        response = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": f"echo:{text}",
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 3,
+                    "total_tokens": 5,
+                },
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+        _ = (format, args)
+
+
+def _start_echo_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _EchoHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _start_gateway_server(*, fail: bool = False) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    handler = type(
+        "ConfiguredGatewayHandler",
+        (_GatewayHandler,),
+        {"fail": fail},
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
