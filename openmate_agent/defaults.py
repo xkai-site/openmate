@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from .interfaces import AgentExecutor, Assembler, ContextInjector, SkillInjector, ToolInjector
+from uuid import uuid4
+
+from openmate_pool.models import (
+    InvocationStatus,
+    InvocationTiming,
+    InvokeRequest,
+    InvokeResponse,
+)
+
+from .interfaces import AgentExecutor, Assembler, ContextInjector, LlmGateway, SkillInjector, ToolInjector
 from .models import (
     AgentInput,
     ContextBundle,
@@ -74,3 +83,15 @@ class DefaultAssembler(Assembler):
 class DefaultAgentExecutor(AgentExecutor):
     def execute(self, agent_input: AgentInput) -> str:
         return f"executed node={agent_input.node_id}"
+
+
+class DefaultLlmGateway(LlmGateway):
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            output_text=f"executed node={request.node_id}",
+            timing=InvocationTiming(),
+        )

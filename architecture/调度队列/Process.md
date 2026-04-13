@@ -1,35 +1,22 @@
-# 调度队列 Process
+# Process 记录
 
-## 2026-04-11 初始化
+## 2026-04-12 技术栈决策补录
 
-### 已完成
-
-1. 阅读 `AGENTS.md`、`architecture/调度队列/调度队列.md`、`architecture/sharedInfo/架构.md`、`architecture/sharedInfo/依赖.md`。
-2. 确认当前开发分支为 `schedule`。
-3. 补建项目内虚拟环境 `.venv`，并执行 `pip install -r requirements.txt`。
-4. 初始化 `openmate_schedule` 模块，新增：
-   - `models.py`：Topic/Node/Runtime/DispatchPlan 强类型模型。
-   - `scheduler.py`：MVP 级 dispatch planning 逻辑。
-   - `cli.py`：`schedule plan --input-file ... --available-slots ...`。
-   - `__main__.py` / `__init__.py`：支持模块方式调用与导出。
-5. 新增 `tests/test_schedule.py`，覆盖：
-   - CLI `--help`
-   - continuation-first 行为
-   - `last_worked_node_id` 回退
-   - active layer stalled 行为
-
-### 测试结果
-
-1. `.\.venv\Scripts\python.exe -m unittest tests.test_schedule` 通过。
-2. `.\.venv\Scripts\python.exe -m unittest discover -s tests` 未全绿。
-
-### 风险与待协作
-
-1. 全量测试中，`openmate_pool` 相关 4 个用例在 Windows 临时目录清理阶段失败，现象为 `pool_state.db` 被占用，怀疑 SQLite 连接或文件句柄未及时释放。
-2. 该问题属于 Agent池模块历史问题，本次未在 `schedule` 板块内处理；后续如需联调，应先和池模块确认资源释放约定。
-
-### 下一步建议
-
-1. 继续把一级 Topic MLFQ、二级 active layer 索引和 dirty 重算接到同一模块。
-2. 为 TopicSnapshot 引入更贴近架构文档的事件输入模型与运行态变更入口。
-3. 等 Agent池侧释放问题收敛后，再补跨模块集成测试。
+1. 已重新读取 `architecture/sharedInfo` 与 `调度队列.md`，收口当前跨模块契约。
+2. 已确认调度层采用 Go 技术栈推进，不再沿用 Python 方向继续扩展。
+3. 当前冻结的边界是：
+   - `schedule -> vos`：CLI + JSON
+   - `schedule -> pool`：CLI + JSON
+   - `schedule -> agent`：未来的 worker CLI + JSON 契约，当前尚未冻结
+4. 已同步更新共享文档：
+   - `architecture/sharedInfo/架构.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Go仓库约定.md`
+   - `architecture/sharedInfo/Go依赖.md`
+   - `architecture/sharedInfo/依赖.md`
+5. 已落地 `cmd/openmate-schedule` 与 `internal/schedule` 目录骨架，并新增最小 CLI：
+   - `openmate-schedule help`
+   - `openmate-schedule plan`
+6. 已执行 `go test ./...`，当前通过；`internal/schedule` 基线测试已补齐。
+7. 下一步进入调度层开发前，应先冻结 worker 请求/响应契约，再开始 `TopicRuntimeState` 与 dispatch 主循环实现。
+>>>>>>> ebcb66ca322d2db64ce94bf7a712961cd2a3e997
