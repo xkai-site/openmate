@@ -123,3 +123,38 @@
    - `tool glob ...`
 5. 共享依赖已沉淀至 `architecture/sharedInfo/依赖.md`，明确 `ripgrep (rg)` 为前置依赖。
 6. 单测已覆盖 `grep/glob`，当前测试总数 16，全部通过。
+
+## 2026-04-11
+
+### 初始化
+
+1. 已读取 `AGENTS.md` 与 `architecture/Agent能力/Process.md`，确认当前负责 `agent` 分支下的 Agent 能力模块。
+2. 已核对当前封装形态，核心抽象仍为 `ToolAction / ToolResult / ToolRegistry / PermissionGateway / CLI tool`。
+3. 当前工作区未发现项目内 `.venv`，系统 Python 环境缺少 `pydantic`，因此本轮仅完成架构与技术栈预研，未完成本地 agent 单测复核。
+
+### 技术栈预研结论
+
+1. 当前场景本质上是“工具调用运行时”而不是“纯提示词编排”：
+   - 需要强类型入参/出参
+   - 需要文件、网络、shell、grep/glob 等系统级工具能力
+   - 需要权限闸门、超时、取消、并发控制、资源边界
+   - 需要 CLI 优先、后续可挂接人机确认与持久化执行
+2. 若以“最短交付时间 + 延续现有 Agent/LLM 生态”为优先，首选仍是 `Python + Pydantic`。
+3. 若以“长期运行、低资源占用、易部署、并发与取消语义清晰”为优先，更适合作为核心 tool runtime 的候选是 `Go + Cobra`。
+4. 若以“极致性能、内存安全、资源可预测性”为优先，备选为 `Rust + clap/serde/tokio`，但研发与维护成本最高。
+5. `TypeScript/Node.js` 更适合作为接入层或生态对接层，不建议作为核心工具运行时主栈。
+
+### 下一步建议
+
+1. 先明确 Agent 能力层下一阶段目标到底偏“编排层”还是偏“工具运行时”。
+2. 若偏编排层，继续用 Python 成本最低。
+3. 若偏工具运行时，建议评估“Python 编排层 + Go 工具执行层”的双层方案，避免一次性全量迁移。
+
+### 环境初始化补充
+
+1. 当前工作区原先缺少项目内 `.venv`，现已在仓库根目录创建。
+2. 已执行 `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`，完成 `pydantic`、`langgraph` 及其依赖安装。
+3. 已使用项目内虚拟环境完成最小验证：
+   - `.\.venv\Scripts\python.exe -m openmate_agent.cli --help`
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
+4. 当前 agent 相关验证结果为 16 个测试全部通过。
