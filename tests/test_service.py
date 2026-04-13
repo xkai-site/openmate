@@ -5,13 +5,15 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
+from openmate_pool.models import InvocationStatus, InvocationTiming, InvokeRequest, InvokeResponse
 from openmate_agent.service import AgentCapabilityService
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.service = AgentCapabilityService()
+        self.service = AgentCapabilityService(gateway=_FakeGateway())
 
     def test_build_returns_build_model(self) -> None:
         build = self.service.build("node-1")
@@ -21,6 +23,37 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         build = self.service.build("node-2")
         result = self.service.execute(build)
         self.assertIn("executed node=node-2", result)
+
+    def test_execute_can_use_go_cli_gateway(self) -> None:
+        server, thread = _start_gateway_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(thread.join, 1)
+
+        with TemporaryDirectory() as tmp:
+            model_config = Path(tmp, "model.json")
+            model_config.write_text(
+                json.dumps(
+                    {
+                        "global_max_concurrent": 2,
+                        "offline_failure_threshold": 3,
+                        "apis": [
+                            {
+                                "api_id": "api-1",
+                                "model": "gpt-4.1",
+                                "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                                "api_key": "sk-test",
+                                "max_concurrent": 1,
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.execute(service.build("node-real"))
+            self.assertIn("echo:node=node-real", result)
 
     def test_priority_returns_true_for_non_empty_input(self) -> None:
         result = self.service.priority(["n1", "n2"], hint="hot-topic")
@@ -196,6 +229,62 @@ def _start_test_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+class _GatewayHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/v1/chat/completions":
+            self.send_error(404)
+            return
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
+        payload = json.loads(body)
+        messages = payload.get("messages", [])
+        text = ""
+        if messages and isinstance(messages, list) and isinstance(messages[-1], dict):
+            text = str(messages[-1].get("content", ""))
+        response = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": f"echo:{text}",
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 3,
+                    "total_tokens": 5,
+                },
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+        _ = (format, args)
+
+
+def _start_gateway_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _GatewayHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+class _FakeGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            output_text=f"executed node={request.node_id}",
+            timing=InvocationTiming(),
+        )
 
 
 if __name__ == "__main__":
