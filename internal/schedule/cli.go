@@ -1,10 +1,13 @@
 package schedule
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -17,7 +20,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Module boundaries are frozen at CLI + JSON contracts.")
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Commands:")
-		fmt.Fprintln(stdout, "  plan   Print current schedule module contract summary")
+		fmt.Fprintln(stdout, "  plan   Build one topic dispatch plan from a topic snapshot JSON file")
 	}
 
 	if err := root.Parse(args); err != nil {
@@ -37,7 +40,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	switch rest[0] {
 	case "plan":
-		return runPlan(stdout)
+		return runPlan(rest[1:], stdout, stderr)
 	case "help":
 		root.Usage()
 		return 0
@@ -48,14 +51,56 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runPlan(stdout io.Writer) int {
-	fmt.Fprintln(stdout, "{")
-	fmt.Fprintln(stdout, `  "module": "schedule",`)
-	fmt.Fprintln(stdout, `  "runtime": "go",`)
-	fmt.Fprintln(stdout, `  "entrypoint": "cmd/openmate-schedule",`)
-	fmt.Fprintln(stdout, `  "internal_package": "internal/schedule",`)
-	fmt.Fprintln(stdout, `  "module_boundary": "cli+json",`)
-	fmt.Fprintln(stdout, `  "status": "scaffolded"`)
-	fmt.Fprintln(stdout, "}")
+func runPlan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("openmate-schedule plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	inputFile := fs.String("input-file", "", "Path to TopicSnapshot JSON file")
+	availableSlots := fs.Int("available-slots", 1, "Available agent slots for this topic")
+	fs.Usage = func() {
+		fmt.Fprintln(stdout, "usage: openmate-schedule plan --input-file PATH [--available-slots N]")
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Input JSON schema: TopicSnapshot.")
+		fmt.Fprintln(stdout, "Output JSON schema: DispatchPlan.")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.Usage()
+			return 0
+		}
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if *inputFile == "" {
+		fmt.Fprintln(stderr, "input-file is required")
+		return 2
+	}
+
+	payload, err := os.ReadFile(filepath.Clean(*inputFile))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	topic, err := ParseTopicSnapshotJSON(payload)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	plan, err := planTopicDispatch(topic, *availableSlots)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := dumpJSON(stdout, plan); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	return 0
+}
+
+func dumpJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
 }

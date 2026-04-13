@@ -1,9 +1,12 @@
 ## 开发
 
-- 全程使用python + pydantic强类型
-- 环境搭建，使用项目内环境搭建方式，已搭建项目内虚拟环境（.venv）。不使用 conda/docker 等外部环境管理。
-  - 若需要新的依赖，更新 requirements.txt
+- 默认使用强类型实现，当前冻结技术栈以 `architecture/sharedInfo/模块契约.md` 为准：
+  - `vos / pool / schedule` 使用 Go
+  - `agent` 使用 Python + Pydantic
+- Python 环境搭建，使用项目内环境搭建方式，已搭建项目内虚拟环境（.venv）。不使用 conda/docker 等外部环境管理。
+  - 若需要新的 Python 依赖，更新 requirements.txt
   - 然后使用 pip install -r requirements.txt
+- Go 模块复用仓库根 `go.mod / go.sum`，若新增 Go 依赖，同时更新 `architecture/sharedInfo/Go依赖.md`
 - 开发规范：
    - 遵循 Git 提交信息规范（feat/fix/docs/...）
   - 单元测试完成后，才进行下一步操作
