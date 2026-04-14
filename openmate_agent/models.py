@@ -4,12 +4,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ToolName = Literal["read", "write", "edit", "query", "grep", "glob", "shell"]
+ToolName = Literal["read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"]
 GuardState = Literal["allow", "deny", "confirm"]
 
 
 class Build(BaseModel):
     node_id: str = Field(min_length=1)
+    session_id: str | None = None
 
 
 class ContextBundle(BaseModel):

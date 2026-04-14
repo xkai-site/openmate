@@ -122,3 +122,32 @@ MVP 只要求“可替换、可调用、可测试”：
 2. 复杂工具注册中心策略与副作用分级。
 3. skill 生命周期、冲突消解、依赖图。
 4. 输出解析、持久化、下一步建议、审计与观测细则。
+
+## 9. VOS 落盘配置（当前实现）
+
+`AgentCapabilityService.execute()` 已支持将模型/工具事件写入 VOS `SessionEvent`。
+
+启用方式（二选一）：
+
+1. 直接注入 `session_gateway`。
+2. 传入 `vos_state_file / vos_session_db_file / vos_binary_path`，由服务内部自动创建 `VosSessionGateway`。
+
+示例：
+
+```python
+service = AgentCapabilityService(
+    workspace_root="D:/XuKai/Project/agent",
+    vos_state_file="D:/XuKai/Project/agent/.vos_state.json",
+    vos_session_db_file="D:/XuKai/Project/agent/.vos_sessions.db",
+    # vos_binary_path 可选，不传则自动构建/定位 cmd/vos
+)
+```
+
+说明：
+
+1. 若未配置 VOS 网关，`execute()` 仅执行推理与工具，不会落 Session/Event。
+2. 若配置了 VOS 网关，`execute()` 会先 `ensure_session`，然后按 Responses 语义写事件：
+   - 有工具调用：`function_call -> function_call_output -> message`
+   - 无工具调用：直接 `message`
+3. `function_call / function_call_output` 要求 `call_id`，`message` 不要求 `call_id`。
+4. `session create` 依赖 `node_id` 已存在于 VOS state（需先有 topic/node 基础数据）。

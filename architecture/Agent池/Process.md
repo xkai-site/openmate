@@ -1,14 +1,17 @@
 # Agent池内部开发过程（收敛版）
 
-## 2026-04-12 master 集成合并完成
+## 2026-04-14 OpenAI Responses 协议切换落地
 
-1. 已在 `integration/master-pool-merge` 上完成 `master <- pool` 集成，冲突集中在 `.gitignore`、`go.mod`、`sharedInfo/架构.md`，均已手动收敛。
-2. 当前仓库已统一为单根 Go 模块；保留现有模块名 `vos`，并将 `cmd/openmate-pool` 的内部导入路径同步到同一模块下。
-3. Python 侧 `openmate_pool` 已保持为“契约模型 + Go CLI adapter”，`openmate_agent.service` 通过该 adapter 调用 `cmd/openmate-pool`。
-4. 验证结果：
-   - `go test ./...` 通过（构建缓存与模块缓存显式落在仓库内 `.openmate/`）
-   - `.\\.venv\\Scripts\\python.exe -m unittest discover -s tests -p "test_*.py" -v` 30 项通过
-5. 当前可继续在该集成分支上提交 merge commit，确认无误后再回合到 `master` 并 push。
+1. `pool invoke` 的主调用载荷已从旧的 `messages/chat.completions` 形态切到 OpenAI `Responses` 形态；当前外层网关请求为 `{ request_id, node_id, request, timeout_ms, route_policy }`，其中 `request` 对齐 OpenAI `Responses create`，但 `model` 继续由 `model.json` 注入。
+2. provider 适配层已切到 `/v1/responses`，并支持工具调用相关字段透传，包括 `tools / tool_choice / parallel_tool_calls / previous_response_id`；Agent池只负责协议转发、落库、观测与重试，不在池内执行工具。
+3. `InvokeResponse / InvocationRecord` 已改为返回完整 `response` 对象，同时保留 `output_text / route / usage / timing / error` 这组网关侧消费字段，便于上层直接取文本，也能完整回看原始响应。
+4. `model.json.apis[*]` 新增 `request_defaults / headers / pricing`：
+   `request_defaults` 用于承载 OpenAI 请求默认参数，
+   `headers` 用于 provider 侧额外请求头，
+   `pricing` 用于按 `input/output/cached/reasoning` 维度计算 `cost_usd`。
+5. usage 口径已从 `prompt/completion/total_tokens` 切到 `input_tokens / output_tokens / total_tokens / cached_input_tokens / reasoning_tokens`，`usage` 聚合命令和落库记录已同步升级。
+6. 当前测试结果：`go test ./...` 与 `.\.venv\Scripts\python.exe -m unittest discover -s tests -v` 均通过，Python 侧仍为 30 项通过。
+7. 已补充 `architecture/Agent池/对接协议.md`，作为面向调用方的协议文档，明确 `invoke/records/usage/cap/sync/model.json` 的 JSON 结构、错误约定与工具回环示例。
 
 ## 2026-04-12 usage 聚合视图落地
 

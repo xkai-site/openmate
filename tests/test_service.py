@@ -1,5 +1,6 @@
 import json
 import shutil
+import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -7,8 +8,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from openmate_pool.models import InvocationStatus, InvocationTiming, InvokeRequest, InvokeResponse
+from openmate_pool.models import (
+    InvocationStatus,
+    InvocationTiming,
+    InvokeRequest,
+    InvokeResponse,
+    OpenAIResponsesResponse,
+)
 from openmate_agent.service import AgentCapabilityService
+from openmate_agent.session_models import AppendSessionEventInput
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
@@ -23,6 +31,70 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         build = self.service.build("node-2")
         result = self.service.execute(build)
         self.assertIn("executed node=node-2", result)
+
+    def test_execute_without_tool_call_still_writes_session_event(self) -> None:
+        session_gateway = _SpySessionGateway()
+        service = AgentCapabilityService(gateway=_FakeGateway(), session_gateway=session_gateway)
+        result = service.execute(service.build("node-no-tool", session_id="session-no-tool"))
+
+        self.assertEqual(result, "executed node=node-no-tool")
+        self.assertEqual(session_gateway.ensure_calls, [("node-no-tool", "session-no-tool")])
+        self.assertEqual(len(session_gateway.events), 1)
+        event = session_gateway.events[0]
+        self.assertEqual(event.item_type, "message")
+        self.assertEqual(event.role.value, "assistant")
+        self.assertEqual(event.next_status.value, "completed")
+        self.assertEqual(event.call_id, None)
+        self.assertEqual(event.payload_json.get("output_text"), "executed node=node-no-tool")
+
+    def test_execute_runs_responses_tool_loop_and_writes_session_events(self) -> None:
+        gateway = _ToolLoopGateway()
+        session_gateway = _SpySessionGateway()
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(
+                gateway=gateway,
+                session_gateway=session_gateway,
+                workspace_root=tmp,
+            )
+            result = service.execute(service.build("node-tool-loop", session_id="session-1"))
+
+        self.assertEqual(result, "tool-loop-finished")
+        self.assertEqual(session_gateway.ensure_calls, [("node-tool-loop", "session-1")])
+        self.assertEqual(len(gateway.requests), 2)
+        first = gateway.requests[0]
+        self.assertIsNotNone(first.request.tools)
+        self.assertEqual(first.request.tool_choice, "auto")
+        self.assertEqual(first.request.parallel_tool_calls, False)
+        second = gateway.requests[1]
+        self.assertEqual(second.request.previous_response_id, "resp-tool-1")
+        self.assertIsInstance(second.request.input, list)
+        self.assertEqual(second.request.input[0]["type"], "function_call_output")
+        self.assertEqual(second.request.input[0]["call_id"], "call-1")
+
+        self.assertEqual(len(session_gateway.events), 3)
+        self.assertEqual(session_gateway.events[0].item_type, "function_call")
+        self.assertEqual(session_gateway.events[0].next_status.value, "waiting")
+        self.assertEqual(session_gateway.events[1].item_type, "function_call_output")
+        self.assertEqual(session_gateway.events[1].next_status.value, "active")
+        self.assertEqual(session_gateway.events[2].item_type, "message")
+        self.assertEqual(session_gateway.events[2].next_status.value, "completed")
+
+    def test_execute_marks_failed_status_when_gateway_raises_after_tool_call(self) -> None:
+        gateway = _ToolLoopThenFailGateway()
+        session_gateway = _SpySessionGateway()
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(
+                gateway=gateway,
+                session_gateway=session_gateway,
+                workspace_root=tmp,
+            )
+            with self.assertRaises(RuntimeError):
+                service.execute(service.build("node-tool-loop-fail", session_id="session-2"))
+
+        self.assertEqual(len(session_gateway.events), 3)
+        self.assertEqual(session_gateway.events[-1].item_type, "function_call_output")
+        self.assertEqual(session_gateway.events[-1].next_status.value, "failed")
+        self.assertEqual(session_gateway.events[-1].payload_json.get("ok"), False)
 
     def test_execute_can_use_go_cli_gateway(self) -> None:
         server, thread = _start_gateway_server()
@@ -135,6 +207,47 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertIn("shell-ok", result.output)
 
+    def test_run_tool_exec(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-exec",
+                tool_name="exec",
+                payload={"command": [sys.executable, "-c", "print('exec-ok')"]},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            self.assertIn("exec-ok", result.output)
+            self.assertIn("exit_code:0", result.output)
+
+    def test_run_tool_exec_expect_json_requires_valid_stdout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            ok_result = service.run_tool(
+                node_id="node-exec-json",
+                tool_name="exec",
+                payload={
+                    "command": [sys.executable, "-c", "import json; print(json.dumps({'ok': True}))"],
+                    "expect_json": True,
+                },
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(ok_result.success)
+            self.assertIn('"stdout_json"', ok_result.output)
+            self.assertIn('"ok": true', ok_result.output.lower())
+
+            bad_result = service.run_tool(
+                node_id="node-exec-json-bad",
+                tool_name="exec",
+                payload={"command": [sys.executable, "-c", "print('not-json')"], "expect_json": True},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertFalse(bad_result.success)
+            self.assertIn("stdout is not valid json", bad_result.error or "")
+
     def test_run_tool_requires_confirmation_when_flags_are_default(self) -> None:
         service = AgentCapabilityService()
         result = service.run_tool(
@@ -169,6 +282,114 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             )
             self.assertFalse(write_result.success)
             self.assertIn("modified externally", write_result.error or "")
+
+    def test_run_tool_patch_updates_multiple_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            base = Path(tmp)
+            first = base / "a.txt"
+            second = base / "pkg" / "module.py"
+            first.write_text("alpha\nbeta\n", encoding="utf-8")
+            second.parent.mkdir(parents=True, exist_ok=True)
+            second.write_text("VALUE = 1\n", encoding="utf-8")
+
+            read_first = service.run_tool(
+                node_id="node-patch",
+                tool_name="read",
+                payload={"path": "a.txt"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            read_second = service.run_tool(
+                node_id="node-patch",
+                tool_name="read",
+                payload={"path": "pkg/module.py"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(read_first.success)
+            self.assertTrue(read_second.success)
+
+            patch_result = service.run_tool(
+                node_id="node-patch",
+                tool_name="patch",
+                payload={
+                    "operations": [
+                        {
+                            "type": "replace",
+                            "path": "a.txt",
+                            "old_string": "beta",
+                            "new_string": "gamma",
+                        },
+                        {
+                            "type": "replace",
+                            "path": "pkg/module.py",
+                            "old_string": "VALUE = 1",
+                            "new_string": "VALUE = 2",
+                        },
+                    ]
+                },
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(patch_result.success)
+            self.assertIn("patched:2 files, 2 operations", patch_result.output)
+            self.assertEqual(first.read_text(encoding="utf-8"), "alpha\ngamma\n")
+            self.assertEqual(second.read_text(encoding="utf-8"), "VALUE = 2\n")
+
+    def test_run_tool_patch_is_atomic_when_operation_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            base = Path(tmp)
+            first = base / "a.txt"
+            second = base / "b.txt"
+            first.write_text("one\n", encoding="utf-8")
+            second.write_text("two\n", encoding="utf-8")
+
+            self.assertTrue(
+                service.run_tool(
+                    node_id="node-patch-atomic",
+                    tool_name="read",
+                    payload={"path": "a.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                ).success
+            )
+            self.assertTrue(
+                service.run_tool(
+                    node_id="node-patch-atomic",
+                    tool_name="read",
+                    payload={"path": "b.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                ).success
+            )
+
+            patch_result = service.run_tool(
+                node_id="node-patch-atomic",
+                tool_name="patch",
+                payload={
+                    "operations": [
+                        {
+                            "type": "replace",
+                            "path": "a.txt",
+                            "old_string": "one",
+                            "new_string": "changed",
+                        },
+                        {
+                            "type": "replace",
+                            "path": "b.txt",
+                            "old_string": "missing",
+                            "new_string": "boom",
+                        },
+                    ]
+                },
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertFalse(patch_result.success)
+            self.assertEqual(first.read_text(encoding="utf-8"), "one\n")
+            self.assertEqual(second.read_text(encoding="utf-8"), "two\n")
 
     def test_run_tool_grep_and_glob(self) -> None:
         if shutil.which("rg") is None:
@@ -233,32 +454,13 @@ def _start_test_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
 
 class _GatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/chat/completions":
+        if self.path != "/v1/responses":
             self.send_error(404)
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
         payload = json.loads(body)
-        messages = payload.get("messages", [])
-        text = ""
-        if messages and isinstance(messages, list) and isinstance(messages[-1], dict):
-            text = str(messages[-1].get("content", ""))
-        response = json.dumps(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": f"echo:{text}",
-                        }
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 3,
-                    "total_tokens": 5,
-                },
-            }
-        ).encode("utf-8")
+        text = _extract_input_text(payload.get("input"))
+        response = json.dumps(_response_payload_for_text(f"echo:{text}")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response)))
@@ -275,6 +477,109 @@ def _start_gateway_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
     thread.start()
     return server, thread
 
+
+class _SpySessionGateway:
+    def __init__(self) -> None:
+        self.ensure_calls: list[tuple[str, str | None]] = []
+        self.events: list[AppendSessionEventInput] = []
+
+    def ensure_session(self, node_id: str, session_id: str | None = None) -> str:
+        self.ensure_calls.append((node_id, session_id))
+        return session_id or f"session-{node_id}"
+
+    def append_event(self, event: AppendSessionEventInput) -> None:
+        self.events.append(event)
+
+
+class _ToolLoopGateway:
+    def __init__(self) -> None:
+        self.requests: list[InvokeRequest] = []
+
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            payload = {
+                "id": "resp-tool-1",
+                "object": "response",
+                "model": "gpt-4.1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "item-call-1",
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "exec",
+                        "arguments": json.dumps({"command": [sys.executable, "-c", "print('tool-loop-ok')"]}),
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            return InvokeResponse(
+                invocation_id=str(uuid4()),
+                request_id=request.request_id,
+                node_id=request.node_id,
+                status=InvocationStatus.SUCCESS,
+                response=OpenAIResponsesResponse.model_validate(payload),
+                output_text=None,
+                timing=InvocationTiming(),
+            )
+
+        payload = _response_payload_for_text("tool-loop-finished")
+        payload["id"] = "resp-tool-2"
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=OpenAIResponsesResponse.model_validate(payload),
+            output_text="tool-loop-finished",
+            timing=InvocationTiming(),
+        )
+
+
+class _ToolLoopThenFailGateway:
+    def __init__(self) -> None:
+        self.requests: list[InvokeRequest] = []
+
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            payload = {
+                "id": "resp-fail-1",
+                "object": "response",
+                "model": "gpt-4.1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "item-call-fail",
+                        "type": "function_call",
+                        "call_id": "call-fail-1",
+                        "name": "exec",
+                        "arguments": json.dumps({"command": [sys.executable, "-c", "print('tool-fail')"]}),
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            return InvokeResponse(
+                invocation_id=str(uuid4()),
+                request_id=request.request_id,
+                node_id=request.node_id,
+                status=InvocationStatus.SUCCESS,
+                response=OpenAIResponsesResponse.model_validate(payload),
+                output_text=None,
+                timing=InvocationTiming(),
+            )
+        raise RuntimeError("gateway temporary failure")
+
+
 class _FakeGateway:
     def invoke(self, request: InvokeRequest) -> InvokeResponse:
         return InvokeResponse(
@@ -282,9 +587,63 @@ class _FakeGateway:
             request_id=request.request_id,
             node_id=request.node_id,
             status=InvocationStatus.SUCCESS,
+            response=None,
             output_text=f"executed node={request.node_id}",
             timing=InvocationTiming(),
         )
+
+
+def _response_payload_for_text(text: str) -> dict[str, object]:
+    return {
+        "id": "resp-service",
+        "object": "response",
+        "model": "gpt-4.1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                    }
+                ],
+            }
+        ],
+        "usage": {
+            "input_tokens": 2,
+            "input_tokens_details": {
+                "cached_tokens": 0,
+            },
+            "output_tokens": 3,
+            "output_tokens_details": {
+                "reasoning_tokens": 0,
+            },
+            "total_tokens": 5,
+        },
+    }
+
+
+def _extract_input_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for content_item in content:
+                if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                    parts.append(str(content_item.get("text", "")))
+        return "".join(parts)
+    return ""
 
 
 if __name__ == "__main__":

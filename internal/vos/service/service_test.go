@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"errors"
 	"testing"
 
 	"vos/internal/vos/domain"
@@ -50,6 +51,71 @@ func TestCreateTopicCreatesRootNode(t *testing.T) {
 	}
 	if len(storedTopic.Tags) != 1 || storedTopic.Tags[0] != "init" {
 		t.Fatalf("Tags = %v, want [init]", storedTopic.Tags)
+	}
+}
+
+func TestUpdateAndDeleteTopic(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, rootNode, err := svc.CreateTopic(service.CreateTopicInput{
+		TopicID:     "topic-1",
+		Name:        "Topic One",
+		Description: stringPtr("legacy"),
+		Metadata:    map[string]any{"owner": "vos"},
+		Tags:        []string{"init"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	if _, err := svc.CreateNode(service.CreateNodeInput{
+		TopicID: topic.ID,
+		NodeID:  "node-1",
+		Name:    "Node One",
+	}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	updated, err := svc.UpdateTopic(service.UpdateTopicInput{
+		TopicID:          topic.ID,
+		Name:             stringPtr("Topic Two"),
+		ClearDescription: true,
+		Metadata:         map[string]any{"owner": "schedule"},
+		ReplaceMetadata:  true,
+		Tags:             []string{"go", "vos"},
+		ReplaceTags:      true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateTopic() error = %v", err)
+	}
+
+	if updated.Name != "Topic Two" {
+		t.Fatalf("Name = %s, want Topic Two", updated.Name)
+	}
+	if updated.Description != nil {
+		t.Fatalf("Description = %v, want nil", updated.Description)
+	}
+	if updated.Metadata["owner"] != "schedule" {
+		t.Fatalf("Metadata = %v, want owner=schedule", updated.Metadata)
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "go" || updated.Tags[1] != "vos" {
+		t.Fatalf("Tags = %v, want [go vos]", updated.Tags)
+	}
+
+	deleted, err := svc.DeleteTopic(topic.ID)
+	if err != nil {
+		t.Fatalf("DeleteTopic() error = %v", err)
+	}
+	if deleted.Topic.ID != topic.ID {
+		t.Fatalf("deleted topic ID = %s, want %s", deleted.Topic.ID, topic.ID)
+	}
+	if len(deleted.DeletedNodeIDs) != 2 || deleted.DeletedNodeIDs[0] != rootNode.ID || deleted.DeletedNodeIDs[1] != "node-1" {
+		t.Fatalf("DeletedNodeIDs = %v, want [%s node-1]", deleted.DeletedNodeIDs, rootNode.ID)
+	}
+	if _, err := svc.GetTopic(topic.ID); err == nil {
+		t.Fatalf("GetTopic() error = nil after delete")
+	}
+	if _, err := svc.GetNode(rootNode.ID); err == nil {
+		t.Fatalf("GetNode(root) error = nil after topic delete")
 	}
 }
 
@@ -174,10 +240,10 @@ func TestDeleteRejectsNonLeafNode(t *testing.T) {
 	}
 }
 
-func TestUpdateNodeAppendsRuntimeFields(t *testing.T) {
+func TestUpdateNodeAppendsRuntimeFieldsAndAggregatesParentMemory(t *testing.T) {
 	svc := newTestService(t)
 
-	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	topic, root, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
 	if err != nil {
 		t.Fatalf("CreateTopic() error = %v", err)
 	}
@@ -186,21 +252,30 @@ func TestUpdateNodeAppendsRuntimeFields(t *testing.T) {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
 
+	expectedVersion := node.Version
 	status := domain.NodeStatusActive
 	updated, err := svc.UpdateNode(service.UpdateNodeInput{
-		NodeID:      node.ID,
-		Description: stringPtr("drafted"),
-		Status:      &status,
-		Memory:      map[string]any{"summary": "leaf memory"},
-		Input:       map[string]any{"attachment": "input-1"},
-		Output:      map[string]any{"artifact": "output-1"},
-		SessionIDs:  []string{"session-1", "session-2"},
-		Progress:    []string{"created", "running"},
+		NodeID:          node.ID,
+		ExpectedVersion: &expectedVersion,
+		Name:            stringPtr("Node A Prime"),
+		Description:     stringPtr("drafted"),
+		Status:          &status,
+		Memory:          map[string]any{"summary": "leaf memory"},
+		Input:           map[string]any{"attachment": "input-1"},
+		Output:          map[string]any{"artifact": "output-1"},
+		SessionIDs:      []string{"session-1", "session-2"},
+		Progress:        []string{"created", "running"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
 
+	if updated.Version != expectedVersion+1 {
+		t.Fatalf("Version = %d, want %d", updated.Version, expectedVersion+1)
+	}
+	if updated.Name != "Node A Prime" {
+		t.Fatalf("Name = %s, want Node A Prime", updated.Name)
+	}
 	if updated.Description == nil || *updated.Description != "drafted" {
 		t.Fatalf("Description = %v, want drafted", updated.Description)
 	}
@@ -221,6 +296,151 @@ func TestUpdateNodeAppendsRuntimeFields(t *testing.T) {
 	}
 	if len(updated.Progress) != 2 || updated.Progress[0] != "created" || updated.Progress[1] != "running" {
 		t.Fatalf("Progress = %v, want [created running]", updated.Progress)
+	}
+
+	parent, err := svc.GetNode(root.ID)
+	if err != nil {
+		t.Fatalf("GetNode(root) error = %v", err)
+	}
+	cache, ok := parent.Memory["_child_memory_cache"].(map[string]any)
+	if !ok {
+		t.Fatalf("root memory cache missing: %v", parent.Memory)
+	}
+	entry, ok := cache[node.ID].(map[string]any)
+	if !ok {
+		t.Fatalf("root memory entry missing for %s: %v", node.ID, cache)
+	}
+	if entry["name"] != "Node A Prime" {
+		t.Fatalf("cached name = %v, want Node A Prime", entry["name"])
+	}
+	cachedMemory, ok := entry["memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("cached memory = %T, want map[string]any", entry["memory"])
+	}
+	if cachedMemory["summary"] != "leaf memory" {
+		t.Fatalf("cached memory = %v, want summary=leaf memory", cachedMemory)
+	}
+}
+
+func TestUpdateNodeRejectsVersionConflict(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-a", Name: "Node A"})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	staleVersion := node.Version + 1
+	_, err = svc.UpdateNode(service.UpdateNodeInput{
+		NodeID:          node.ID,
+		ExpectedVersion: &staleVersion,
+		Progress:        []string{"should-fail"},
+	})
+	if err == nil {
+		t.Fatalf("UpdateNode() error = nil, want version conflict")
+	}
+
+	var conflict domain.VersionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("UpdateNode() error = %T, want VersionConflictError", err)
+	}
+}
+
+func TestListNodesByFilterReturnsSchedulableLeaves(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	parent, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-parent", Name: "Parent"})
+	if err != nil {
+		t.Fatalf("CreateNode(parent) error = %v", err)
+	}
+	if _, err := svc.CreateNode(service.CreateNodeInput{
+		TopicID:  topic.ID,
+		NodeID:   "node-active",
+		ParentID: stringPtr(parent.ID),
+		Name:     "Active Leaf",
+		Status:   domain.NodeStatusActive,
+	}); err != nil {
+		t.Fatalf("CreateNode(active) error = %v", err)
+	}
+	if _, err := svc.CreateNode(service.CreateNodeInput{
+		TopicID: topic.ID,
+		NodeID:  "node-done",
+		Name:    "Done Leaf",
+		Status:  domain.NodeStatusDone,
+	}); err != nil {
+		t.Fatalf("CreateNode(done) error = %v", err)
+	}
+
+	nodes, err := svc.ListNodesByFilter(topic.ID, service.NodeListFilter{
+		LeafOnly:        true,
+		ExcludeStatuses: []domain.NodeStatus{domain.NodeStatusDone},
+	})
+	if err != nil {
+		t.Fatalf("ListNodesByFilter() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != "node-active" {
+		t.Fatalf("filtered nodes = %#v, want [node-active]", nodes)
+	}
+}
+
+func TestMoveDoesNotRecomputeParentMemory(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	parentA, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "parent-a", Name: "Parent A"})
+	if err != nil {
+		t.Fatalf("CreateNode(parent-a) error = %v", err)
+	}
+	parentB, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "parent-b", Name: "Parent B"})
+	if err != nil {
+		t.Fatalf("CreateNode(parent-b) error = %v", err)
+	}
+	leaf, err := svc.CreateNode(service.CreateNodeInput{
+		TopicID:  topic.ID,
+		NodeID:   "leaf-1",
+		ParentID: stringPtr(parentA.ID),
+		Name:     "Leaf",
+		Memory:   map[string]any{"summary": "persist"},
+	})
+	if err != nil {
+		t.Fatalf("CreateNode(leaf) error = %v", err)
+	}
+
+	if _, err := svc.MoveNode(leaf.ID, parentB.ID); err != nil {
+		t.Fatalf("MoveNode() error = %v", err)
+	}
+
+	storedParentA, err := svc.GetNode(parentA.ID)
+	if err != nil {
+		t.Fatalf("GetNode(parent-a) error = %v", err)
+	}
+	storedParentB, err := svc.GetNode(parentB.ID)
+	if err != nil {
+		t.Fatalf("GetNode(parent-b) error = %v", err)
+	}
+
+	cacheA, ok := storedParentA.Memory["_child_memory_cache"].(map[string]any)
+	if !ok {
+		t.Fatalf("parent-a cache missing: %v", storedParentA.Memory)
+	}
+	if _, ok := cacheA[leaf.ID]; !ok {
+		t.Fatalf("parent-a cache entry missing for %s", leaf.ID)
+	}
+	if storedParentB.Memory != nil {
+		if cacheB, ok := storedParentB.Memory["_child_memory_cache"]; ok && cacheB != nil {
+			t.Fatalf("parent-b cache = %v, want no recompute on move", storedParentB.Memory)
+		}
 	}
 }
 

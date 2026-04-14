@@ -7,7 +7,7 @@ from openmate_agent.models import GuardDecision, ToolAction
 
 class PermissionGateway:
     def evaluate(self, action: ToolAction) -> GuardDecision:
-        whitelist = {"read", "write", "edit", "query", "grep", "glob", "shell"}
+        whitelist = {"read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"}
         if action.tool_name not in whitelist:
             return GuardDecision(decision="deny", reason="unsupported tool")
 
@@ -17,12 +17,12 @@ class PermissionGateway:
         if not (action.is_safe and action.is_read_only):
             return GuardDecision(decision="confirm", reason="both flags must be true before policy routing")
 
-        if action.tool_name != "shell":
+        if action.tool_name not in {"shell", "exec"}:
             return GuardDecision(decision="allow", reason="allowed by whitelist")
 
-        command = str(action.payload.get("command", "")).strip()
+        command = _command_text(action)
         if not command:
-            return GuardDecision(decision="deny", reason="missing shell command")
+            return GuardDecision(decision="deny", reason="missing command")
 
         deny_patterns = [
             r"\bgit\s+reset\s+--hard\b",
@@ -34,4 +34,15 @@ class PermissionGateway:
             if re.search(pattern, command, flags=re.IGNORECASE):
                 return GuardDecision(decision="deny", reason="dangerous shell command")
 
-        return GuardDecision(decision="allow", reason="shell command allowed by policy")
+        return GuardDecision(decision="allow", reason="command allowed by policy")
+
+
+def _command_text(action: ToolAction) -> str:
+    if action.tool_name == "shell":
+        return str(action.payload.get("command", "")).strip()
+
+    raw = action.payload.get("command")
+    if not isinstance(raw, list):
+        return ""
+    parts = [str(item).strip() for item in raw if str(item).strip()]
+    return " ".join(parts).strip()

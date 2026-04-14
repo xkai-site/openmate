@@ -6,8 +6,9 @@ import json
 import py_compile
 import shutil
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib import parse, request
 
 from pydantic import BaseModel, Field, ValidationError
@@ -364,6 +365,72 @@ class GlobTool(Tool):
             return ToolResult(tool_name=self.name, success=False, error=str(exc))
 
 
+class ExecPayload(BaseModel):
+    command: list[str] = Field(min_length=1)
+    cwd: str | None = None
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    expect_json: bool = False
+
+
+class ExecTool(Tool):
+    name = "exec"
+    description = "Run structured command in workspace without shell string interpolation."
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        try:
+            args = ExecPayload.model_validate(payload)
+            cwd_path = context.workspace_root if args.cwd is None else _resolve_in_workspace(context.workspace_root, args.cwd)
+            proc = subprocess.run(
+                args.command,
+                capture_output=True,
+                text=True,
+                cwd=str(cwd_path),
+                check=False,
+                timeout=args.timeout_seconds,
+            )
+            stdout = (proc.stdout or "").strip()
+            stderr = (proc.stderr or "").strip()
+            if proc.returncode != 0:
+                return ToolResult(
+                    tool_name=self.name,
+                    success=False,
+                    output=_format_exec_output(args.command, cwd_path, proc.returncode, stdout, stderr),
+                    error=f"exit code {proc.returncode}",
+                )
+            if args.expect_json:
+                try:
+                    parsed = json.loads(stdout)
+                except json.JSONDecodeError as exc:
+                    return ToolResult(
+                        tool_name=self.name,
+                        success=False,
+                        output=_format_exec_output(args.command, cwd_path, proc.returncode, stdout, stderr),
+                        error=f"stdout is not valid json: {exc}",
+                    )
+                return ToolResult(
+                    tool_name=self.name,
+                    output=json.dumps(
+                        {
+                            "command": args.command,
+                            "cwd": str(cwd_path),
+                            "exit_code": proc.returncode,
+                            "stdout_json": parsed,
+                            "stderr": stderr,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            return ToolResult(
+                tool_name=self.name,
+                output=_format_exec_output(args.command, cwd_path, proc.returncode, stdout, stderr),
+            )
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+        except Exception as exc:  # pragma: no cover
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+
+
 class ShellPayload(BaseModel):
     command: str = Field(min_length=1)
     cwd: str | None = None
@@ -397,6 +464,168 @@ class ShellTool(Tool):
             return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
         except Exception as exc:  # pragma: no cover
             return ToolResult(tool_name=self.name, success=False, error=str(exc))
+
+
+class PatchReplaceOperation(BaseModel):
+    type: Literal["replace"]
+    path: str = Field(min_length=1)
+    old_string: str = Field(min_length=1)
+    new_string: str = ""
+
+
+class PatchWriteOperation(BaseModel):
+    type: Literal["write"]
+    path: str = Field(min_length=1)
+    content: str = ""
+
+
+PatchOperation = Annotated[PatchReplaceOperation | PatchWriteOperation, Field(discriminator="type")]
+
+
+class PatchPayload(BaseModel):
+    operations: list[PatchOperation] = Field(min_length=1)
+
+
+class _PatchFileState(BaseModel):
+    path: Path
+    exists: bool
+    original_content: str
+    new_content: str
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+class PatchTool(Tool):
+    name = "patch"
+    description = "Apply structured multi-file patch operations atomically after validation."
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        try:
+            args = PatchPayload.model_validate(payload)
+            file_states = self._prepare_states(context=context, operations=args.operations)
+            ordered_paths = sorted(file_states.keys(), key=lambda path: str(path))
+            with ExitStack() as stack:
+                for file_path in ordered_paths:
+                    stack.enter_context(context.lock_manager.with_lock(file_path))
+                checked_states = self._validate_freshness(context=context, file_states=file_states)
+                updated_states = self._apply_operations(context=context, file_states=checked_states, operations=args.operations)
+                diagnostics_by_path = self._write_all(context=context, file_states=updated_states)
+            return ToolResult(
+                tool_name=self.name,
+                output=self._format_output(file_states=updated_states, operations=args.operations, diagnostics_by_path=diagnostics_by_path),
+            )
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+        except TimeoutError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+        except Exception as exc:  # pragma: no cover
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+
+    @staticmethod
+    def _prepare_states(context: ToolContext, operations: list[PatchOperation]) -> dict[Path, _PatchFileState]:
+        file_states: dict[Path, _PatchFileState] = {}
+        for operation in operations:
+            file_path = _resolve_in_workspace(context.workspace_root, operation.path)
+            if file_path not in file_states:
+                exists = file_path.exists()
+                original_content = file_path.read_text(encoding="utf-8") if exists else ""
+                file_states[file_path] = _PatchFileState(
+                    path=file_path,
+                    exists=exists,
+                    original_content=original_content,
+                    new_content=original_content,
+                )
+        return file_states
+
+    @staticmethod
+    def _validate_freshness(
+        context: ToolContext,
+        file_states: dict[Path, _PatchFileState],
+    ) -> dict[Path, _PatchFileState]:
+        for file_path, state in file_states.items():
+            if not state.exists:
+                continue
+            ok, reason = context.file_time.assert_fresh(file_path)
+            if not ok:
+                raise ValueError(reason)
+        return file_states
+
+    @staticmethod
+    def _apply_operations(
+        context: ToolContext,
+        file_states: dict[Path, _PatchFileState],
+        operations: list[PatchOperation],
+    ) -> dict[Path, _PatchFileState]:
+        for operation in operations:
+            target_path = _resolve_in_workspace(context.workspace_root, operation.path)
+            state = file_states[target_path]
+            if isinstance(operation, PatchReplaceOperation):
+                if not state.exists:
+                    raise ValueError(f"file does not exist: {state.path}")
+                match = _find_best_match(content=state.new_content, old_string=operation.old_string)
+                if not match.success:
+                    raise ValueError(f"{state.path}: {match.message}")
+                start, end = match.span
+                state.new_content = state.new_content[:start] + operation.new_string + state.new_content[end:]
+            else:
+                state.new_content = operation.content
+        return file_states
+
+    @staticmethod
+    def _write_all(
+        context: ToolContext,
+        file_states: dict[Path, _PatchFileState],
+    ) -> dict[Path, str]:
+        diagnostics_by_path: dict[Path, str] = {}
+        for file_path, state in file_states.items():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(state.new_content, encoding="utf-8")
+            context.file_time.set(file_path, file_path.stat().st_mtime)
+            diagnostics_by_path[file_path] = _collect_diagnostics(file_path)
+        return diagnostics_by_path
+
+    @staticmethod
+    def _format_output(
+        file_states: dict[Path, _PatchFileState],
+        operations: list[PatchOperation],
+        diagnostics_by_path: dict[Path, str],
+    ) -> str:
+        lines = [f"patched:{len(file_states)} files, {len(operations)} operations"]
+        for file_path in sorted(file_states.keys(), key=lambda path: str(path)):
+            state = file_states[file_path]
+            lines.extend(
+                [
+                    f"[file] {file_path}",
+                    "[diff-preview]",
+                    WriteTool._build_diff(file_path=file_path, old_content=state.original_content, new_content=state.new_content),
+                ]
+            )
+            diagnostics = diagnostics_by_path.get(file_path, "")
+            if diagnostics:
+                lines.append("[diagnostics]")
+                lines.append(diagnostics)
+        return "\n".join(lines)
+
+
+def _format_exec_output(
+    command: list[str],
+    cwd_path: Path,
+    return_code: int,
+    stdout: str,
+    stderr: str,
+) -> str:
+    lines = [
+        f"command:{json.dumps(command, ensure_ascii=False)}",
+        f"cwd:{cwd_path}",
+        f"exit_code:{return_code}",
+    ]
+    if stdout:
+        lines.append("[stdout]")
+        lines.append(stdout)
+    if stderr:
+        lines.append("[stderr]")
+        lines.append(stderr)
+    return "\n".join(lines)
 
 
 class _MatchResult(BaseModel):

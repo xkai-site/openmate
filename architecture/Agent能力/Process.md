@@ -123,3 +123,136 @@
    - `tool glob ...`
 5. 共享依赖已沉淀至 `architecture/sharedInfo/依赖.md`，明确 `ripgrep (rg)` 为前置依赖。
 6. 单测已覆盖 `grep/glob`，当前测试总数 16，全部通过。
+
+## 2026-04-11
+
+### 初始化
+
+1. 已读取 `AGENTS.md` 与 `architecture/Agent能力/Process.md`，确认当前负责 `agent` 分支下的 Agent 能力模块。
+2. 已核对当前封装形态，核心抽象仍为 `ToolAction / ToolResult / ToolRegistry / PermissionGateway / CLI tool`。
+3. 当前工作区未发现项目内 `.venv`，系统 Python 环境缺少 `pydantic`，因此本轮仅完成架构与技术栈预研，未完成本地 agent 单测复核。
+
+### 技术栈预研结论
+
+1. 当前场景本质上是“工具调用运行时”而不是“纯提示词编排”：
+   - 需要强类型入参/出参
+   - 需要文件、网络、shell、grep/glob 等系统级工具能力
+   - 需要权限闸门、超时、取消、并发控制、资源边界
+   - 需要 CLI 优先、后续可挂接人机确认与持久化执行
+2. 若以“最短交付时间 + 延续现有 Agent/LLM 生态”为优先，首选仍是 `Python + Pydantic`。
+3. 若以“长期运行、低资源占用、易部署、并发与取消语义清晰”为优先，更适合作为核心 tool runtime 的候选是 `Go + Cobra`。
+4. 若以“极致性能、内存安全、资源可预测性”为优先，备选为 `Rust + clap/serde/tokio`，但研发与维护成本最高。
+5. `TypeScript/Node.js` 更适合作为接入层或生态对接层，不建议作为核心工具运行时主栈。
+
+### 下一步建议
+
+1. 先明确 Agent 能力层下一阶段目标到底偏“编排层”还是偏“工具运行时”。
+2. 若偏编排层，继续用 Python 成本最低。
+3. 若偏工具运行时，建议评估“Python 编排层 + Go 工具执行层”的双层方案，避免一次性全量迁移。
+
+### 环境初始化补充
+
+1. 当前工作区原先缺少项目内 `.venv`，现已在仓库根目录创建。
+2. 已执行 `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`，完成 `pydantic`、`langgraph` 及其依赖安装。
+3. 已使用项目内虚拟环境完成最小验证：
+   - `.\.venv\Scripts\python.exe -m openmate_agent.cli --help`
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
+4. 当前 agent 相关验证结果为 16 个测试全部通过。
+
+## 2026-04-13
+
+### 主干架构同步判断
+
+1. 已读取 `architecture/sharedInfo/架构.md` 与 `architecture/sharedInfo/模块契约.md`。
+2. 当前跨模块总原则已进一步明确为：统一 `CLI + JSON`，不跨模块直接引用内部实现。
+3. 对 Agent 模块的直接影响主要有两点：
+   - `Agent` 技术栈继续保持 `Python + Pydantic`
+   - `schedule -> agent` 的 worker CLI/JSON 契约尚未冻结，当前不能假定已有执行 worker 命令
+
+### 当前优先级判断
+
+1. 其他模块切换 Go 不改变 Agent 的主目标，当前仍应优先提升 agent 表现而不是追随语言迁移。
+2. Agent 近期最值得投入的方向应聚焦：
+   - 上下文注入质量
+   - 工具调用质量与安全策略
+   - skill 注入与选择
+   - 对 Pool 标准化调用结果的消费质量
+   - 可评估、可回归的表现基线
+3. 在 worker 契约冻结前，避免过早把 Agent 能力层绑死到调度执行语义上。
+
+### 增量实现（结构化执行与多文件补丁）
+
+1. 新增结构化命令工具 `exec`：
+   - payload 固定为 `command/cwd/timeout_seconds/expect_json`
+   - `command` 采用 argv 列表而非原始 shell 字符串
+   - 默认值与现有 `shell` 保持统一：`cwd=None`、`timeout_seconds=30`
+   - `expect_json=true` 时会校验 stdout 是否为合法 JSON
+2. 新增结构化补丁工具 `patch`：
+   - payload 为 `operations` JSON 列表
+   - 首版支持两类操作：`replace`、`write`
+   - 复用现有 `edit` 匹配策略与 `write` diff/诊断逻辑
+   - 在同一次 patch 内支持多文件、多处修改
+3. `exec/patch` 已与现有工具体系保持统一：
+   - 已纳入 `ToolName / ToolRegistry / PermissionGateway / DefaultToolInjector`
+   - 已纳入 `tool` CLI 子命令
+   - 继续复用 `is_safe / is_read_only` 标记位与 `ToolResult` 返回风格
+4. `shell` 保持兼容，未删除；默认工具注入顺序已将结构化工具优先暴露。
+5. 已补充测试覆盖：
+   - `exec` 成功执行
+   - `exec` 的 `expect_json` 成功/失败路径
+   - `patch` 多文件成功路径
+   - `patch` 任一操作失败时不落地
+   - CLI 的 `tool exec`、`tool patch` 与非法 JSON 参数
+6. 已完成验证：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+7. 当前仓库全量单测结果：38 个测试全部通过。
+
+## 2026-04-14
+
+### Pool / VOS 工具调用协议对齐落地
+
+1. `openmate_agent.service.execute()` 已改为 OpenAI Responses 原生循环：
+   - 首轮请求注入 `tools/tool_choice/parallel_tool_calls`
+   - 识别 `response.output[].type=function_call`
+   - 执行本地工具后回传 `function_call_output`
+   - 续调时使用 `previous_response_id`
+2. 已新增 VOS SessionEvent 适配层：
+   - `openmate_agent.session_models`（强类型 Session/SessionEvent 输入输出模型）
+   - `openmate_agent.session_gateway.VosSessionGateway`（CLI + JSON 适配）
+   - `openmate_agent.vos_binary`（`cmd/vos` 二进制构建与定位）
+3. SessionEvent 写入语义已按共享契约执行：
+   - `function_call` 写入 `next_status=waiting`
+   - `function_call_output` 写入 `next_status=active`
+   - 工具链路结束后写 `message` 并补写 `next_status=completed`
+   - 异常路径补写 `next_status=failed`
+   - 新增：即使本轮没有工具调用，只要配置了 VOS 网关，也会确保 Session 存在并写入一条 `message`（assistant 输出）用于对话落盘
+4. 新增单测覆盖：
+   - Responses 多轮工具调用循环
+   - `previous_response_id` 续调
+   - SessionEvent `waiting/active/completed/failed` 状态流转
+5. 已完成验证：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+   - 当前结果：41 个测试全部通过
+
+### 已记录但暂不实现（按当前任务边界）
+
+1. 工具文件副作用治理（写/改/新增文件）仍待补齐：
+   - 操作级审计字段标准化
+   - 回滚策略（失败时自动恢复/半自动恢复）
+   - 高风险写操作确认策略（与 SessionEvent/调度联动）
+
+### 补充（SessionEvent V2 对齐）
+
+1. 已将无工具调用场景从临时 `function_call_output` 迁移为标准 `message` 事件写入。
+2. `call_id` 规则已收敛为“仅工具事件必填”，`message` 不强制 `call_id`。
+3. VOS 存储层已放宽 `item_type` 约束为非空字符串，并补充旧库 `item_type` CHECK 约束自动迁移逻辑。
+4. 回归结果：
+   - Go：`go test ./internal/vos/...` 通过
+   - Python：`unittest discover -s tests -p "test_*.py"`（41 项）通过
+5. 本地部署验证：
+   - 已构建 `.openmate/bin/vos.exe` 新版本
+   - 已在 `.openmate/runtime/` 初始化新 `vos_state.json` 与 `vos_sessions.db`
+   - 已验证 `message` 无 `call_id` 可写入、`function_call` 无 `call_id` 被拒绝
+6. 已补充 Agent 文档中的 VOS 落盘配置说明与运行前置条件
