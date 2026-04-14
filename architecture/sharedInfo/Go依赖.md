@@ -3,7 +3,7 @@
 ## 1. 当前结论
 
 1. 当前已落地的 Go 模块为 `vos` 与 `pool`
-2. `schedule` 已确认采用 Go 技术栈，但尚未落地代码
+2. `schedule` 已确认采用 Go 技术栈，并已落地 `cmd/openmate-schedule` / `internal/schedule` 基线代码
 3. 当前根模块名为 `vos`
 4. 当前仓库已经存在第三方 Go 依赖：`github.com/mattn/go-sqlite3`
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Sequence
 
 from .service import AgentCapabilityService
+from .worker import WorkerExecuteRequest, execute_worker_request
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -138,6 +140,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Mark this tool call as read-only.",
     )
 
+    worker_parser = subparsers.add_parser("worker", help="Execute schedule worker action.")
+    worker_subparsers = worker_parser.add_subparsers(dest="worker_name", required=True)
+
+    worker_run = worker_subparsers.add_parser("run", help="Run one worker request (JSON in/out).")
+    worker_run.add_argument("--request-json", default="", help="Inline WorkerExecuteRequest JSON.")
+    worker_run.add_argument("--request-file", default="", help="Path to WorkerExecuteRequest JSON file.")
+
     return parser
 
 
@@ -208,6 +217,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(result.model_dump_json(indent=2))
         return 0 if result.success else 1
+
+    if args.command == "worker":
+        if args.worker_name != "run":
+            print(json.dumps({"status": "failed", "error": f"unknown worker command: {args.worker_name}"}))
+            return 2
+        if bool(args.request_json) == bool(args.request_file):
+            print(json.dumps({"status": "failed", "error": "worker run requires exactly one of --request-json or --request-file"}))
+            return 2
+        raw = args.request_json
+        if args.request_file:
+            try:
+                raw = Path(args.request_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"status": "failed", "error": f"read request file failed: {exc}"}))
+                return 2
+        try:
+            request = WorkerExecuteRequest.model_validate_json(raw)
+        except Exception as exc:
+            print(json.dumps({"status": "failed", "error": f"invalid worker request json: {exc}"}))
+            return 2
+
+        response = execute_worker_request(request)
+        print(response.model_dump_json(indent=2))
+        return 0 if response.status == "succeeded" else 1
 
     parser.print_help()
     return 1
