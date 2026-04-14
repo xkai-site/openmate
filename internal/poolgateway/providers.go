@@ -26,15 +26,11 @@ func (provider OpenAICompatibleProvider) Invoke(
 	reservation InvocationReservation,
 	request InvokeRequest,
 ) (ProviderInvokeResult, error) {
-	payload := map[string]any{
-		"model":    reservation.Model,
-		"messages": buildProviderMessages(request.Messages),
-	}
-	if request.Temperature != nil {
-		payload["temperature"] = *request.Temperature
-	}
-	if request.MaxOutputTokens != nil {
-		payload["max_completion_tokens"] = *request.MaxOutputTokens
+	payload := mergeRequestPayload(reservation.RequestDefaults, request.Request, reservation.Model)
+	if stream, ok := payload["stream"].(bool); ok && stream {
+		return ProviderInvokeResult{}, &ProviderInvocationError{
+			GatewayError: gatewayUnsupportedRequest("request.stream"),
+		}
 	}
 
 	body, err := json.Marshal(payload)
@@ -44,7 +40,7 @@ func (provider OpenAICompatibleProvider) Invoke(
 	httpRequest, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		strings.TrimRight(reservation.BaseURL, "/")+"/chat/completions",
+		strings.TrimRight(reservation.BaseURL, "/")+"/responses",
 		bytes.NewReader(body),
 	)
 	if err != nil {
@@ -52,6 +48,9 @@ func (provider OpenAICompatibleProvider) Invoke(
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+reservation.APIKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
+	for key, value := range reservation.Headers {
+		httpRequest.Header.Set(key, value)
+	}
 
 	client := provider.HTTPClient
 	if client == nil {
@@ -92,10 +91,14 @@ func (provider OpenAICompatibleProvider) Invoke(
 		}
 	}
 
+	if gatewayError := classifyProviderPayload(payloadJSON); gatewayError != nil {
+		return ProviderInvokeResult{}, &ProviderInvocationError{GatewayError: *gatewayError}
+	}
+
 	return ProviderInvokeResult{
-		OutputText:  extractOutputText(payloadJSON),
-		RawResponse: payloadJSON,
-		Usage:       extractUsage(payloadJSON),
+		Response:   payloadJSON,
+		OutputText: extractOutputText(payloadJSON),
+		Usage:      extractUsage(payloadJSON),
 	}, nil
 }
 
@@ -108,59 +111,83 @@ func GetProviderClient(provider string) (ProviderClient, error) {
 	}
 }
 
-func buildProviderMessages(messages []LlmMessage) []map[string]any {
-	result := make([]map[string]any, 0, len(messages))
-	for _, message := range messages {
-		result = append(result, map[string]any{
-			"role":    string(message.Role),
-			"content": message.Content,
-		})
+func classifyProviderPayload(payload map[string]any) *GatewayError {
+	if errorRaw, ok := payload["error"].(map[string]any); ok && len(errorRaw) > 0 {
+		message := anyString(errorRaw["message"])
+		if message == "" {
+			message = "provider returned error payload"
+		}
+		return &GatewayError{
+			Code:      "provider_response_error",
+			Message:   message,
+			Retryable: false,
+			Details: map[string]any{
+				"error": errorRaw,
+			},
+		}
 	}
-	return result
+
+	status, _ := payload["status"].(string)
+	if status == "incomplete" {
+		details, _ := payload["incomplete_details"].(map[string]any)
+		reason := ""
+		if details != nil {
+			reason = anyString(details["reason"])
+		}
+		message := "provider response incomplete"
+		if reason != "" {
+			message = fmt.Sprintf("provider response incomplete: %s", reason)
+		}
+		return &GatewayError{
+			Code:      "provider_incomplete_response",
+			Message:   message,
+			Retryable: false,
+			Details: map[string]any{
+				"status":             status,
+				"incomplete_details": details,
+			},
+		}
+	}
+
+	return nil
 }
 
 func extractOutputText(payload map[string]any) *string {
-	choicesRaw, ok := payload["choices"].([]any)
-	if !ok || len(choicesRaw) == 0 {
+	outputRaw, ok := payload["output"].([]any)
+	if !ok || len(outputRaw) == 0 {
 		return nil
 	}
-	firstChoice, ok := choicesRaw[0].(map[string]any)
-	if !ok {
-		return nil
-	}
-	message, ok := firstChoice["message"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	content, exists := message["content"]
-	if !exists {
-		return nil
-	}
-	switch value := content.(type) {
-	case string:
-		result := value
-		return &result
-	case []any:
-		builder := strings.Builder{}
-		for _, item := range value {
-			part, ok := item.(map[string]any)
+	builder := strings.Builder{}
+	for _, item := range outputRaw {
+		message, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if anyString(message["type"]) != "message" {
+			continue
+		}
+		contentRaw, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, contentItem := range contentRaw {
+			content, ok := contentItem.(map[string]any)
 			if !ok {
 				continue
 			}
-			if part["type"] == "text" {
-				if text, ok := part["text"].(string); ok {
+			switch anyString(content["type"]) {
+			case "output_text", "text":
+				if text := anyString(content["text"]); text != "" {
 					builder.WriteString(text)
 				}
 			}
 		}
-		if builder.Len() == 0 {
-			return nil
-		}
-		result := builder.String()
-		return &result
-	default:
+	}
+	if builder.Len() == 0 {
 		return nil
 	}
+	result := builder.String()
+	return &result
 }
 
 func extractUsage(payload map[string]any) *UsageMetrics {
@@ -168,10 +195,14 @@ func extractUsage(payload map[string]any) *UsageMetrics {
 	if !ok {
 		return nil
 	}
+	inputDetails, _ := usageRaw["input_tokens_details"].(map[string]any)
+	outputDetails, _ := usageRaw["output_tokens_details"].(map[string]any)
 	return &UsageMetrics{
-		PromptTokens:     anyIntPointer(usageRaw["prompt_tokens"]),
-		CompletionTokens: anyIntPointer(usageRaw["completion_tokens"]),
-		TotalTokens:      anyIntPointer(usageRaw["total_tokens"]),
+		InputTokens:       anyIntPointer(usageRaw["input_tokens"]),
+		OutputTokens:      anyIntPointer(usageRaw["output_tokens"]),
+		TotalTokens:       anyIntPointer(usageRaw["total_tokens"]),
+		CachedInputTokens: anyIntPointer(mapValue(inputDetails, "cached_tokens")),
+		ReasoningTokens:   anyIntPointer(mapValue(outputDetails, "reasoning_tokens")),
 	}
 }
 
@@ -180,12 +211,33 @@ func anyIntPointer(value any) *int {
 	case float64:
 		result := int(typed)
 		return &result
+	case float32:
+		result := int(typed)
+		return &result
 	case int:
 		result := typed
+		return &result
+	case int64:
+		result := int(typed)
 		return &result
 	default:
 		return nil
 	}
+}
+
+func anyString(value any) string {
+	typed, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return typed
+}
+
+func mapValue(value map[string]any, key string) any {
+	if value == nil {
+		return nil
+	}
+	return value[key]
 }
 
 func classifyTransportError(err error) GatewayError {

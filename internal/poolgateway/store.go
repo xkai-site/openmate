@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -15,6 +16,11 @@ type Store struct {
 	path string
 	db   *sql.DB
 }
+
+const (
+	sqliteBusyRetryDelay = 25 * time.Millisecond
+	sqliteBusyMaxRetries = 200
+)
 
 func NewStore(path string) (*Store, error) {
 	db, err := sql.Open("sqlite3", path)
@@ -52,7 +58,7 @@ func (store *Store) ReserveInvocation(
 		if err := store.syncConfig(ctx, conn, config); err != nil {
 			return err
 		}
-		value, err := store.reserveAttemptTx(ctx, conn, request, nil)
+		value, err := store.reserveAttemptTx(ctx, conn, config, request, nil)
 		if err != nil {
 			return err
 		}
@@ -73,7 +79,7 @@ func (store *Store) ReserveRetryAttempt(
 		if err := store.syncConfig(ctx, conn, config); err != nil {
 			return err
 		}
-		value, err := store.reserveAttemptTx(ctx, conn, request, &invocationID)
+		value, err := store.reserveAttemptTx(ctx, conn, config, request, &invocationID)
 		if err != nil {
 			return err
 		}
@@ -327,6 +333,7 @@ func (store *Store) initDB(ctx context.Context) error {
 
 	statements := []string{
 		`PRAGMA foreign_keys = ON`,
+		`PRAGMA busy_timeout = 5000`,
 		`PRAGMA journal_mode = WAL`,
 		`CREATE TABLE IF NOT EXISTS meta (
 		   key TEXT PRIMARY KEY,
@@ -377,7 +384,10 @@ func (store *Store) initDB(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_invocation_attempts_invocation_id ON invocation_attempts(invocation_id)`,
 	}
 	for _, statement := range statements {
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
+		if err := retryOnSQLiteBusy(ctx, func() error {
+			_, err := conn.ExecContext(ctx, statement)
+			return err
+		}); err != nil {
 			return err
 		}
 	}
@@ -385,6 +395,12 @@ func (store *Store) initDB(ctx context.Context) error {
 }
 
 func (store *Store) withImmediateTx(ctx context.Context, fn func(conn *sql.Conn) error) error {
+	return retryOnSQLiteBusy(ctx, func() error {
+		return store.withImmediateTxOnce(ctx, fn)
+	})
+}
+
+func (store *Store) withImmediateTxOnce(ctx context.Context, fn func(conn *sql.Conn) error) error {
 	conn, err := store.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -392,6 +408,9 @@ func (store *Store) withImmediateTx(ctx context.Context, fn func(conn *sql.Conn)
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
@@ -413,6 +432,28 @@ func (store *Store) withImmediateTx(ctx context.Context, fn func(conn *sql.Conn)
 	}
 	committed = true
 	return nil
+}
+
+func retryOnSQLiteBusy(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 0; attempt < sqliteBusyMaxRetries; attempt++ {
+		err = fn()
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		if waitErr := waitWithContext(ctx, sqliteBusyRetryDelay); waitErr != nil {
+			return waitErr
+		}
+	}
+	return err
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy")
 }
 
 func (store *Store) syncConfig(ctx context.Context, conn *sql.Conn, config ModelConfig) error {
@@ -489,6 +530,7 @@ func (store *Store) syncConfig(ctx context.Context, conn *sql.Conn, config Model
 func (store *Store) reserveAttemptTx(
 	ctx context.Context,
 	conn *sql.Conn,
+	config ModelConfig,
 	request InvokeRequest,
 	invocationID *string,
 ) (InvocationReservation, error) {
@@ -564,6 +606,10 @@ func (store *Store) reserveAttemptTx(
 	startedAt := utcNow()
 	currentInvocationID := newUUID()
 	attemptID := newUUID()
+	apiConfig, found := config.APIByID(apiID)
+	if !found {
+		return InvocationReservation{}, fmt.Errorf("api config not found: %s", apiID)
+	}
 	if invocationID == nil {
 		requestJSON, err := marshalNullable(normalizeRequest(request))
 		if err != nil {
@@ -622,16 +668,19 @@ func (store *Store) reserveAttemptTx(
 	}
 
 	return InvocationReservation{
-		InvocationID: currentInvocationID,
-		AttemptID:    attemptID,
-		RequestID:    request.RequestID,
-		NodeID:       request.NodeID,
-		APIID:        apiID,
-		Provider:     provider,
-		Model:        model,
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		StartedAt:    startedAt,
+		InvocationID:    currentInvocationID,
+		AttemptID:       attemptID,
+		RequestID:       request.RequestID,
+		NodeID:          request.NodeID,
+		APIID:           apiID,
+		Provider:        provider,
+		Model:           model,
+		BaseURL:         baseURL,
+		APIKey:          apiKey,
+		Headers:         cloneStringMap(apiConfig.Headers),
+		RequestDefaults: cloneMap(apiConfig.RequestDefaults),
+		Pricing:         copyPricing(apiConfig.Pricing),
+		StartedAt:       startedAt,
 	}, nil
 }
 
@@ -848,7 +897,7 @@ func (store *Store) loadInvocationRecordTx(
 		Status:       InvocationStatus(status),
 		Route:        route,
 		OutputText:   nullStringPtr(outputText),
-		RawResponse:  rawResponse,
+		Response:     rawResponse,
 		Usage:        usage,
 		Timing: InvocationTiming{
 			StartedAt:  parsedStartedAt,
@@ -875,8 +924,8 @@ func (store *Store) loadInvocationResponseTx(
 		NodeID:       record.Request.NodeID,
 		Status:       record.Status,
 		Route:        record.Route,
+		Response:     record.Response,
 		OutputText:   record.OutputText,
-		RawResponse:  record.RawResponse,
 		Usage:        record.Usage,
 		Timing:       record.Timing,
 		Error:        record.Error,
@@ -1114,6 +1163,25 @@ func nullStringPtr(value sql.NullString) *string {
 		return nil
 	}
 	result := value.String
+	return &result
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return map[string]string{}
+	}
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func copyPricing(value *PricingConfig) *PricingConfig {
+	if value == nil {
+		return nil
+	}
+	result := *value
 	return &result
 }
 

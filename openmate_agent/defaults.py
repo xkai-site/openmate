@@ -92,6 +92,7 @@ class DefaultLlmGateway(LlmGateway):
             request_id=request.request_id,
             node_id=request.node_id,
             status=InvocationStatus.SUCCESS,
+            response=None,
             output_text=f"executed node={request.node_id}",
             timing=InvocationTiming(),
         )

@@ -28,9 +28,11 @@ func summarizeUsage(records []InvocationRecord, nodeID *string, limit *int) Usag
 		}
 
 		if record.Usage != nil {
-			summary.PromptTokens += intOrZero(record.Usage.PromptTokens)
-			summary.CompletionTokens += intOrZero(record.Usage.CompletionTokens)
+			summary.InputTokens += intOrZero(record.Usage.InputTokens)
+			summary.OutputTokens += intOrZero(record.Usage.OutputTokens)
 			summary.TotalTokens += intOrZero(record.Usage.TotalTokens)
+			summary.CachedInputTokens += intOrZero(record.Usage.CachedInputTokens)
+			summary.ReasoningTokens += intOrZero(record.Usage.ReasoningTokens)
 			if record.Usage.CostUSD != nil {
 				totalCost += *record.Usage.CostUSD
 				hasCost = true

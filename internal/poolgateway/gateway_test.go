@@ -31,8 +31,8 @@ func TestGatewayInvokeSuccessPersistsRecord(t *testing.T) {
 	response, err := gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-1",
 		NodeID:    "node-1",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 	})
 	if err != nil {
@@ -80,8 +80,8 @@ func TestGatewayRoutePolicyPinsAPI(t *testing.T) {
 	response, err := gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-2",
 		NodeID:    "node-2",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -113,8 +113,8 @@ func TestGatewayFailureThresholdMovesAPIOffline(t *testing.T) {
 	_, err = gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-fail",
 		NodeID:    "node-fail",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -131,8 +131,8 @@ func TestGatewayFailureThresholdMovesAPIOffline(t *testing.T) {
 	_, err = gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-fail-2",
 		NodeID:    "node-fail-2",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -185,8 +185,8 @@ func TestGatewayRetryableFailureSucceedsOnSecondAttempt(t *testing.T) {
 	response, err := gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-retry",
 		NodeID:    "node-retry",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -271,8 +271,8 @@ func TestGatewayRateLimitedFailureRetriesWithoutOffliningAPI(t *testing.T) {
 	response, err := gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-429",
 		NodeID:    "node-429",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -324,8 +324,8 @@ func TestGatewayInvalidJSONFailureDoesNotTakeAPIOffline(t *testing.T) {
 	_, err = gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-json",
 		NodeID:    "node-json",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -394,8 +394,8 @@ func TestGatewayModelConfigCanDisableRetries(t *testing.T) {
 	_, err = gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "req-no-retry",
 		NodeID:    "node-no-retry",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "hello"},
+		Request: OpenAIResponsesRequest{
+			"input": "hello",
 		},
 		RoutePolicy: RoutePolicy{APIID: &apiID},
 	})
@@ -476,8 +476,8 @@ func TestGatewayUsageSummaryAggregatesRecords(t *testing.T) {
 		_, err := gateway.Invoke(context.Background(), InvokeRequest{
 			RequestID: "req-" + nodeID,
 			NodeID:    nodeID,
-			Messages: []LlmMessage{
-				{Role: MessageRoleUser, Content: "hello"},
+			Request: OpenAIResponsesRequest{
+				"input": "hello",
 			},
 		})
 		return err
@@ -505,7 +505,7 @@ func TestGatewayUsageSummaryAggregatesRecords(t *testing.T) {
 	if summary.AttemptCount != 4 || summary.RetryCount != 1 {
 		t.Fatalf("unexpected attempt counts: %+v", summary)
 	}
-	if summary.PromptTokens != 2 || summary.CompletionTokens != 4 || summary.TotalTokens != 6 {
+	if summary.InputTokens != 2 || summary.OutputTokens != 4 || summary.TotalTokens != 6 {
 		t.Fatalf("unexpected usage totals: %+v", summary)
 	}
 	if summary.AvgLatencyMS == nil || summary.MaxLatencyMS == nil {
@@ -535,12 +535,30 @@ func (successProvider) Invoke(ctx context.Context, reservation InvocationReserva
 	completion := 2
 	total := 3
 	return ProviderInvokeResult{
-		OutputText:  &text,
-		RawResponse: map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": text}}}},
+		OutputText: &text,
+		Response: map[string]any{
+			"id":     "resp-" + reservation.APIID,
+			"object": "response",
+			"model":  reservation.Model,
+			"status": "completed",
+			"output": []any{
+				map[string]any{
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []any{
+						map[string]any{
+							"type": "output_text",
+							"text": text,
+						},
+					},
+				},
+			},
+		},
 		Usage: &UsageMetrics{
-			PromptTokens:     &prompt,
-			CompletionTokens: &completion,
-			TotalTokens:      &total,
+			InputTokens:  &prompt,
+			OutputTokens: &completion,
+			TotalTokens:  &total,
 		},
 	}, nil
 }
@@ -607,12 +625,30 @@ func successfulProviderResult(text string) ProviderInvokeResult {
 	completion := 2
 	total := 3
 	return ProviderInvokeResult{
-		OutputText:  &text,
-		RawResponse: map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": text}}}},
+		OutputText: &text,
+		Response: map[string]any{
+			"id":     "resp-test",
+			"object": "response",
+			"model":  "gpt-4.1",
+			"status": "completed",
+			"output": []any{
+				map[string]any{
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []any{
+						map[string]any{
+							"type": "output_text",
+							"text": text,
+						},
+					},
+				},
+			},
+		},
 		Usage: &UsageMetrics{
-			PromptTokens:     &prompt,
-			CompletionTokens: &completion,
-			TotalTokens:      &total,
+			InputTokens:  &prompt,
+			OutputTokens: &completion,
+			TotalTokens:  &total,
 		},
 	}
 }
