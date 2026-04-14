@@ -8,8 +8,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from openmate_pool.models import InvocationStatus, InvocationTiming, InvokeRequest, InvokeResponse
+from openmate_pool.models import (
+    InvocationStatus,
+    InvocationTiming,
+    InvokeRequest,
+    InvokeResponse,
+    OpenAIResponsesResponse,
+)
 from openmate_agent.service import AgentCapabilityService
+from openmate_agent.session_models import AppendSessionEventInput
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
@@ -24,6 +31,70 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         build = self.service.build("node-2")
         result = self.service.execute(build)
         self.assertIn("executed node=node-2", result)
+
+    def test_execute_without_tool_call_still_writes_session_event(self) -> None:
+        session_gateway = _SpySessionGateway()
+        service = AgentCapabilityService(gateway=_FakeGateway(), session_gateway=session_gateway)
+        result = service.execute(service.build("node-no-tool", session_id="session-no-tool"))
+
+        self.assertEqual(result, "executed node=node-no-tool")
+        self.assertEqual(session_gateway.ensure_calls, [("node-no-tool", "session-no-tool")])
+        self.assertEqual(len(session_gateway.events), 1)
+        event = session_gateway.events[0]
+        self.assertEqual(event.item_type, "message")
+        self.assertEqual(event.role.value, "assistant")
+        self.assertEqual(event.next_status.value, "completed")
+        self.assertEqual(event.call_id, None)
+        self.assertEqual(event.payload_json.get("output_text"), "executed node=node-no-tool")
+
+    def test_execute_runs_responses_tool_loop_and_writes_session_events(self) -> None:
+        gateway = _ToolLoopGateway()
+        session_gateway = _SpySessionGateway()
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(
+                gateway=gateway,
+                session_gateway=session_gateway,
+                workspace_root=tmp,
+            )
+            result = service.execute(service.build("node-tool-loop", session_id="session-1"))
+
+        self.assertEqual(result, "tool-loop-finished")
+        self.assertEqual(session_gateway.ensure_calls, [("node-tool-loop", "session-1")])
+        self.assertEqual(len(gateway.requests), 2)
+        first = gateway.requests[0]
+        self.assertIsNotNone(first.request.tools)
+        self.assertEqual(first.request.tool_choice, "auto")
+        self.assertEqual(first.request.parallel_tool_calls, False)
+        second = gateway.requests[1]
+        self.assertEqual(second.request.previous_response_id, "resp-tool-1")
+        self.assertIsInstance(second.request.input, list)
+        self.assertEqual(second.request.input[0]["type"], "function_call_output")
+        self.assertEqual(second.request.input[0]["call_id"], "call-1")
+
+        self.assertEqual(len(session_gateway.events), 3)
+        self.assertEqual(session_gateway.events[0].item_type, "function_call")
+        self.assertEqual(session_gateway.events[0].next_status.value, "waiting")
+        self.assertEqual(session_gateway.events[1].item_type, "function_call_output")
+        self.assertEqual(session_gateway.events[1].next_status.value, "active")
+        self.assertEqual(session_gateway.events[2].item_type, "message")
+        self.assertEqual(session_gateway.events[2].next_status.value, "completed")
+
+    def test_execute_marks_failed_status_when_gateway_raises_after_tool_call(self) -> None:
+        gateway = _ToolLoopThenFailGateway()
+        session_gateway = _SpySessionGateway()
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(
+                gateway=gateway,
+                session_gateway=session_gateway,
+                workspace_root=tmp,
+            )
+            with self.assertRaises(RuntimeError):
+                service.execute(service.build("node-tool-loop-fail", session_id="session-2"))
+
+        self.assertEqual(len(session_gateway.events), 3)
+        self.assertEqual(session_gateway.events[-1].item_type, "function_call_output")
+        self.assertEqual(session_gateway.events[-1].next_status.value, "failed")
+        self.assertEqual(session_gateway.events[-1].payload_json.get("ok"), False)
 
     def test_execute_can_use_go_cli_gateway(self) -> None:
         server, thread = _start_gateway_server()
@@ -405,6 +476,109 @@ def _start_gateway_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+class _SpySessionGateway:
+    def __init__(self) -> None:
+        self.ensure_calls: list[tuple[str, str | None]] = []
+        self.events: list[AppendSessionEventInput] = []
+
+    def ensure_session(self, node_id: str, session_id: str | None = None) -> str:
+        self.ensure_calls.append((node_id, session_id))
+        return session_id or f"session-{node_id}"
+
+    def append_event(self, event: AppendSessionEventInput) -> None:
+        self.events.append(event)
+
+
+class _ToolLoopGateway:
+    def __init__(self) -> None:
+        self.requests: list[InvokeRequest] = []
+
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            payload = {
+                "id": "resp-tool-1",
+                "object": "response",
+                "model": "gpt-4.1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "item-call-1",
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "exec",
+                        "arguments": json.dumps({"command": [sys.executable, "-c", "print('tool-loop-ok')"]}),
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            return InvokeResponse(
+                invocation_id=str(uuid4()),
+                request_id=request.request_id,
+                node_id=request.node_id,
+                status=InvocationStatus.SUCCESS,
+                response=OpenAIResponsesResponse.model_validate(payload),
+                output_text=None,
+                timing=InvocationTiming(),
+            )
+
+        payload = _response_payload_for_text("tool-loop-finished")
+        payload["id"] = "resp-tool-2"
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=OpenAIResponsesResponse.model_validate(payload),
+            output_text="tool-loop-finished",
+            timing=InvocationTiming(),
+        )
+
+
+class _ToolLoopThenFailGateway:
+    def __init__(self) -> None:
+        self.requests: list[InvokeRequest] = []
+
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            payload = {
+                "id": "resp-fail-1",
+                "object": "response",
+                "model": "gpt-4.1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "item-call-fail",
+                        "type": "function_call",
+                        "call_id": "call-fail-1",
+                        "name": "exec",
+                        "arguments": json.dumps({"command": [sys.executable, "-c", "print('tool-fail')"]}),
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            return InvokeResponse(
+                invocation_id=str(uuid4()),
+                request_id=request.request_id,
+                node_id=request.node_id,
+                status=InvocationStatus.SUCCESS,
+                response=OpenAIResponsesResponse.model_validate(payload),
+                output_text=None,
+                timing=InvocationTiming(),
+            )
+        raise RuntimeError("gateway temporary failure")
+
 
 class _FakeGateway:
     def invoke(self, request: InvokeRequest) -> InvokeResponse:

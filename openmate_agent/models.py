@@ -10,6 +10,7 @@ GuardState = Literal["allow", "deny", "confirm"]
 
 class Build(BaseModel):
     node_id: str = Field(min_length=1)
+    session_id: str | None = None
 
 
 class ContextBundle(BaseModel):

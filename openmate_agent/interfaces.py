@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from openmate_pool.models import InvokeRequest, InvokeResponse
 
@@ -12,6 +12,7 @@ from .models import (
     ToolAction,
     ToolBundle,
 )
+from .session_models import AppendSessionEventInput
 
 
 class ContextInjector(Protocol):
@@ -43,3 +44,9 @@ class AgentExecutor(Protocol):
 
 class LlmGateway(Protocol):
     def invoke(self, request: InvokeRequest) -> InvokeResponse: ...
+
+
+class SessionEventGateway(Protocol):
+    def ensure_session(self, node_id: str, session_id: str | None = None) -> str: ...
+
+    def append_event(self, event: AppendSessionEventInput) -> Any: ...
