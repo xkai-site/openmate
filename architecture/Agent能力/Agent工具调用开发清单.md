@@ -5,8 +5,8 @@
 - 读取并遵循共享契约：
   - `architecture/sharedInfo/工具调用-SessionEvent契约.md`
 - 当前 VOS 存储层限制：
-  - `item_type` 仅允许 `function_call`、`function_call_output`
-  - `call_id` 必填
+  - `item_type` 支持 `message`、`function_call`、`function_call_output`（并对 Responses 其他类型做前向兼容）
+  - `call_id` 仅工具事件必填（`function_call`、`function_call_output`）
   - Session 状态仅允许 `active/waiting/completed/failed`
 
 ## 2. Agent 层输入输出约定
@@ -20,6 +20,10 @@
   - `item_type=function_call_output`
   - 同一个 `call_id`
   - `payload_json.output | ok | error`
+- 无工具调用时回写：
+  - `item_type=message`
+  - `role=assistant`
+  - `payload_json.output_text | content`
 
 ## 3. 最小执行循环（必须实现）
 

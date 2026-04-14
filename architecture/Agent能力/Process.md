@@ -207,3 +207,52 @@
    - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
 7. 当前仓库全量单测结果：38 个测试全部通过。
+
+## 2026-04-14
+
+### Pool / VOS 工具调用协议对齐落地
+
+1. `openmate_agent.service.execute()` 已改为 OpenAI Responses 原生循环：
+   - 首轮请求注入 `tools/tool_choice/parallel_tool_calls`
+   - 识别 `response.output[].type=function_call`
+   - 执行本地工具后回传 `function_call_output`
+   - 续调时使用 `previous_response_id`
+2. 已新增 VOS SessionEvent 适配层：
+   - `openmate_agent.session_models`（强类型 Session/SessionEvent 输入输出模型）
+   - `openmate_agent.session_gateway.VosSessionGateway`（CLI + JSON 适配）
+   - `openmate_agent.vos_binary`（`cmd/vos` 二进制构建与定位）
+3. SessionEvent 写入语义已按共享契约执行：
+   - `function_call` 写入 `next_status=waiting`
+   - `function_call_output` 写入 `next_status=active`
+   - 工具链路结束后写 `message` 并补写 `next_status=completed`
+   - 异常路径补写 `next_status=failed`
+   - 新增：即使本轮没有工具调用，只要配置了 VOS 网关，也会确保 Session 存在并写入一条 `message`（assistant 输出）用于对话落盘
+4. 新增单测覆盖：
+   - Responses 多轮工具调用循环
+   - `previous_response_id` 续调
+   - SessionEvent `waiting/active/completed/failed` 状态流转
+5. 已完成验证：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+   - 当前结果：41 个测试全部通过
+
+### 已记录但暂不实现（按当前任务边界）
+
+1. 工具文件副作用治理（写/改/新增文件）仍待补齐：
+   - 操作级审计字段标准化
+   - 回滚策略（失败时自动恢复/半自动恢复）
+   - 高风险写操作确认策略（与 SessionEvent/调度联动）
+
+### 补充（SessionEvent V2 对齐）
+
+1. 已将无工具调用场景从临时 `function_call_output` 迁移为标准 `message` 事件写入。
+2. `call_id` 规则已收敛为“仅工具事件必填”，`message` 不强制 `call_id`。
+3. VOS 存储层已放宽 `item_type` 约束为非空字符串，并补充旧库 `item_type` CHECK 约束自动迁移逻辑。
+4. 回归结果：
+   - Go：`go test ./internal/vos/...` 通过
+   - Python：`unittest discover -s tests -p "test_*.py"`（41 项）通过
+5. 本地部署验证：
+   - 已构建 `.openmate/bin/vos.exe` 新版本
+   - 已在 `.openmate/runtime/` 初始化新 `vos_state.json` 与 `vos_sessions.db`
+   - 已验证 `message` 无 `call_id` 可写入、`function_call` 无 `call_id` 被拒绝
+6. 已补充 Agent 文档中的 VOS 落盘配置说明与运行前置条件

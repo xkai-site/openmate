@@ -1,12 +1,13 @@
-# 工具调用 SessionEvent 契约（V1）
+# SessionEvent 契约（V2）
 
 ## 1. 目标与边界
 
-- 本契约用于 Agent 层与 VOS Session 存储层对齐工具调用事件。
+- 本契约用于 Agent 层与 VOS Session 存储层对齐 Responses 会话事件。
 - VOS 只负责事件存储、顺序回放、按 `call_id` 查询，不负责工具执行。
-- 当前仅允许两类 `item_type`：
-  - `function_call`
-  - `function_call_output`
+- `item_type` 采用 Responses 对齐策略：
+  - 工具相关：`function_call`、`function_call_output`
+  - 非工具输出：`message`（无工具调用时的 assistant 回复）
+  - 其他 Responses 类型按非空字符串前向兼容（如 `reasoning`、`web_search_call` 等）
 
 ## 2. Session 状态约定
 
@@ -21,16 +22,16 @@
 ```json
 {
   "session_id": "string",
-  "item_type": "function_call | function_call_output",
+  "item_type": "string",
   "provider_item_id": "string|null",
   "role": "user|assistant|tool|system|null",
-  "call_id": "string",
+  "call_id": "string|null",
   "payload_json": {},
   "next_status": "active|waiting|completed|failed|null"
 }
 ```
 
-- `call_id` 必填。
+- `call_id` 条件必填：仅 `function_call` 与 `function_call_output` 必填。
 - `payload_json` 必填，且应保留原始业务语义，不做截断。
 
 ## 4. function_call 载荷
@@ -82,22 +83,43 @@
 }
 ```
 
-## 6. 幂等与重试约定
+## 6. message 载荷（无工具调用）
+
+`item_type=message` 时，建议最小结构：
+
+```json
+{
+  "role": "assistant",
+  "output_text": "final answer text",
+  "content": []
+}
+```
+
+- `call_id` 可为空。
+- `role` 建议为 `assistant`。
+- 可附加 `response_id`、原始 `content` 片段用于 UI 回放。
+
+## 7. 幂等与重试约定
 
 - 幂等键建议：`session_id + call_id + item_type`
 - 同一工具调用重试策略：
   - 推荐复用同一个 `call_id`
   - 允许同一 `call_id` 下出现多条 `function_call_output`（保留历史），由上层按最新 `seq` 取最终结果
 
-## 7. 时序约定（最小闭环）
+## 8. 时序约定（最小闭环）
 
+有工具调用：
 1. Agent 产出 `function_call`
 2. VOS 追加事件（可置 `waiting`）
 3. 上层执行工具
 4. 上层写入 `function_call_output`（可置 `active`）
-5. Agent 继续推理或结束（`completed/failed`）
+5. Agent 产出最终 `message`（`completed/failed`）
 
-## 8. 兼容策略
+无工具调用：
+1. Agent 直接产出 `message`
+2. VOS 追加 `message` 并按执行策略设置 `completed/failed`
+
+## 9. 兼容策略
 
 - 不兼容旧 `kind` 字段。
 - 不兼容旧状态值 `open/closed`。
