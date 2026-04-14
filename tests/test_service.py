@@ -1,5 +1,6 @@
 import json
 import shutil
+import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -135,6 +136,47 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertIn("shell-ok", result.output)
 
+    def test_run_tool_exec(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-exec",
+                tool_name="exec",
+                payload={"command": [sys.executable, "-c", "print('exec-ok')"]},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            self.assertIn("exec-ok", result.output)
+            self.assertIn("exit_code:0", result.output)
+
+    def test_run_tool_exec_expect_json_requires_valid_stdout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            ok_result = service.run_tool(
+                node_id="node-exec-json",
+                tool_name="exec",
+                payload={
+                    "command": [sys.executable, "-c", "import json; print(json.dumps({'ok': True}))"],
+                    "expect_json": True,
+                },
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(ok_result.success)
+            self.assertIn('"stdout_json"', ok_result.output)
+            self.assertIn('"ok": true', ok_result.output.lower())
+
+            bad_result = service.run_tool(
+                node_id="node-exec-json-bad",
+                tool_name="exec",
+                payload={"command": [sys.executable, "-c", "print('not-json')"], "expect_json": True},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertFalse(bad_result.success)
+            self.assertIn("stdout is not valid json", bad_result.error or "")
+
     def test_run_tool_requires_confirmation_when_flags_are_default(self) -> None:
         service = AgentCapabilityService()
         result = service.run_tool(
@@ -169,6 +211,114 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             )
             self.assertFalse(write_result.success)
             self.assertIn("modified externally", write_result.error or "")
+
+    def test_run_tool_patch_updates_multiple_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            base = Path(tmp)
+            first = base / "a.txt"
+            second = base / "pkg" / "module.py"
+            first.write_text("alpha\nbeta\n", encoding="utf-8")
+            second.parent.mkdir(parents=True, exist_ok=True)
+            second.write_text("VALUE = 1\n", encoding="utf-8")
+
+            read_first = service.run_tool(
+                node_id="node-patch",
+                tool_name="read",
+                payload={"path": "a.txt"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            read_second = service.run_tool(
+                node_id="node-patch",
+                tool_name="read",
+                payload={"path": "pkg/module.py"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(read_first.success)
+            self.assertTrue(read_second.success)
+
+            patch_result = service.run_tool(
+                node_id="node-patch",
+                tool_name="patch",
+                payload={
+                    "operations": [
+                        {
+                            "type": "replace",
+                            "path": "a.txt",
+                            "old_string": "beta",
+                            "new_string": "gamma",
+                        },
+                        {
+                            "type": "replace",
+                            "path": "pkg/module.py",
+                            "old_string": "VALUE = 1",
+                            "new_string": "VALUE = 2",
+                        },
+                    ]
+                },
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(patch_result.success)
+            self.assertIn("patched:2 files, 2 operations", patch_result.output)
+            self.assertEqual(first.read_text(encoding="utf-8"), "alpha\ngamma\n")
+            self.assertEqual(second.read_text(encoding="utf-8"), "VALUE = 2\n")
+
+    def test_run_tool_patch_is_atomic_when_operation_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            base = Path(tmp)
+            first = base / "a.txt"
+            second = base / "b.txt"
+            first.write_text("one\n", encoding="utf-8")
+            second.write_text("two\n", encoding="utf-8")
+
+            self.assertTrue(
+                service.run_tool(
+                    node_id="node-patch-atomic",
+                    tool_name="read",
+                    payload={"path": "a.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                ).success
+            )
+            self.assertTrue(
+                service.run_tool(
+                    node_id="node-patch-atomic",
+                    tool_name="read",
+                    payload={"path": "b.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                ).success
+            )
+
+            patch_result = service.run_tool(
+                node_id="node-patch-atomic",
+                tool_name="patch",
+                payload={
+                    "operations": [
+                        {
+                            "type": "replace",
+                            "path": "a.txt",
+                            "old_string": "one",
+                            "new_string": "changed",
+                        },
+                        {
+                            "type": "replace",
+                            "path": "b.txt",
+                            "old_string": "missing",
+                            "new_string": "boom",
+                        },
+                    ]
+                },
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertFalse(patch_result.success)
+            self.assertEqual(first.read_text(encoding="utf-8"), "one\n")
+            self.assertEqual(second.read_text(encoding="utf-8"), "two\n")
 
     def test_run_tool_grep_and_glob(self) -> None:
         if shutil.which("rg") is None:

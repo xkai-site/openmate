@@ -38,15 +38,17 @@ class DefaultToolInjector(ToolInjector):
                 ToolSpec(name="read", description="Read data."),
                 ToolSpec(name="write", description="Write data."),
                 ToolSpec(name="edit", description="Patch file content by old/new strings."),
+                ToolSpec(name="patch", description="Apply structured multi-file patch operations."),
                 ToolSpec(name="query", description="Query network resource."),
                 ToolSpec(name="grep", description="Search content with regex via ripgrep."),
                 ToolSpec(name="glob", description="Search files by glob via ripgrep."),
+                ToolSpec(name="exec", description="Run structured command in workspace."),
                 ToolSpec(name="shell", description="Run system shell command."),
             ],
         )
 
     def authorize(self, action: ToolAction) -> GuardDecision:
-        if action.tool_name in {"read", "write", "edit", "query", "grep", "glob", "shell"}:
+        if action.tool_name in {"read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"}:
             return GuardDecision(decision="allow", reason="tool is allowed in MVP")
         return GuardDecision(decision="deny", reason="tool is not supported")
 

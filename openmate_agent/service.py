@@ -12,10 +12,12 @@ from .interfaces import Assembler, ContextInjector, LlmGateway, SkillInjector, T
 from .models import Build, ToolAction, ToolResult
 from .tooling import (
     EditTool,
+    ExecTool,
     FileLockManager,
     FileTimeStore,
     GlobTool,
     GrepTool,
+    PatchTool,
     PermissionGateway,
     QueryTool,
     ReadTool,
@@ -132,9 +134,11 @@ class AgentCapabilityService:
                 ReadTool(),
                 WriteTool(),
                 EditTool(),
+                PatchTool(),
                 QueryTool(),
                 GrepTool(),
                 GlobTool(),
+                ExecTool(),
                 ShellTool(),
             ]
         )

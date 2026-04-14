@@ -168,6 +168,10 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn("OpenMate Agent tool CLI", result.stdout)
         self.assertNotIn("execute", result.stdout)
         self.assertNotIn("priority", result.stdout)
+        tool_help = self._run("tool", "--help")
+        self.assertEqual(tool_help.returncode, 0)
+        self.assertIn("exec", tool_help.stdout)
+        self.assertIn("patch", tool_help.stdout)
 
     def test_tool_write_and_read(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -252,6 +256,101 @@ class AgentCliTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("cli-shell-ok", result.stdout)
+
+    def test_tool_exec(self) -> None:
+        result = self._run(
+            "tool",
+            "exec",
+            "node-32",
+            "--command",
+            json.dumps([sys.executable, "-c", "import json; print(json.dumps({'cli': True}))"]),
+            "--expect-json",
+            "--is-safe",
+            "--is-read-only",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('"success": true', result.stdout)
+        self.assertIn('\\"stdout_json\\"', result.stdout)
+        self.assertIn('\\"cli\\": true', result.stdout.lower())
+
+    def test_tool_exec_invalid_command_json(self) -> None:
+        result = self._run(
+            "tool",
+            "exec",
+            "node-33",
+            "--command",
+            "[not-json",
+            "--is-safe",
+            "--is-read-only",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid json argument", result.stdout.lower())
+
+    def test_tool_patch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+            (base / "b.txt").write_text("one\n", encoding="utf-8")
+
+            self.assertEqual(
+                self._run(
+                    "tool",
+                    "read",
+                    "node-34",
+                    "--path",
+                    "a.txt",
+                    "--is-safe",
+                    "--is-read-only",
+                    cwd=tmp,
+                ).returncode,
+                0,
+            )
+            self.assertEqual(
+                self._run(
+                    "tool",
+                    "read",
+                    "node-34",
+                    "--path",
+                    "b.txt",
+                    "--is-safe",
+                    "--is-read-only",
+                    cwd=tmp,
+                ).returncode,
+                0,
+            )
+
+            result = self._run(
+                "tool",
+                "patch",
+                "node-34",
+                "--operations",
+                json.dumps(
+                    [
+                        {"type": "replace", "path": "a.txt", "old_string": "beta", "new_string": "gamma"},
+                        {"type": "replace", "path": "b.txt", "old_string": "one", "new_string": "two"},
+                    ]
+                ),
+                "--is-safe",
+                "--is-read-only",
+                cwd=tmp,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn('"success": true', result.stdout)
+            self.assertEqual((base / "a.txt").read_text(encoding="utf-8"), "alpha\ngamma\n")
+            self.assertEqual((base / "b.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_tool_patch_invalid_operations_json(self) -> None:
+        result = self._run(
+            "tool",
+            "patch",
+            "node-35",
+            "--operations",
+            "[not-json",
+            "--is-safe",
+            "--is-read-only",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid json argument", result.stdout.lower())
 
     def test_tool_read_without_flags_should_require_confirm(self) -> None:
         result = self._run(

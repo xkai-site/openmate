@@ -52,6 +52,17 @@ def create_parser() -> argparse.ArgumentParser:
         help="Mark this tool call as read-only.",
     )
 
+    tool_patch = tool_subparsers.add_parser("patch", help="Apply structured multi-file patch operations.")
+    tool_patch.add_argument("node_id", help="Node identifier.")
+    tool_patch.add_argument("--operations", required=True, help="JSON array of patch operations.")
+    tool_patch.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_patch.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
     tool_query = tool_subparsers.add_parser("query", help="Query remote HTTP endpoint.")
     tool_query.add_argument("node_id", help="Node identifier.")
     tool_query.add_argument("--url", required=True, help="Request URL.")
@@ -95,6 +106,25 @@ def create_parser() -> argparse.ArgumentParser:
         help="Mark this tool call as read-only.",
     )
 
+    tool_exec = tool_subparsers.add_parser("exec", help="Run structured command without shell string interpolation.")
+    tool_exec.add_argument("node_id", help="Node identifier.")
+    tool_exec.add_argument(
+        "--command",
+        dest="exec_command",
+        required=True,
+        help='JSON array command, e.g. ["python","-m","pytest"].',
+    )
+    tool_exec.add_argument("--cwd", default=None, help="Relative working directory under workspace.")
+    tool_exec.add_argument("--timeout-seconds", type=int, default=30, help="Command timeout in seconds.")
+    tool_exec.add_argument("--expect-json", action="store_true", default=False, help="Parse stdout as JSON.")
+    tool_exec.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_exec.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
     tool_shell = tool_subparsers.add_parser("shell", help="Run shell command.")
     tool_shell.add_argument("node_id", help="Node identifier.")
     tool_shell.add_argument("--cmd", "--command", dest="shell_cmd", required=True, help="Shell command string.")
@@ -129,6 +159,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload["path"] = args.path
             payload["old_string"] = args.old_string
             payload["new_string"] = args.new_string
+        elif args.tool_name == "patch":
+            try:
+                payload["operations"] = json.loads(args.operations)
+            except json.JSONDecodeError as exc:
+                print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
+                return 1
         elif args.tool_name == "query":
             payload["url"] = args.url
             payload["method"] = args.method
@@ -149,6 +185,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload["pattern"] = args.pattern
             payload["scope"] = args.scope
             payload["max_results"] = args.max_results
+        elif args.tool_name == "exec":
+            payload["cwd"] = args.cwd
+            payload["timeout_seconds"] = args.timeout_seconds
+            payload["expect_json"] = args.expect_json
+            try:
+                payload["command"] = json.loads(args.exec_command)
+            except json.JSONDecodeError as exc:
+                print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
+                return 1
         elif args.tool_name == "shell":
             payload["command"] = args.shell_cmd
             payload["cwd"] = args.cwd

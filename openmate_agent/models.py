@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ToolName = Literal["read", "write", "edit", "query", "grep", "glob", "shell"]
+ToolName = Literal["read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"]
 GuardState = Literal["allow", "deny", "confirm"]
 
 

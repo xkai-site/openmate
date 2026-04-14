@@ -158,3 +158,52 @@
    - `.\.venv\Scripts\python.exe -m openmate_agent.cli --help`
    - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
 4. 当前 agent 相关验证结果为 16 个测试全部通过。
+
+## 2026-04-13
+
+### 主干架构同步判断
+
+1. 已读取 `architecture/sharedInfo/架构.md` 与 `architecture/sharedInfo/模块契约.md`。
+2. 当前跨模块总原则已进一步明确为：统一 `CLI + JSON`，不跨模块直接引用内部实现。
+3. 对 Agent 模块的直接影响主要有两点：
+   - `Agent` 技术栈继续保持 `Python + Pydantic`
+   - `schedule -> agent` 的 worker CLI/JSON 契约尚未冻结，当前不能假定已有执行 worker 命令
+
+### 当前优先级判断
+
+1. 其他模块切换 Go 不改变 Agent 的主目标，当前仍应优先提升 agent 表现而不是追随语言迁移。
+2. Agent 近期最值得投入的方向应聚焦：
+   - 上下文注入质量
+   - 工具调用质量与安全策略
+   - skill 注入与选择
+   - 对 Pool 标准化调用结果的消费质量
+   - 可评估、可回归的表现基线
+3. 在 worker 契约冻结前，避免过早把 Agent 能力层绑死到调度执行语义上。
+
+### 增量实现（结构化执行与多文件补丁）
+
+1. 新增结构化命令工具 `exec`：
+   - payload 固定为 `command/cwd/timeout_seconds/expect_json`
+   - `command` 采用 argv 列表而非原始 shell 字符串
+   - 默认值与现有 `shell` 保持统一：`cwd=None`、`timeout_seconds=30`
+   - `expect_json=true` 时会校验 stdout 是否为合法 JSON
+2. 新增结构化补丁工具 `patch`：
+   - payload 为 `operations` JSON 列表
+   - 首版支持两类操作：`replace`、`write`
+   - 复用现有 `edit` 匹配策略与 `write` diff/诊断逻辑
+   - 在同一次 patch 内支持多文件、多处修改
+3. `exec/patch` 已与现有工具体系保持统一：
+   - 已纳入 `ToolName / ToolRegistry / PermissionGateway / DefaultToolInjector`
+   - 已纳入 `tool` CLI 子命令
+   - 继续复用 `is_safe / is_read_only` 标记位与 `ToolResult` 返回风格
+4. `shell` 保持兼容，未删除；默认工具注入顺序已将结构化工具优先暴露。
+5. 已补充测试覆盖：
+   - `exec` 成功执行
+   - `exec` 的 `expect_json` 成功/失败路径
+   - `patch` 多文件成功路径
+   - `patch` 任一操作失败时不落地
+   - CLI 的 `tool exec`、`tool patch` 与非法 JSON 参数
+6. 已完成验证：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli.AgentCliTests -v`
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+7. 当前仓库全量单测结果：38 个测试全部通过。
