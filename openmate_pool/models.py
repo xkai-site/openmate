@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -25,28 +25,41 @@ class InvocationStatus(str, Enum):
     FAILURE = "failure"
 
 
-class MessageRole(str, Enum):
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-    TOOL = "tool"
-
-
-class ResponseMode(str, Enum):
-    TEXT = "text"
-
-
-class LlmMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    role: MessageRole
-    content: str = Field(min_length=1)
-
-
 class RoutePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     api_id: str | None = None
+
+
+class OpenAIResponsesRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    input: Any
+    instructions: str | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
+    previous_response_id: str | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    metadata: dict[str, Any] | None = None
+    user: str | None = None
+    store: bool | None = None
+    stream: bool | None = None
+    service_tier: str | None = None
+    reasoning: dict[str, Any] | None = None
+    text: dict[str, Any] | None = None
+    truncation: str | None = None
+
+    @model_validator(mode="after")
+    def validate_reserved_fields(self) -> "OpenAIResponsesRequest":
+        extras = self.model_extra or {}
+        if "model" in extras:
+            raise ValueError("request.model must not be set; model comes from model.json")
+        if self.stream is True:
+            raise ValueError("request.stream is not supported yet")
+        return self
 
 
 class InvokeRequest(BaseModel):
@@ -54,23 +67,47 @@ class InvokeRequest(BaseModel):
 
     request_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
-    messages: list[LlmMessage] = Field(min_length=1)
-    response_mode: ResponseMode = ResponseMode.TEXT
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    max_output_tokens: int | None = Field(default=None, ge=1)
+    request: OpenAIResponsesRequest
     timeout_ms: int | None = Field(default=None, ge=1)
     route_policy: RoutePolicy = Field(default_factory=RoutePolicy)
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class UsageMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    prompt_tokens: int | None = Field(default=None, ge=0)
-    completion_tokens: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
     latency_ms: int | None = Field(default=None, ge=0)
     cost_usd: float | None = Field(default=None, ge=0.0)
+
+
+class OpenAIResponseUsage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    input_tokens: int | None = Field(default=None, ge=0)
+    input_tokens_details: dict[str, Any] | None = None
+    output_tokens: int | None = Field(default=None, ge=0)
+    output_tokens_details: dict[str, Any] | None = None
+    total_tokens: int | None = Field(default=None, ge=0)
+
+
+class OpenAIResponsesResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str | None = None
+    object: str | None = None
+    model: str | None = None
+    status: str | None = None
+    output: list[dict[str, Any]] | None = None
+    usage: OpenAIResponseUsage | None = None
+    error: dict[str, Any] | None = None
+    incomplete_details: dict[str, Any] | None = None
+    previous_response_id: str | None = None
+    service_tier: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class RouteDecision(BaseModel):
@@ -118,8 +155,8 @@ class InvokeResponse(BaseModel):
     node_id: str = Field(min_length=1)
     status: InvocationStatus
     route: RouteDecision | None = None
+    response: OpenAIResponsesResponse | None = None
     output_text: str | None = None
-    raw_response: dict[str, Any] | None = None
     usage: UsageMetrics | None = None
     timing: InvocationTiming
     error: GatewayError | None = None
@@ -132,8 +169,8 @@ class InvocationRecord(BaseModel):
     request: InvokeRequest
     status: InvocationStatus
     route: RouteDecision | None = None
+    response: OpenAIResponsesResponse | None = None
     output_text: str | None = None
-    raw_response: dict[str, Any] | None = None
     usage: UsageMetrics | None = None
     timing: InvocationTiming
     error: GatewayError | None = None
@@ -150,9 +187,11 @@ class UsageSummary(BaseModel):
     failure_count: int = Field(ge=0)
     attempt_count: int = Field(ge=0)
     retry_count: int = Field(ge=0)
-    prompt_tokens: int = Field(ge=0)
-    completion_tokens: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
+    cached_input_tokens: int = Field(ge=0)
+    reasoning_tokens: int = Field(ge=0)
     total_cost_usd: float | None = Field(default=None, ge=0.0)
     avg_latency_ms: int | None = Field(default=None, ge=0)
     max_latency_ms: int | None = Field(default=None, ge=0)
