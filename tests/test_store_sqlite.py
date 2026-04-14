@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from openmate_pool.errors import NoCapacityError
-from openmate_pool.models import InvokeRequest, LlmMessage
+from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
 from openmate_pool.pool import PoolGateway
 
 
@@ -55,7 +55,7 @@ class SqliteConcurrencyTestCase(unittest.TestCase):
                 request = InvokeRequest(
                     request_id=f"req-{idx}",
                     node_id=f"node-{idx}",
-                    messages=[LlmMessage(role="user", content=f"hello-{idx}")],
+                    request=OpenAIResponsesRequest(input=f"hello-{idx}"),
                     timeout_ms=3_000,
                 )
                 try:
@@ -79,28 +79,13 @@ class _GatewayHandler(BaseHTTPRequestHandler):
     delay_seconds = 0.0
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/chat/completions":
+        if self.path != "/v1/responses":
             self.send_error(404)
             return
         time.sleep(self.delay_seconds)
         body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
         payload = json.loads(body)
-        messages = payload.get("messages", [])
-        last_content = ""
-        if messages and isinstance(messages, list) and isinstance(messages[-1], dict):
-            last_content = str(messages[-1].get("content", ""))
-        response = json.dumps(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": f"echo:{last_content}",
-                        }
-                    }
-                ]
-            }
-        ).encode("utf-8")
+        response = json.dumps(_response_payload_for_text(f"echo:{_extract_input_text(payload.get('input'))}")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response)))
@@ -121,6 +106,48 @@ def _start_gateway_server(*, delay_seconds: float) -> tuple[ThreadingHTTPServer,
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+def _response_payload_for_text(text: str) -> dict[str, object]:
+    return {
+        "id": "resp-store",
+        "object": "response",
+        "model": "gpt-4.1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _extract_input_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for content_item in content:
+                if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                    parts.append(str(content_item.get("text", "")))
+        return "".join(parts)
+    return ""
 
 
 if __name__ == "__main__":

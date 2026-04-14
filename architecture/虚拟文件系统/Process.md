@@ -82,3 +82,65 @@
    - `skills/git-collaboration-guide/agents/openai.yaml`
    - `skills/git-collaboration-guide/references/worktree-merge-playbook.md`
    - `skills/git-collaboration-guide/references/go-structure-rules.md`
+
+## 2026-04-13 master 对齐补齐
+
+1. 对齐最新 `master` 后的 Go VFS 契约，补齐 Topic 侧 `update/delete`，让当前 CLI 与共享文档中的 Topic CRUD 基线一致。
+2. 为 `node list` 补齐面向调度的叶子节点查询能力，新增：
+   - `--leaf-only`
+   - `--status`
+   - `--exclude-status`
+3. 为 `node update` 补齐运行态原子更新约束，新增 `--expected-version`，基于 `Node.version` 做乐观并发校验。
+4. 在 Go 服务层补齐 `memory` 的“子写父读”聚合流程：当子节点 `memory` 发生变化时，把子节点快照写入父节点 `memory._child_memory_cache`；纯结构变化（如 move/delete）不自动重算父节点记忆。
+5. 新增/补齐 Go 测试覆盖：
+   - Topic update/delete
+   - 叶子节点过滤查询
+   - 版本冲突拒绝
+   - 父节点 memory 聚合
+   - 结构变更不触发 memory 重算
+6. 验证结果：
+   - `go test ./internal/vos/...` 通过
+   - `go test ./...` 通过
+   - `go run ./cmd/vos --help` 正常输出
+7. 测试与构建继续使用仓库内缓存：
+   - `GOCACHE=D:\XuKai\Project\vos\.openmate\go-build-cache`
+   - `GOMODCACHE=D:\XuKai\Project\vos\.openmate\go-mod-cache`
+
+## 2026-04-13 Session SQLite 落地
+
+1. 已为 VFS 新增独立 Session 存储层，不再把会话正文塞进 `.vos_state.json`。
+2. 当前 Session 数据模型冻结为：
+   - `Session(id, node_id, status, created_at, updated_at, last_seq)`
+   - `SessionEvent(id, session_id, seq, kind, role, call_id, payload_json, created_at)`
+3. 当前 Session 持久化采用独立 SQLite 文件 `.vos_sessions.db`，并复用仓库现有 `github.com/mattn/go-sqlite3`。
+4. `Node.session` 继续只保存 `session_id` 引用；创建 Session 时会同步把 `session_id` 挂到对应 Node 上。
+5. 当前 CLI 已补：
+   - `session create`
+   - `session get`
+   - `session append-event`
+   - `session events`
+6. 当前 `SessionEvent.kind` 第一版冻结为：
+   - `user_message`
+   - `assistant_message`
+   - `tool_call`
+   - `tool_result`
+   - `status`
+   - `error`
+7. 当前实现默认不持久化 token 级流式 `delta`，只持久化稳定事件；若后续确实需要精细回放，再评估新增事件类型。
+8. 验证结果：
+   - `go test ./internal/vos/...` 通过
+   - `go test ./...` 通过
+   - `go run ./cmd/vos --help` 正常输出
+
+## 后续查询方向
+
+1. 按 `node_id` 列出该 Node 下的 Session 摘要。
+2. 按 `session_id` 分页读取 `SessionEvent`，支持 `after_seq` 增量获取。
+3. 评估是否需要给 Session 增加轻量热路径摘要字段，而不是每次都依赖事件流回放。
+4. 评估是否需要把超大 `payload_json` 拆成外部 artifact 引用。
+## 2026-04-14 工具调用 SessionEvent 契约补充
+
+1. 已在 sharedInfo 新增《工具调用-SessionEvent契约》文档，明确 Agent 层接入 VOS Session 的字段与时序约定。
+2. 契约明确当前 `item_type` 仅支持 `function_call` 与 `function_call_output`，并要求 `call_id` 必填。
+3. 契约同步明确幂等建议（`session_id + call_id + item_type`）与失败载荷结构，避免上层实现分歧。
+4. 兼容策略已收口：不再接受旧 `kind` 与 `open/closed`，旧 schema 需手工迁移或重建库。

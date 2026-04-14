@@ -27,8 +27,8 @@ func TestGatewayInvokeWithRealProvider(t *testing.T) {
 	response, err := gateway.Invoke(context.Background(), InvokeRequest{
 		RequestID: "integration-req",
 		NodeID:    "integration-node",
-		Messages: []LlmMessage{
-			{Role: MessageRoleUser, Content: "reply with the single word pong"},
+		Request: OpenAIResponsesRequest{
+			"input": "reply with the single word pong",
 		},
 		TimeoutMS: intValue(30_000),
 	})

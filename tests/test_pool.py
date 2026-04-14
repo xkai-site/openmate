@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from openmate_pool.errors import InvocationFailedError, NoCapacityError
-from openmate_pool.models import InvokeRequest, LlmMessage, RoutePolicy
+from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest, RoutePolicy
 from openmate_pool.pool import PoolGateway
 
 
@@ -53,7 +53,7 @@ class PoolGatewayTestCase(unittest.TestCase):
         return InvokeRequest(
             request_id=f"req-{node_id}",
             node_id=node_id,
-            messages=[LlmMessage(role="user", content=f"hello from {node_id}")],
+            request=OpenAIResponsesRequest(input=f"hello from {node_id}"),
             route_policy=RoutePolicy(api_id=api_id),
         )
 
@@ -378,8 +378,8 @@ class PoolGatewayTestCase(unittest.TestCase):
             self.assertEqual(summary.failure_count, 1)
             self.assertEqual(summary.attempt_count, 4)
             self.assertEqual(summary.retry_count, 1)
-            self.assertEqual(summary.prompt_tokens, 4)
-            self.assertEqual(summary.completion_tokens, 6)
+            self.assertEqual(summary.input_tokens, 4)
+            self.assertEqual(summary.output_tokens, 6)
             self.assertEqual(summary.total_tokens, 10)
             self.assertIsNotNone(summary.avg_latency_ms)
             self.assertIsNotNone(summary.max_latency_ms)
@@ -395,7 +395,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
     fail = False
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/chat/completions":
+        if self.path != "/v1/responses":
             self.send_error(404)
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
@@ -409,28 +409,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             self.wfile.write(response)
             return
 
-        messages = payload.get("messages", [])
-        last_content = ""
-        if messages and isinstance(messages, list) and isinstance(messages[-1], dict):
-            last_content = str(messages[-1].get("content", ""))
-
-        response = json.dumps(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": f"echo:{last_content}",
-                        }
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 3,
-                    "total_tokens": 5,
-                },
-            }
-        ).encode("utf-8")
+        response = json.dumps(_response_payload_for_text(f"echo:{_extract_input_text(payload.get('input'))}")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response)))
@@ -446,7 +425,7 @@ class _PlannedGatewayHandler(BaseHTTPRequestHandler):
     response_lock = threading.Lock()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/chat/completions":
+        if self.path != "/v1/responses":
             self.send_error(404)
             return
         _ = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -472,7 +451,8 @@ class _PlannedGatewayHandler(BaseHTTPRequestHandler):
         content_type = str(current.get("content_type", "application/json"))
         raw_body = current.get("raw_body")
         if raw_body is None:
-            raw_body = json.dumps(current.get("body", {})).encode("utf-8")
+            body = _normalize_response_body(current.get("body", _response_payload_for_text("default-ok")))
+            raw_body = json.dumps(body).encode("utf-8")
         else:
             raw_body = bytes(raw_body)
 
@@ -513,6 +493,83 @@ def _start_gateway_server_plan(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+def _response_payload_for_text(
+    text: str,
+    *,
+    input_tokens: int = 2,
+    output_tokens: int = 3,
+    total_tokens: int = 5,
+    cached_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
+) -> dict[str, Any]:
+    return {
+        "id": "resp-test",
+        "object": "response",
+        "model": "gpt-4.1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                    }
+                ],
+            }
+        ],
+        "usage": {
+            "input_tokens": input_tokens,
+            "input_tokens_details": {
+                "cached_tokens": cached_input_tokens,
+            },
+            "output_tokens": output_tokens,
+            "output_tokens_details": {
+                "reasoning_tokens": reasoning_tokens,
+            },
+            "total_tokens": total_tokens,
+        },
+    }
+
+
+def _normalize_response_body(body: dict[str, Any]) -> dict[str, Any]:
+    if "output" in body or "error" in body:
+        return body
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message", {}) if isinstance(first, dict) else {}
+        text = str(message.get("content", ""))
+        usage = body.get("usage", {}) if isinstance(body.get("usage"), dict) else {}
+        return _response_payload_for_text(
+            text,
+            input_tokens=int(usage.get("prompt_tokens", 2)),
+            output_tokens=int(usage.get("completion_tokens", 3)),
+            total_tokens=int(usage.get("total_tokens", 5)),
+        )
+    return body
+
+
+def _extract_input_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                content = item.get("content", [])
+                if isinstance(content, list):
+                    for content_item in content:
+                        if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                            parts.append(str(content_item.get("text", "")))
+        return "".join(parts)
+    return ""
 
 
 if __name__ == "__main__":

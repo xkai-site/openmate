@@ -1,0 +1,57 @@
+package domain
+
+import "time"
+
+type SessionStatus string
+
+const (
+	SessionStatusActive    SessionStatus = "active"
+	SessionStatusWaiting   SessionStatus = "waiting"
+	SessionStatusCompleted SessionStatus = "completed"
+	SessionStatusFailed    SessionStatus = "failed"
+)
+
+type SessionRole string
+
+const (
+	SessionRoleUser      SessionRole = "user"
+	SessionRoleAssistant SessionRole = "assistant"
+	SessionRoleTool      SessionRole = "tool"
+	SessionRoleSystem    SessionRole = "system"
+)
+
+type Session struct {
+	ID        string        `json:"id"`
+	NodeID    string        `json:"node_id"`
+	Status    SessionStatus `json:"status"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	LastSeq   int           `json:"last_seq"`
+}
+
+type SessionEvent struct {
+	ID             string         `json:"id"`
+	SessionID      string         `json:"session_id"`
+	Seq            int            `json:"seq"`
+	ItemType       string         `json:"item_type"`
+	ProviderItemID *string        `json:"provider_item_id,omitempty"`
+	Role           *SessionRole   `json:"role,omitempty"`
+	CallID         *string        `json:"call_id,omitempty"`
+	PayloadJSON    map[string]any `json:"payload_json"`
+	CreatedAt      time.Time      `json:"created_at"`
+}
+
+func (session *Session) Normalize() {
+	if session.Status == "" {
+		session.Status = SessionStatusActive
+	}
+	if session.LastSeq < 0 {
+		session.LastSeq = 0
+	}
+}
+
+func (event *SessionEvent) Normalize() {
+	if event.PayloadJSON == nil {
+		event.PayloadJSON = map[string]any{}
+	}
+}

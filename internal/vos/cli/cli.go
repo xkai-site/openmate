@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"vos/internal/vos/domain"
@@ -28,13 +29,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root := flag.NewFlagSet("vos", flag.ContinueOnError)
 	root.SetOutput(stderr)
 	stateFile := root.String("state-file", ".vos_state.json", "JSON state file path")
+	sessionDBFile := root.String("session-db-file", ".vos_sessions.db", "SQLite session database path")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")
-		fmt.Fprintln(root.Output(), "  vos [--state-file PATH] <topic|node> <command> [flags]")
+		fmt.Fprintln(root.Output(), "  vos [--state-file PATH] [--session-db-file PATH] <topic|node|session> <command> [flags]")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Commands:")
 		fmt.Fprintln(root.Output(), "  topic   Topic operations")
 		fmt.Fprintln(root.Output(), "  node    Node operations")
+		fmt.Fprintln(root.Output(), "  session Session operations")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Global flags:")
 		root.PrintDefaults()
@@ -53,12 +56,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	svc := service.New(store.NewJSONStateStore(*stateFile))
 	switch rest[0] {
 	case "topic":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
 		return runTopic(svc, rest[1:], stdout, stderr)
 	case "node":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
 		return runNode(svc, rest[1:], stdout, stderr)
+	case "session":
+		sessionStore, err := store.NewSQLiteSessionStore(*sessionDBFile)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		defer sessionStore.Close()
+		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
+		return runSession(svc, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown resource: %s\n", rest[0])
 		root.Usage()
@@ -82,6 +94,10 @@ func runTopic(svc *service.Service, args []string, stdout, stderr io.Writer) int
 		return runTopicGet(svc, args[1:], stdout, stderr)
 	case "list":
 		return runTopicList(svc, args[1:], stdout, stderr)
+	case "update":
+		return runTopicUpdate(svc, args[1:], stdout, stderr)
+	case "delete":
+		return runTopicDelete(svc, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown topic command: %s\n", args[0])
 		printTopicUsage(stderr)
@@ -211,6 +227,80 @@ func runTopicList(svc *service.Service, args []string, stdout, stderr io.Writer)
 	return dumpJSON(topics, stdout, stderr)
 }
 
+func runTopicUpdate(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("vos topic update", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		topicID          = fs.String("topic-id", "", "Topic ID")
+		name             = fs.String("name", "", "Updated topic name")
+		description      = fs.String("description", "", "Updated topic description")
+		clearDescription = fs.Bool("clear-description", false, "Clear topic description")
+		metadataJSON     = fs.String("metadata-json", "", "Replace topic metadata with JSON object")
+		tagsJSON         = fs.String("tags-json", "", "Replace topic tags with JSON string array")
+	)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage:")
+		fmt.Fprintln(fs.Output(), "  vos topic update --topic-id ID [flags]")
+		fmt.Fprintln(fs.Output())
+		fs.PrintDefaults()
+	}
+	if code := parseFlagSet(fs, args); code >= 0 {
+		return code
+	}
+
+	input := service.UpdateTopicInput{
+		TopicID:          *topicID,
+		Description:      nilIfEmpty(*description),
+		ClearDescription: *clearDescription,
+	}
+	if *name != "" {
+		input.Name = stringPtr(*name)
+	}
+	if *metadataJSON != "" {
+		metadata, err := parseJSONObject(*metadataJSON, "metadata-json")
+		if err != nil {
+			return printError(err, stderr)
+		}
+		input.Metadata = metadata
+		input.ReplaceMetadata = true
+	}
+	if *tagsJSON != "" {
+		tags, err := parseJSONStringList(*tagsJSON, "tags-json")
+		if err != nil {
+			return printError(err, stderr)
+		}
+		input.Tags = tags
+		input.ReplaceTags = true
+	}
+
+	topic, err := svc.UpdateTopic(input)
+	if err != nil {
+		return printError(err, stderr)
+	}
+	return dumpJSON(topic, stdout, stderr)
+}
+
+func runTopicDelete(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("vos topic delete", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	topicID := fs.String("topic-id", "", "Topic ID")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage:")
+		fmt.Fprintln(fs.Output(), "  vos topic delete --topic-id ID")
+		fmt.Fprintln(fs.Output())
+		fs.PrintDefaults()
+	}
+	if code := parseFlagSet(fs, args); code >= 0 {
+		return code
+	}
+
+	result, err := svc.DeleteTopic(*topicID)
+	if err != nil {
+		return printError(err, stderr)
+	}
+	return dumpJSON(result, stdout, stderr)
+}
+
 func runNodeCreate(svc *service.Service, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("vos node create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -297,10 +387,17 @@ func runNodeGet(svc *service.Service, args []string, stdout, stderr io.Writer) i
 func runNodeList(svc *service.Service, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("vos node list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	topicID := fs.String("topic-id", "", "Topic ID")
+	var includeStatuses multiString
+	var excludeStatuses multiString
+	var (
+		topicID  = fs.String("topic-id", "", "Topic ID")
+		leafOnly = fs.Bool("leaf-only", false, "List only leaf nodes")
+	)
+	fs.Var(&includeStatuses, "status", "Filter to a node status. Repeatable.")
+	fs.Var(&excludeStatuses, "exclude-status", "Exclude a node status. Repeatable.")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage:")
-		fmt.Fprintln(fs.Output(), "  vos node list --topic-id ID")
+		fmt.Fprintln(fs.Output(), "  vos node list --topic-id ID [flags]")
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
 	}
@@ -308,7 +405,20 @@ func runNodeList(svc *service.Service, args []string, stdout, stderr io.Writer) 
 		return code
 	}
 
-	nodes, err := svc.ListNodes(*topicID)
+	statuses, err := parseNodeStatuses(includeStatuses, "status")
+	if err != nil {
+		return printError(err, stderr)
+	}
+	excluded, err := parseNodeStatuses(excludeStatuses, "exclude-status")
+	if err != nil {
+		return printError(err, stderr)
+	}
+
+	nodes, err := svc.ListNodesByFilter(*topicID, service.NodeListFilter{
+		LeafOnly:        *leafOnly,
+		Statuses:        statuses,
+		ExcludeStatuses: excluded,
+	})
 	if err != nil {
 		return printError(err, stderr)
 	}
@@ -385,12 +495,15 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 	var sessionIDs multiString
 	var progress multiString
 	var (
-		nodeID      = fs.String("node-id", "", "Node ID")
-		description = fs.String("description", "", "Node description")
-		statusRaw   = fs.String("status", "", "Updated node status")
-		memoryJSON  = fs.String("memory-json", "", "Node memory JSON object")
-		inputJSON   = fs.String("input-json", "", "Node input JSON object")
-		outputJSON  = fs.String("output-json", "", "Node output JSON object")
+		nodeID           = fs.String("node-id", "", "Node ID")
+		expectedVersion  = fs.String("expected-version", "", "Require current node version to match before update")
+		name             = fs.String("name", "", "Updated node name")
+		description      = fs.String("description", "", "Updated node description")
+		clearDescription = fs.Bool("clear-description", false, "Clear node description")
+		statusRaw        = fs.String("status", "", "Updated node status")
+		memoryJSON       = fs.String("memory-json", "", "Node memory JSON object")
+		inputJSON        = fs.String("input-json", "", "Node input JSON object")
+		outputJSON       = fs.String("output-json", "", "Node output JSON object")
 	)
 	fs.Var(&sessionIDs, "session-id", "Append one session ID. Repeatable.")
 	fs.Var(&progress, "progress", "Append one progress entry. Repeatable.")
@@ -402,6 +515,15 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 	}
 	if code := parseFlagSet(fs, args); code >= 0 {
 		return code
+	}
+
+	var versionPtr *int
+	if *expectedVersion != "" {
+		parsed, err := strconv.Atoi(*expectedVersion)
+		if err != nil {
+			return printError(domain.ValidationError{Message: "expected-version must be an integer"}, stderr)
+		}
+		versionPtr = &parsed
 	}
 
 	var status *domain.NodeStatus
@@ -425,16 +547,23 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 		return printError(err, stderr)
 	}
 
-	node, err := svc.UpdateNode(service.UpdateNodeInput{
-		NodeID:      *nodeID,
-		Description: nilIfEmpty(*description),
-		Status:      status,
-		Memory:      memory,
-		Input:       input,
-		Output:      output,
-		SessionIDs:  []string(sessionIDs),
-		Progress:    []string(progress),
-	})
+	update := service.UpdateNodeInput{
+		NodeID:           *nodeID,
+		ExpectedVersion:  versionPtr,
+		Description:      nilIfEmpty(*description),
+		ClearDescription: *clearDescription,
+		Status:           status,
+		Memory:           memory,
+		Input:            input,
+		Output:           output,
+		SessionIDs:       []string(sessionIDs),
+		Progress:         []string(progress),
+	}
+	if *name != "" {
+		update.Name = stringPtr(*name)
+	}
+
+	node, err := svc.UpdateNode(update)
 	if err != nil {
 		return printError(err, stderr)
 	}
@@ -464,7 +593,7 @@ func runNodeLeaf(svc *service.Service, args []string, stdout, stderr io.Writer) 
 
 func printTopicUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
-	fmt.Fprintln(writer, "  vos topic <create|get|list> [flags]")
+	fmt.Fprintln(writer, "  vos topic <create|get|list|update|delete> [flags]")
 }
 
 func printNodeUsage(writer io.Writer) {
@@ -530,6 +659,21 @@ func parseJSONStringList(raw, field string) ([]string, error) {
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func parseNodeStatuses(values []string, field string) ([]domain.NodeStatus, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	statuses := make([]domain.NodeStatus, 0, len(values))
+	for _, value := range values {
+		status, err := domain.ParseNodeStatus(value)
+		if err != nil {
+			return nil, domain.ValidationError{Message: fmt.Sprintf("invalid %s value %q: %s", field, value, err.Error())}
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 func printError(err error, stderr io.Writer) int {

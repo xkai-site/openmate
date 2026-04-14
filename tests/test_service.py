@@ -383,32 +383,13 @@ def _start_test_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
 
 class _GatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/chat/completions":
+        if self.path != "/v1/responses":
             self.send_error(404)
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
         payload = json.loads(body)
-        messages = payload.get("messages", [])
-        text = ""
-        if messages and isinstance(messages, list) and isinstance(messages[-1], dict):
-            text = str(messages[-1].get("content", ""))
-        response = json.dumps(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": f"echo:{text}",
-                        }
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 3,
-                    "total_tokens": 5,
-                },
-            }
-        ).encode("utf-8")
+        text = _extract_input_text(payload.get("input"))
+        response = json.dumps(_response_payload_for_text(f"echo:{text}")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response)))
@@ -432,9 +413,63 @@ class _FakeGateway:
             request_id=request.request_id,
             node_id=request.node_id,
             status=InvocationStatus.SUCCESS,
+            response=None,
             output_text=f"executed node={request.node_id}",
             timing=InvocationTiming(),
         )
+
+
+def _response_payload_for_text(text: str) -> dict[str, object]:
+    return {
+        "id": "resp-service",
+        "object": "response",
+        "model": "gpt-4.1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                    }
+                ],
+            }
+        ],
+        "usage": {
+            "input_tokens": 2,
+            "input_tokens_details": {
+                "cached_tokens": 0,
+            },
+            "output_tokens": 3,
+            "output_tokens_details": {
+                "reasoning_tokens": 0,
+            },
+            "total_tokens": 5,
+        },
+    }
+
+
+def _extract_input_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for content_item in content:
+                if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                    parts.append(str(content_item.get("text", "")))
+        return "".join(parts)
+    return ""
 
 
 if __name__ == "__main__":

@@ -48,6 +48,9 @@ func (gateway *Gateway) Invoke(ctx context.Context, request InvokeRequest) (Invo
 		return InvokeResponse{}, err
 	}
 	request = normalizeRequest(request)
+	if err := validateInvokeRequest(request); err != nil {
+		return InvokeResponse{}, err
+	}
 	reservation, err := gateway.store.ReserveInvocation(ctx, config, request)
 	if err != nil {
 		return InvokeResponse{}, err
@@ -100,12 +103,12 @@ func (gateway *Gateway) invokeReserved(
 
 		finishedAt := utcNow()
 		latencyMS := int(finishedAt.Sub(currentReservation.StartedAt).Milliseconds())
-		usage := withLatency(providerResult.Usage, latencyMS)
+		usage := finalizeUsage(providerResult.Usage, latencyMS, currentReservation.Pricing)
 		return gateway.store.CompleteInvocationSuccess(
 			ctx,
 			currentReservation,
 			providerResult.OutputText,
-			providerResult.RawResponse,
+			providerResult.Response,
 			usage,
 			finishedAt,
 		)
@@ -165,32 +168,8 @@ func (gateway *Gateway) Usage(ctx context.Context, nodeID *string, limit *int) (
 	return summarizeUsage(records, nodeID, limit), nil
 }
 
-func withLatency(usage *UsageMetrics, latencyMS int) *UsageMetrics {
-	if usage == nil {
-		return &UsageMetrics{
-			LatencyMS: &latencyMS,
-		}
-	}
-	result := *usage
-	result.LatencyMS = &latencyMS
-	return &result
-}
-
 func utcNow() time.Time {
 	return time.Now().UTC()
-}
-
-func normalizeRequest(request InvokeRequest) InvokeRequest {
-	if request.ResponseMode == "" {
-		request.ResponseMode = ResponseModeText
-	}
-	if request.Metadata == nil {
-		request.Metadata = map[string]any{}
-	}
-	if request.Messages == nil {
-		request.Messages = []LlmMessage{}
-	}
-	return request
 }
 
 func (gateway *Gateway) finishInternalFailure(
