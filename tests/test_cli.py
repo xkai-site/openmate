@@ -349,6 +349,39 @@ class AgentCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("invalid json argument", result.stdout.lower())
 
+    def test_worker_run_priority_mode(self) -> None:
+        request = {
+            "request_id": "req-priority-1",
+            "topic_id": "topic-1",
+            "node_id": "priority-node-1",
+            "node_name": "__priority__",
+            "node_kind": "priority",
+            "agent_spec": {"mode": "priority"},
+            "session_id": "session-1",
+            "event_id": "event-1",
+            "timeout_ms": 120000,
+            "priority_candidates": [
+                {
+                    "node_id": "node-a",
+                    "name": "Node A",
+                    "status": "ready",
+                    "current_priority": {"label": "normal", "rank": 3},
+                    "entered_priority_at": "2026-04-14T09:00:00Z",
+                },
+                {
+                    "node_id": "node-b",
+                    "name": "Node B",
+                    "status": "blocked",
+                    "current_priority": {"label": "normal", "rank": 1},
+                    "entered_priority_at": "2026-04-14T08:00:00Z",
+                },
+            ],
+        }
+        result = self._run("worker", "run", "--request-json", json.dumps(request))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn('"status": "succeeded"', result.stdout)
+        self.assertIn('"priority_plan"', result.stdout)
+
     def test_tool_read_without_flags_should_require_confirm(self) -> None:
         result = self._run(
             "tool",
