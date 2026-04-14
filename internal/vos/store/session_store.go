@@ -334,6 +334,9 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 	if err := ensureNoLegacySessionSchema(ctx, conn); err != nil {
 		return err
 	}
+	if err := migrateSessionEventsItemTypeConstraint(ctx, conn); err != nil {
+		return err
+	}
 
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS sessions (
@@ -348,7 +351,7 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 		   id TEXT PRIMARY KEY,
 		   session_id TEXT NOT NULL,
 		   seq INTEGER NOT NULL CHECK (seq > 0),
-		   item_type TEXT NOT NULL CHECK (item_type IN ('function_call', 'function_call_output')),
+		   item_type TEXT NOT NULL CHECK (length(trim(item_type)) > 0),
 		   provider_item_id TEXT,
 		   role TEXT CHECK (role IN ('user', 'assistant', 'tool', 'system')),
 		   call_id TEXT,
@@ -428,21 +431,84 @@ func ensureNoLegacySessionSchema(ctx context.Context, conn *sql.Conn) error {
 		return domain.ValidationError{Message: "legacy session status values open/closed are not supported; please migrate data in .vos_sessions.db"}
 	}
 
-	var hasUnsupportedItemTypeRows bool
+	var hasInvalidItemTypeRows bool
 	row = conn.QueryRowContext(
 		ctx,
 		`SELECT EXISTS(
 			SELECT 1
 			  FROM session_events
-			 WHERE item_type NOT IN ('function_call', 'function_call_output')
+			 WHERE item_type IS NULL OR length(trim(item_type)) = 0
 		)`,
 	)
-	if err := row.Scan(&hasUnsupportedItemTypeRows); err != nil {
+	if err := row.Scan(&hasInvalidItemTypeRows); err != nil {
 		return err
 	}
-	if hasUnsupportedItemTypeRows {
-		return domain.ValidationError{Message: "session_events contains unsupported item_type values; only function_call/function_call_output are allowed"}
+	if hasInvalidItemTypeRows {
+		return domain.ValidationError{Message: "session_events contains invalid item_type values; item_type must be a non-empty string"}
 	}
+	return nil
+}
+
+func migrateSessionEventsItemTypeConstraint(ctx context.Context, conn *sql.Conn) error {
+	eventTableExists, err := tableExists(ctx, conn, "session_events")
+	if err != nil {
+		return err
+	}
+	if !eventTableExists {
+		return nil
+	}
+
+	tableSQL, err := tableDefinitionSQL(ctx, conn, "session_events")
+	if err != nil {
+		return err
+	}
+	normalized := strings.ReplaceAll(strings.ToLower(tableSQL), " ", "")
+	legacyConstraint := "item_typein('function_call','function_call_output')"
+	if !strings.Contains(normalized, legacyConstraint) {
+		return nil
+	}
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+
+	statements := []string{
+		`CREATE TABLE session_events_new (
+		   id TEXT PRIMARY KEY,
+		   session_id TEXT NOT NULL,
+		   seq INTEGER NOT NULL CHECK (seq > 0),
+		   item_type TEXT NOT NULL CHECK (length(trim(item_type)) > 0),
+		   provider_item_id TEXT,
+		   role TEXT CHECK (role IN ('user', 'assistant', 'tool', 'system')),
+		   call_id TEXT,
+		   payload_json TEXT NOT NULL,
+		   created_at TEXT NOT NULL,
+		   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+		   UNIQUE (session_id, seq)
+		 )`,
+		`INSERT INTO session_events_new (id, session_id, seq, item_type, provider_item_id, role, call_id, payload_json, created_at)
+		 SELECT id, session_id, seq, item_type, provider_item_id, role, call_id, payload_json, created_at
+		   FROM session_events`,
+		`DROP TABLE session_events`,
+		`ALTER TABLE session_events_new RENAME TO session_events`,
+	}
+
+	for _, statement := range statements {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 

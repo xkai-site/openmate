@@ -126,7 +126,7 @@ func (service *Service) AppendSessionEvent(input AppendSessionEventInput) (*doma
 			return nil, err
 		}
 	}
-	if input.CallID == nil {
+	if domain.IsToolSessionItemType(input.ItemType) && input.CallID == nil {
 		return nil, domain.ValidationError{Message: "call ID is required for tool events"}
 	}
 

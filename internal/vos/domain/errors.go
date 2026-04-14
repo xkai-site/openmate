@@ -152,12 +152,10 @@ func ParseSessionStatus(raw string) (SessionStatus, error) {
 
 func ParseSessionItemType(raw string) (string, error) {
 	switch raw {
-	case "function_call", "function_call_output":
-		return raw, nil
 	case "":
 		return "", ValidationError{Message: "session event item_type is required"}
 	default:
-		return "", ValidationError{Message: fmt.Sprintf("invalid session event item_type: %s", raw)}
+		return raw, nil
 	}
 }
 

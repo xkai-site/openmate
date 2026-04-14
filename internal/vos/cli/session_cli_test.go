@@ -61,6 +61,17 @@ func TestSessionCLIFlow(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
+	code = cli.Run(
+		append(base, "session", "append-event", "--session-id", "session-1", "--item-type", "message", "--payload-json", `{"role":"assistant","text":"done"}`),
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("session append-event message code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
 	code = cli.Run(append(base, "session", "events", "--session-id", "session-1"), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("session events code = %d, want 0, stderr=%q", code, stderr.String())
@@ -70,17 +81,20 @@ func TestSessionCLIFlow(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &events); err != nil {
 		t.Fatalf("json.Unmarshal(events) error = %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("len(events) = %d, want 2", len(events))
+	if len(events) != 3 {
+		t.Fatalf("len(events) = %d, want 3", len(events))
 	}
-	if events[0].Seq != 1 || events[1].Seq != 2 {
-		t.Fatalf("event seqs = [%d %d], want [1 2]", events[0].Seq, events[1].Seq)
+	if events[0].Seq != 1 || events[1].Seq != 2 || events[2].Seq != 3 {
+		t.Fatalf("event seqs = [%d %d %d], want [1 2 3]", events[0].Seq, events[1].Seq, events[2].Seq)
 	}
 	if events[0].CallID == nil || *events[0].CallID != "call-0" {
 		t.Fatalf("events[0].CallID = %v, want call-0", events[0].CallID)
 	}
 	if events[1].CallID == nil || *events[1].CallID != "call-1" {
 		t.Fatalf("events[1].CallID = %v, want call-1", events[1].CallID)
+	}
+	if events[2].CallID != nil {
+		t.Fatalf("events[2].CallID = %v, want nil", events[2].CallID)
 	}
 }
 

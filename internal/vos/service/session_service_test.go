@@ -228,7 +228,7 @@ func TestAppendSessionEventUpdatesStatusOnlyViaNextStatus(t *testing.T) {
 	}
 }
 
-func TestAppendSessionEventRejectsUnsupportedItemType(t *testing.T) {
+func TestAppendSessionEventAcceptsMessageWithoutCallID(t *testing.T) {
 	svc := newTestServiceWithSessions(t)
 
 	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
@@ -244,14 +244,19 @@ func TestAppendSessionEventRejectsUnsupportedItemType(t *testing.T) {
 		t.Fatalf("CreateSession() error = %v", err)
 	}
 
-	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
+	event, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
 		SessionID: session.ID,
 		ItemType:  "message",
 		PayloadJSON: map[string]any{
-			"text": "not allowed",
+			"role": "assistant",
+			"text": "hello",
 		},
-	}); err == nil {
-		t.Fatalf("AppendSessionEvent() error = nil, want unsupported item type validation")
+	})
+	if err != nil {
+		t.Fatalf("AppendSessionEvent(message) error = %v", err)
+	}
+	if event.CallID != nil {
+		t.Fatalf("CallID = %v, want nil", event.CallID)
 	}
 }
 

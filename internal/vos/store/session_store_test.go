@@ -76,6 +76,20 @@ func TestSQLiteSessionStoreCreateGetAndAppendEvent(t *testing.T) {
 	if events[0].PayloadJSON["name"] != "read_file" {
 		t.Fatalf("PayloadJSON = %v, want name=read_file", events[0].PayloadJSON)
 	}
+
+	messageEvent := &domain.SessionEvent{
+		ID:        "event-2",
+		SessionID: session.ID,
+		ItemType:  "message",
+		PayloadJSON: map[string]any{
+			"role": "assistant",
+			"text": "done",
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := sessionStore.AppendEvent(messageEvent, nil); err != nil {
+		t.Fatalf("AppendEvent(message) error = %v", err)
+	}
 }
 
 func TestSQLiteSessionStoreAppendEventRejectsWrongSeq(t *testing.T) {
@@ -232,6 +246,77 @@ func TestSQLiteSessionStoreRejectsLegacySchema(t *testing.T) {
 	if err == nil {
 		_ = sessionStore.Close()
 		t.Fatalf("NewSQLiteSessionStore() error = nil, want legacy schema rejection")
+	}
+}
+
+func TestSQLiteSessionStoreMigratesLegacyItemTypeConstraint(t *testing.T) {
+	dbPath := t.TempDir() + "/sessions.db"
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("PRAGMA foreign_keys error = %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (
+		   id TEXT PRIMARY KEY,
+		   node_id TEXT NOT NULL,
+		   status TEXT NOT NULL CHECK (status IN ('active', 'waiting', 'completed', 'failed')),
+		   created_at TEXT NOT NULL,
+		   updated_at TEXT NOT NULL,
+		   last_seq INTEGER NOT NULL CHECK (last_seq >= 0)
+		)
+	`); err != nil {
+		t.Fatalf("create sessions error = %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE session_events (
+		   id TEXT PRIMARY KEY,
+		   session_id TEXT NOT NULL,
+		   seq INTEGER NOT NULL CHECK (seq > 0),
+		   item_type TEXT NOT NULL CHECK (item_type IN ('function_call', 'function_call_output')),
+		   provider_item_id TEXT,
+		   role TEXT CHECK (role IN ('user', 'assistant', 'tool', 'system')),
+		   call_id TEXT,
+		   payload_json TEXT NOT NULL,
+		   created_at TEXT NOT NULL,
+		   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+		   UNIQUE (session_id, seq)
+		)
+	`); err != nil {
+		t.Fatalf("create session_events error = %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sessions (id, node_id, status, created_at, updated_at, last_seq)
+		VALUES ('session-1', 'node-1', 'active', '2026-04-14T00:00:00Z', '2026-04-14T00:00:00Z', 0)
+	`); err != nil {
+		t.Fatalf("insert session error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error = %v", err)
+	}
+
+	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sessionStore.Close()
+	})
+
+	messageEvent := &domain.SessionEvent{
+		ID:        "event-message",
+		SessionID: "session-1",
+		ItemType:  "message",
+		PayloadJSON: map[string]any{
+			"role": "assistant",
+			"text": "hello",
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := sessionStore.AppendEvent(messageEvent, nil); err != nil {
+		t.Fatalf("AppendEvent(message) after migration error = %v", err)
 	}
 }
 

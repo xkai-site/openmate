@@ -20,6 +20,21 @@ const (
 	SessionRoleSystem    SessionRole = "system"
 )
 
+const (
+	SessionItemTypeMessage            = "message"
+	SessionItemTypeFunctionCall       = "function_call"
+	SessionItemTypeFunctionCallOutput = "function_call_output"
+	SessionItemTypeReasoning          = "reasoning"
+	SessionItemTypeWebSearchCall      = "web_search_call"
+	SessionItemTypeFileSearchCall     = "file_search_call"
+	SessionItemTypeComputerCall       = "computer_call"
+	SessionItemTypeMCPCall            = "mcp_call"
+	SessionItemTypeMCPListTools       = "mcp_list_tools"
+	SessionItemTypeMCPApprovalRequest = "mcp_approval_request"
+	SessionItemTypeImageGeneration    = "image_generation_call"
+	SessionItemTypeCodeInterpreter    = "code_interpreter_call"
+)
+
 type Session struct {
 	ID        string        `json:"id"`
 	NodeID    string        `json:"node_id"`
@@ -54,4 +69,8 @@ func (event *SessionEvent) Normalize() {
 	if event.PayloadJSON == nil {
 		event.PayloadJSON = map[string]any{}
 	}
+}
+
+func IsToolSessionItemType(itemType string) bool {
+	return itemType == SessionItemTypeFunctionCall || itemType == SessionItemTypeFunctionCallOutput
 }
