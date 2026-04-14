@@ -256,3 +256,13 @@
    - 已在 `.openmate/runtime/` 初始化新 `vos_state.json` 与 `vos_sessions.db`
    - 已验证 `message` 无 `call_id` 可写入、`function_call` 无 `call_id` 被拒绝
 6. 已补充 Agent 文档中的 VOS 落盘配置说明与运行前置条件
+
+### 文档收敛（2026-04-14）
+
+1. 已将工具调用开发清单并入 `architecture/Agent能力/Agent能力.md`（统一主文档）。
+2. 已删除冗余文档：
+   - `architecture/Agent能力/Agent工具调用开发清单.md`
+   - `architecture/Agent能力/Process-2026-04-14-工具调用清单.md`
+3. 当前 `Agent能力` 文档区保留：
+   - `Agent能力.md`（规范主文档）
+   - `Process.md`（过程记录）

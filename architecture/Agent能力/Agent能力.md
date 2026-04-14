@@ -151,3 +151,42 @@ service = AgentCapabilityService(
    - 无工具调用：直接 `message`
 3. `function_call / function_call_output` 要求 `call_id`，`message` 不要求 `call_id`。
 4. `session create` 依赖 `node_id` 已存在于 VOS state（需先有 topic/node 基础数据）。
+
+## 10. 工具调用与 SessionEvent 规范（合并版）
+
+### 10.1 对齐基线
+
+1. 共享契约以 `architecture/sharedInfo/工具调用-SessionEvent契约.md` 为准。
+2. 当前事件类型按 Responses 语义收敛：
+   - `message`
+   - `function_call`
+   - `function_call_output`
+3. `call_id` 仅工具事件必填（`function_call`、`function_call_output`）。
+
+### 10.2 执行闭环
+
+实现形态：可类比 AOP 的横切埋点，但当前采用“编排层显式写事件”而非框架自动织入。
+
+1. 模型输出含 `function_call` 时：
+   - 先写 `function_call`（`next_status=waiting`）
+   - 执行工具并写 `function_call_output`（`next_status=active`）
+   - 继续以 `previous_response_id` 推理
+2. 模型无工具调用时：
+   - 直接写 `message`（assistant）
+   - 默认推进 `next_status=completed`
+3. 执行异常时：
+   - 工具链路内异常写失败事件并 `failed`
+   - 无工具链路异常写 system message 错误事件并 `failed`
+
+### 10.3 幂等与恢复
+
+1. 幂等键建议：`session_id + call_id + item_type`（工具事件）。
+2. 同一 `call_id` 可保留多条 `function_call_output` 历史，按最新 `seq` 取最终状态。
+3. Agent 重启恢复时应优先按 `session_id` 回放事件，避免重复执行工具。
+
+### 10.4 验收标准
+
+1. 有工具场景可完整回放：`function_call -> function_call_output -> message`。
+2. 无工具场景可回放：`message`（assistant）。
+3. 失败场景可回放到 `failed` 且携带可追溯错误结构。
+4. VOS 能按 `session_id` 顺序查询，按 `call_id` 查询工具链路。
