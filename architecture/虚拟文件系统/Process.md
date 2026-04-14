@@ -138,3 +138,9 @@
 2. 按 `session_id` 分页读取 `SessionEvent`，支持 `after_seq` 增量获取。
 3. 评估是否需要给 Session 增加轻量热路径摘要字段，而不是每次都依赖事件流回放。
 4. 评估是否需要把超大 `payload_json` 拆成外部 artifact 引用。
+## 2026-04-14 工具调用 SessionEvent 契约补充
+
+1. 已在 sharedInfo 新增《工具调用-SessionEvent契约》文档，明确 Agent 层接入 VOS Session 的字段与时序约定。
+2. 契约明确当前 `item_type` 仅支持 `function_call` 与 `function_call_output`，并要求 `call_id` 必填。
+3. 契约同步明确幂等建议（`session_id + call_id + item_type`）与失败载荷结构，避免上层实现分歧。
+4. 兼容策略已收口：不再接受旧 `kind` 与 `open/closed`，旧 schema 需手工迁移或重建库。

@@ -143,24 +143,21 @@ func ParseNodeStatus(raw string) (NodeStatus, error) {
 
 func ParseSessionStatus(raw string) (SessionStatus, error) {
 	switch SessionStatus(raw) {
-	case SessionStatusOpen, SessionStatusClosed, SessionStatusFailed:
+	case SessionStatusActive, SessionStatusWaiting, SessionStatusCompleted, SessionStatusFailed:
 		return SessionStatus(raw), nil
 	default:
 		return "", ValidationError{Message: fmt.Sprintf("invalid session status: %s", raw)}
 	}
 }
 
-func ParseSessionEventKind(raw string) (SessionEventKind, error) {
-	switch SessionEventKind(raw) {
-	case SessionEventKindUserMessage,
-		SessionEventKindAssistantMessage,
-		SessionEventKindToolCall,
-		SessionEventKindToolResult,
-		SessionEventKindStatus,
-		SessionEventKindError:
-		return SessionEventKind(raw), nil
+func ParseSessionItemType(raw string) (string, error) {
+	switch raw {
+	case "function_call", "function_call_output":
+		return raw, nil
+	case "":
+		return "", ValidationError{Message: "session event item_type is required"}
 	default:
-		return "", ValidationError{Message: fmt.Sprintf("invalid session event kind: %s", raw)}
+		return "", ValidationError{Message: fmt.Sprintf("invalid session event item_type: %s", raw)}
 	}
 }
 

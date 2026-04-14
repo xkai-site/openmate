@@ -14,11 +14,13 @@ type CreateSessionInput struct {
 }
 
 type AppendSessionEventInput struct {
-	SessionID   string
-	Kind        domain.SessionEventKind
-	Role        *domain.SessionRole
-	CallID      *string
-	PayloadJSON map[string]any
+	SessionID      string
+	ItemType       string
+	ProviderItemID *string
+	Role           *domain.SessionRole
+	CallID         *string
+	PayloadJSON    map[string]any
+	NextStatus     *domain.SessionStatus
 }
 
 func (service *Service) CreateSession(input CreateSessionInput) (*domain.Session, error) {
@@ -29,7 +31,7 @@ func (service *Service) CreateSession(input CreateSessionInput) (*domain.Session
 		return nil, domain.ValidationError{Message: "node ID is required"}
 	}
 	if input.Status == "" {
-		input.Status = domain.SessionStatusOpen
+		input.Status = domain.SessionStatusActive
 	}
 	if _, err := domain.ParseSessionStatus(string(input.Status)); err != nil {
 		return nil, err
@@ -111,7 +113,7 @@ func (service *Service) AppendSessionEvent(input AppendSessionEventInput) (*doma
 	if input.SessionID == "" {
 		return nil, domain.ValidationError{Message: "session ID is required"}
 	}
-	if _, err := domain.ParseSessionEventKind(string(input.Kind)); err != nil {
+	if _, err := domain.ParseSessionItemType(input.ItemType); err != nil {
 		return nil, err
 	}
 	if input.Role != nil {
@@ -119,32 +121,39 @@ func (service *Service) AppendSessionEvent(input AppendSessionEventInput) (*doma
 			return nil, err
 		}
 	}
-	if (input.Kind == domain.SessionEventKindToolCall || input.Kind == domain.SessionEventKindToolResult) && input.CallID == nil {
+	if input.NextStatus != nil {
+		if _, err := domain.ParseSessionStatus(string(*input.NextStatus)); err != nil {
+			return nil, err
+		}
+	}
+	if input.CallID == nil {
 		return nil, domain.ValidationError{Message: "call ID is required for tool events"}
 	}
 
 	role := input.Role
 	if role == nil {
-		defaultRole := defaultRoleForSessionEvent(input.Kind)
-		role = &defaultRole
+		inferredRole, ok, err := inferSessionRole(input.PayloadJSON)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			role = &inferredRole
+		}
 	}
 
 	event := &domain.SessionEvent{
-		ID:          domain.NewID(),
-		SessionID:   input.SessionID,
-		Kind:        input.Kind,
-		Role:        role,
-		CallID:      cloneStringPtr(input.CallID),
-		PayloadJSON: cloneMap(input.PayloadJSON),
-		CreatedAt:   time.Now().UTC(),
+		ID:             domain.NewID(),
+		SessionID:      input.SessionID,
+		ItemType:       input.ItemType,
+		ProviderItemID: cloneStringPtr(input.ProviderItemID),
+		Role:           role,
+		CallID:         cloneStringPtr(input.CallID),
+		PayloadJSON:    cloneMap(input.PayloadJSON),
+		CreatedAt:      time.Now().UTC(),
 	}
 	event.Normalize()
 
-	nextStatus, err := resolveSessionStatusTransition(input.Kind, event.PayloadJSON)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := service.sessionStore.AppendEvent(event, nextStatus); err != nil {
+	if _, err := service.sessionStore.AppendEvent(event, input.NextStatus); err != nil {
 		return nil, err
 	}
 	return cloneSessionEvent(event), nil
@@ -166,45 +175,39 @@ func (service *Service) ListSessionEvents(sessionID string, afterSeq, limit int)
 	return service.sessionStore.ListEvents(sessionID, afterSeq, limit)
 }
 
-func defaultRoleForSessionEvent(kind domain.SessionEventKind) domain.SessionRole {
-	switch kind {
-	case domain.SessionEventKindUserMessage:
-		return domain.SessionRoleUser
-	case domain.SessionEventKindAssistantMessage, domain.SessionEventKindToolCall:
-		return domain.SessionRoleAssistant
-	case domain.SessionEventKindToolResult:
-		return domain.SessionRoleTool
-	default:
-		return domain.SessionRoleSystem
+func (service *Service) ListSessionEventsByCallID(sessionID, callID string, limit int) ([]*domain.SessionEvent, error) {
+	if service.sessionStore == nil {
+		return nil, fmt.Errorf("session store is not configured")
 	}
+	if sessionID == "" {
+		return nil, domain.ValidationError{Message: "session ID is required"}
+	}
+	if callID == "" {
+		return nil, domain.ValidationError{Message: "call ID is required"}
+	}
+	if limit < 0 {
+		return nil, domain.ValidationError{Message: "limit must be a non-negative integer"}
+	}
+	return service.sessionStore.ListEventsByCallID(sessionID, callID, limit)
 }
 
-func resolveSessionStatusTransition(kind domain.SessionEventKind, payload map[string]any) (*domain.SessionStatus, error) {
-	switch kind {
-	case domain.SessionEventKindError:
-		status := domain.SessionStatusFailed
-		return &status, nil
-	case domain.SessionEventKindStatus:
-		if payload == nil {
-			return nil, domain.ValidationError{Message: "status event requires payload_json.status or payload_json.to"}
-		}
-		for _, key := range []string{"status", "to"} {
-			if raw, exists := payload[key]; exists {
-				text, ok := raw.(string)
-				if !ok {
-					return nil, domain.ValidationError{Message: fmt.Sprintf("status event field %s must be a string", key)}
-				}
-				status, err := domain.ParseSessionStatus(text)
-				if err != nil {
-					return nil, err
-				}
-				return &status, nil
-			}
-		}
-		return nil, domain.ValidationError{Message: "status event requires payload_json.status or payload_json.to"}
-	default:
-		return nil, nil
+func inferSessionRole(payload map[string]any) (domain.SessionRole, bool, error) {
+	if payload == nil {
+		return "", false, nil
 	}
+	raw, exists := payload["role"]
+	if !exists {
+		return "", false, nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", false, domain.ValidationError{Message: "payload_json.role must be a string"}
+	}
+	role, err := domain.ParseSessionRole(text)
+	if err != nil {
+		return "", false, err
+	}
+	return role, true, nil
 }
 
 func cloneSession(session *domain.Session) *domain.Session {
@@ -220,6 +223,7 @@ func cloneSessionEvent(event *domain.SessionEvent) *domain.SessionEvent {
 		return nil
 	}
 	cloned := *event
+	cloned.ProviderItemID = cloneStringPtr(event.ProviderItemID)
 	cloned.Role = cloneSessionRolePtr(event.Role)
 	cloned.CallID = cloneStringPtr(event.CallID)
 	cloned.PayloadJSON = cloneMap(event.PayloadJSON)

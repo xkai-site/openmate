@@ -41,6 +41,9 @@ func TestCreateSessionAppendsNodeReference(t *testing.T) {
 	if session.NodeID != node.ID {
 		t.Fatalf("NodeID = %s, want %s", session.NodeID, node.ID)
 	}
+	if session.Status != domain.SessionStatusActive {
+		t.Fatalf("Status = %s, want active", session.Status)
+	}
 	if session.LastSeq != 0 {
 		t.Fatalf("LastSeq = %d, want 0", session.LastSeq)
 	}
@@ -72,9 +75,11 @@ func TestAppendSessionEventStoresOrderedEvents(t *testing.T) {
 
 	userEvent, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
 		SessionID: session.ID,
-		Kind:      domain.SessionEventKindUserMessage,
+		ItemType:  "function_call",
+		CallID:    stringPtr("call-0"),
 		PayloadJSON: map[string]any{
-			"text": "hello",
+			"role": "user",
+			"name": "prepare",
 		},
 	})
 	if err != nil {
@@ -90,20 +95,17 @@ func TestAppendSessionEventStoresOrderedEvents(t *testing.T) {
 	callID := "call-1"
 	toolCall, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
 		SessionID: session.ID,
-		Kind:      domain.SessionEventKindToolCall,
+		ItemType:  "function_call_output",
 		CallID:    &callID,
 		PayloadJSON: map[string]any{
-			"tool_name": "read",
+			"output": "ok",
 		},
 	})
 	if err != nil {
-		t.Fatalf("AppendSessionEvent(tool_call) error = %v", err)
+		t.Fatalf("AppendSessionEvent(function_call) error = %v", err)
 	}
 	if toolCall.Seq != 2 {
 		t.Fatalf("tool call seq = %d, want 2", toolCall.Seq)
-	}
-	if toolCall.Role == nil || *toolCall.Role != domain.SessionRoleAssistant {
-		t.Fatalf("tool call role = %v, want assistant", toolCall.Role)
 	}
 
 	events, err := svc.ListSessionEvents(session.ID, 1, 10)
@@ -141,7 +143,7 @@ func TestAppendSessionEventRequiresCallIDForToolEvents(t *testing.T) {
 
 	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
 		SessionID: session.ID,
-		Kind:      domain.SessionEventKindToolResult,
+		ItemType:  "function_call_output",
 		PayloadJSON: map[string]any{
 			"success": true,
 		},
@@ -150,7 +152,83 @@ func TestAppendSessionEventRequiresCallIDForToolEvents(t *testing.T) {
 	}
 }
 
-func TestStatusAndErrorEventsUpdateSessionStatus(t *testing.T) {
+func TestAppendSessionEventUpdatesStatusOnlyViaNextStatus(t *testing.T) {
+	svc := newTestServiceWithSessions(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-1", Name: "Node One"})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	session, err := svc.CreateSession(service.CreateSessionInput{NodeID: node.ID})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	waiting := domain.SessionStatusWaiting
+	callID := "call-1"
+	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
+		SessionID: session.ID,
+		ItemType:  "function_call",
+		CallID:    &callID,
+		PayloadJSON: map[string]any{
+			"name": "read",
+		},
+		NextStatus: &waiting,
+	}); err != nil {
+		t.Fatalf("AppendSessionEvent(waiting) error = %v", err)
+	}
+	stored, err := svc.GetSession(session.ID)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if stored.Status != domain.SessionStatusWaiting {
+		t.Fatalf("Status = %s, want waiting", stored.Status)
+	}
+
+	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
+		SessionID: session.ID,
+		ItemType:  "function_call_output",
+		CallID:    &callID,
+		PayloadJSON: map[string]any{
+			"output": "done",
+		},
+	}); err != nil {
+		t.Fatalf("AppendSessionEvent(function_call_output) error = %v", err)
+	}
+	stored, err = svc.GetSession(session.ID)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if stored.Status != domain.SessionStatusWaiting {
+		t.Fatalf("Status = %s, want waiting unchanged", stored.Status)
+	}
+
+	completed := domain.SessionStatusCompleted
+	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
+		SessionID: session.ID,
+		ItemType:  "function_call",
+		CallID:    stringPtr("call-2"),
+		PayloadJSON: map[string]any{
+			"name": "finalize",
+		},
+		NextStatus: &completed,
+	}); err != nil {
+		t.Fatalf("AppendSessionEvent(completed) error = %v", err)
+	}
+	stored, err = svc.GetSession(session.ID)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if stored.Status != domain.SessionStatusCompleted {
+		t.Fatalf("Status = %s, want completed", stored.Status)
+	}
+}
+
+func TestAppendSessionEventRejectsUnsupportedItemType(t *testing.T) {
 	svc := newTestServiceWithSessions(t)
 
 	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
@@ -168,35 +246,61 @@ func TestStatusAndErrorEventsUpdateSessionStatus(t *testing.T) {
 
 	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
 		SessionID: session.ID,
-		Kind:      domain.SessionEventKindStatus,
+		ItemType:  "message",
 		PayloadJSON: map[string]any{
-			"to": "closed",
+			"text": "not allowed",
 		},
-	}); err != nil {
-		t.Fatalf("AppendSessionEvent(status) error = %v", err)
+	}); err == nil {
+		t.Fatalf("AppendSessionEvent() error = nil, want unsupported item type validation")
 	}
-	stored, err := svc.GetSession(session.ID)
+}
+
+func TestListSessionEventsByCallID(t *testing.T) {
+	svc := newTestServiceWithSessions(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
 	if err != nil {
-		t.Fatalf("GetSession() error = %v", err)
+		t.Fatalf("CreateTopic() error = %v", err)
 	}
-	if stored.Status != domain.SessionStatusClosed {
-		t.Fatalf("Status = %s, want closed", stored.Status)
+	node, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-1", Name: "Node One"})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	session, err := svc.CreateSession(service.CreateSessionInput{NodeID: node.ID})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
 	}
 
+	callID := "call-42"
 	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
 		SessionID: session.ID,
-		Kind:      domain.SessionEventKindError,
+		ItemType:  "function_call",
+		CallID:    &callID,
 		PayloadJSON: map[string]any{
-			"message": "tool failed",
+			"name": "read_file",
 		},
 	}); err != nil {
-		t.Fatalf("AppendSessionEvent(error) error = %v", err)
+		t.Fatalf("AppendSessionEvent(function_call) error = %v", err)
 	}
-	stored, err = svc.GetSession(session.ID)
+	if _, err := svc.AppendSessionEvent(service.AppendSessionEventInput{
+		SessionID: session.ID,
+		ItemType:  "function_call_output",
+		CallID:    &callID,
+		PayloadJSON: map[string]any{
+			"output": "ok",
+		},
+	}); err != nil {
+		t.Fatalf("AppendSessionEvent(function_call_output) error = %v", err)
+	}
+
+	events, err := svc.ListSessionEventsByCallID(session.ID, callID, 10)
 	if err != nil {
-		t.Fatalf("GetSession() error = %v", err)
+		t.Fatalf("ListSessionEventsByCallID() error = %v", err)
 	}
-	if stored.Status != domain.SessionStatusFailed {
-		t.Fatalf("Status = %s, want failed", stored.Status)
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+	if events[0].ItemType != "function_call" || events[1].ItemType != "function_call_output" {
+		t.Fatalf("item types = [%s %s], want [function_call function_call_output]", events[0].ItemType, events[1].ItemType)
 	}
 }

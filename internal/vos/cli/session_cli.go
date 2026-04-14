@@ -40,7 +40,7 @@ func runSessionCreate(svc *service.Service, args []string, stdout, stderr io.Wri
 	var (
 		nodeID    = fs.String("node-id", "", "Node ID")
 		sessionID = fs.String("session-id", "", "Optional session ID")
-		statusRaw = fs.String("status", string(domain.SessionStatusOpen), "Initial session status")
+		statusRaw = fs.String("status", string(domain.SessionStatusActive), "Initial session status")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage:")
@@ -92,15 +92,17 @@ func runSessionAppendEvent(svc *service.Service, args []string, stdout, stderr i
 	fs := flag.NewFlagSet("vos session append-event", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		sessionID   = fs.String("session-id", "", "Session ID")
-		kindRaw     = fs.String("kind", "", "Session event kind")
-		roleRaw     = fs.String("role", "", "Optional session event role")
-		callID      = fs.String("call-id", "", "Optional tool call correlation ID")
-		payloadJSON = fs.String("payload-json", "{}", "Session event payload JSON object")
+		sessionID      = fs.String("session-id", "", "Session ID")
+		itemType       = fs.String("item-type", "", "Session event item type (OpenAI item.type)")
+		providerItemID = fs.String("provider-item-id", "", "Optional provider item ID")
+		roleRaw        = fs.String("role", "", "Optional session event role")
+		callID         = fs.String("call-id", "", "Optional tool call correlation ID")
+		nextStatusRaw  = fs.String("next-status", "", "Optional next session status")
+		payloadJSON    = fs.String("payload-json", "{}", "Session event payload JSON object")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage:")
-		fmt.Fprintln(fs.Output(), "  vos session append-event --session-id ID --kind KIND [flags]")
+		fmt.Fprintln(fs.Output(), "  vos session append-event --session-id ID --item-type TYPE [flags]")
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
 	}
@@ -108,7 +110,7 @@ func runSessionAppendEvent(svc *service.Service, args []string, stdout, stderr i
 		return code
 	}
 
-	kind, err := domain.ParseSessionEventKind(*kindRaw)
+	parsedItemType, err := domain.ParseSessionItemType(*itemType)
 	if err != nil {
 		return printError(err, stderr)
 	}
@@ -124,12 +126,24 @@ func runSessionAppendEvent(svc *service.Service, args []string, stdout, stderr i
 	if err != nil {
 		return printError(err, stderr)
 	}
+	var nextStatus *domain.SessionStatus
+	if *nextStatusRaw != "" {
+		parsedStatus, err := domain.ParseSessionStatus(*nextStatusRaw)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		nextStatus = &parsedStatus
+	}
 
 	input := service.AppendSessionEventInput{
 		SessionID:   *sessionID,
-		Kind:        kind,
+		ItemType:    parsedItemType,
 		Role:        role,
 		PayloadJSON: payload,
+		NextStatus:  nextStatus,
+	}
+	if *providerItemID != "" {
+		input.ProviderItemID = stringPtr(*providerItemID)
 	}
 	if *callID != "" {
 		input.CallID = stringPtr(*callID)

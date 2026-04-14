@@ -23,6 +23,7 @@ type SessionStore interface {
 	GetSession(sessionID string) (*domain.Session, error)
 	AppendEvent(event *domain.SessionEvent, nextStatus *domain.SessionStatus) (*domain.Session, error)
 	ListEvents(sessionID string, afterSeq int, limit int) ([]*domain.SessionEvent, error)
+	ListEventsByCallID(sessionID, callID string, limit int) ([]*domain.SessionEvent, error)
 }
 
 type SQLiteSessionStore struct {
@@ -177,6 +178,10 @@ func (store *SQLiteSessionStore) AppendEvent(event *domain.SessionEvent, nextSta
 			return fmt.Errorf("append session event: %w", err)
 		}
 
+		var providerItemID any
+		if event.ProviderItemID != nil {
+			providerItemID = *event.ProviderItemID
+		}
 		var role any
 		if event.Role != nil {
 			role = string(*event.Role)
@@ -188,12 +193,13 @@ func (store *SQLiteSessionStore) AppendEvent(event *domain.SessionEvent, nextSta
 
 		if _, err := conn.ExecContext(
 			context.Background(),
-			`INSERT INTO session_events (id, session_id, seq, kind, role, call_id, payload_json, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO session_events (id, session_id, seq, item_type, provider_item_id, role, call_id, payload_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			event.ID,
 			event.SessionID,
 			event.Seq,
-			string(event.Kind),
+			event.ItemType,
+			providerItemID,
 			role,
 			callID,
 			string(payload),
@@ -244,7 +250,7 @@ func (store *SQLiteSessionStore) ListEvents(sessionID string, afterSeq int, limi
 
 	rows, err := store.db.QueryContext(
 		ctx,
-		`SELECT id, session_id, seq, kind, role, call_id, payload_json, created_at
+		`SELECT id, session_id, seq, item_type, provider_item_id, role, call_id, payload_json, created_at
 		   FROM session_events
 		  WHERE session_id = ? AND seq > ?
 		  ORDER BY seq ASC
@@ -272,6 +278,46 @@ func (store *SQLiteSessionStore) ListEvents(sessionID string, afterSeq int, limi
 	return events, nil
 }
 
+func (store *SQLiteSessionStore) ListEventsByCallID(sessionID, callID string, limit int) ([]*domain.SessionEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	ctx := context.Background()
+	if _, err := store.GetSession(sessionID); err != nil {
+		return nil, err
+	}
+
+	rows, err := store.db.QueryContext(
+		ctx,
+		`SELECT id, session_id, seq, item_type, provider_item_id, role, call_id, payload_json, created_at
+		   FROM session_events
+		  WHERE session_id = ? AND call_id = ?
+		  ORDER BY seq ASC
+		  LIMIT ?`,
+		sessionID,
+		callID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list session events by call ID: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]*domain.SessionEvent, 0)
+	for rows.Next() {
+		event, err := scanSessionEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list session events by call ID: %w", err)
+	}
+	return events, nil
+}
+
 func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 	conn, err := store.db.Conn(ctx)
 	if err != nil {
@@ -279,13 +325,21 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
+		return err
+	}
+	if err := ensureNoLegacySessionSchema(ctx, conn); err != nil {
+		return err
+	}
+
 	statements := []string{
-		`PRAGMA foreign_keys = ON`,
-		`PRAGMA journal_mode = WAL`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 		   id TEXT PRIMARY KEY,
 		   node_id TEXT NOT NULL,
-		   status TEXT NOT NULL CHECK (status IN ('open', 'closed', 'failed')),
+		   status TEXT NOT NULL CHECK (status IN ('active', 'waiting', 'completed', 'failed')),
 		   created_at TEXT NOT NULL,
 		   updated_at TEXT NOT NULL,
 		   last_seq INTEGER NOT NULL CHECK (last_seq >= 0)
@@ -294,7 +348,8 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 		   id TEXT PRIMARY KEY,
 		   session_id TEXT NOT NULL,
 		   seq INTEGER NOT NULL CHECK (seq > 0),
-		   kind TEXT NOT NULL CHECK (kind IN ('user_message', 'assistant_message', 'tool_call', 'tool_result', 'status', 'error')),
+		   item_type TEXT NOT NULL CHECK (item_type IN ('function_call', 'function_call_output')),
+		   provider_item_id TEXT,
 		   role TEXT CHECK (role IN ('user', 'assistant', 'tool', 'system')),
 		   call_id TEXT,
 		   payload_json TEXT NOT NULL,
@@ -306,6 +361,8 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 		    ON sessions(node_id, created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_events_session_id_seq
 		    ON session_events(session_id, seq ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_events_session_id_call_id_seq
+		    ON session_events(session_id, call_id, seq ASC)`,
 	}
 
 	for _, statement := range statements {
@@ -314,6 +371,138 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func ensureNoLegacySessionSchema(ctx context.Context, conn *sql.Conn) error {
+	sessionTableExists, err := tableExists(ctx, conn, "sessions")
+	if err != nil {
+		return err
+	}
+	eventTableExists, err := tableExists(ctx, conn, "session_events")
+	if err != nil {
+		return err
+	}
+	if !sessionTableExists || !eventTableExists {
+		return nil
+	}
+
+	hasKind, err := tableHasColumn(ctx, conn, "session_events", "kind")
+	if err != nil {
+		return err
+	}
+	if hasKind {
+		return domain.ValidationError{Message: "legacy session_events.kind schema is not supported; recreate or manually migrate .vos_sessions.db"}
+	}
+	hasItemType, err := tableHasColumn(ctx, conn, "session_events", "item_type")
+	if err != nil {
+		return err
+	}
+	hasProviderItemID, err := tableHasColumn(ctx, conn, "session_events", "provider_item_id")
+	if err != nil {
+		return err
+	}
+	if !hasItemType || !hasProviderItemID {
+		return domain.ValidationError{Message: "session_events schema is incompatible; recreate or manually migrate .vos_sessions.db"}
+	}
+
+	sessionsSQL, err := tableDefinitionSQL(ctx, conn, "sessions")
+	if err != nil {
+		return err
+	}
+	normalized := strings.ReplaceAll(strings.ToLower(sessionsSQL), " ", "")
+	if strings.Contains(normalized, "('open','closed','failed')") {
+		return domain.ValidationError{Message: "legacy sessions.status(open/closed) schema is not supported; recreate or manually migrate .vos_sessions.db"}
+	}
+
+	var hasLegacyStatusRows bool
+	row := conn.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM sessions WHERE status IN ('open', 'closed')
+		)`,
+	)
+	if err := row.Scan(&hasLegacyStatusRows); err != nil {
+		return err
+	}
+	if hasLegacyStatusRows {
+		return domain.ValidationError{Message: "legacy session status values open/closed are not supported; please migrate data in .vos_sessions.db"}
+	}
+
+	var hasUnsupportedItemTypeRows bool
+	row = conn.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(
+			SELECT 1
+			  FROM session_events
+			 WHERE item_type NOT IN ('function_call', 'function_call_output')
+		)`,
+	)
+	if err := row.Scan(&hasUnsupportedItemTypeRows); err != nil {
+		return err
+	}
+	if hasUnsupportedItemTypeRows {
+		return domain.ValidationError{Message: "session_events contains unsupported item_type values; only function_call/function_call_output are allowed"}
+	}
+	return nil
+}
+
+func tableExists(ctx context.Context, conn *sql.Conn, table string) (bool, error) {
+	row := conn.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?
+		)`,
+		table,
+	)
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func tableHasColumn(ctx context.Context, conn *sql.Conn, table, column string) (bool, error) {
+	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func tableDefinitionSQL(ctx context.Context, conn *sql.Conn, table string) (string, error) {
+	row := conn.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(sql, '')
+		   FROM sqlite_master
+		  WHERE type = 'table' AND name = ?`,
+		table,
+	)
+	var value string
+	if err := row.Scan(&value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func (store *SQLiteSessionStore) withImmediateTx(ctx context.Context, fn func(conn *sql.Conn) error) error {
@@ -398,22 +587,39 @@ func scanSessionEvent(scanner interface {
 	Scan(dest ...any) error
 }) (*domain.SessionEvent, error) {
 	var (
-		id         string
-		sessionID  string
-		seq        int
-		kindRaw    string
-		roleRaw    sql.NullString
-		callIDRaw  sql.NullString
-		payloadRaw string
-		createdRaw string
+		id                string
+		sessionID         string
+		seq               int
+		itemTypeRaw       string
+		providerItemIDRaw sql.NullString
+		roleRaw           sql.NullString
+		callIDRaw         sql.NullString
+		payloadRaw        string
+		createdRaw        string
 	)
-	if err := scanner.Scan(&id, &sessionID, &seq, &kindRaw, &roleRaw, &callIDRaw, &payloadRaw, &createdRaw); err != nil {
+	if err := scanner.Scan(
+		&id,
+		&sessionID,
+		&seq,
+		&itemTypeRaw,
+		&providerItemIDRaw,
+		&roleRaw,
+		&callIDRaw,
+		&payloadRaw,
+		&createdRaw,
+	); err != nil {
 		return nil, fmt.Errorf("scan session event: %w", err)
 	}
 
-	kind, err := domain.ParseSessionEventKind(kindRaw)
+	itemType, err := domain.ParseSessionItemType(itemTypeRaw)
 	if err != nil {
 		return nil, err
+	}
+
+	var providerItemID *string
+	if providerItemIDRaw.Valid {
+		value := providerItemIDRaw.String
+		providerItemID = &value
 	}
 
 	var role *domain.SessionRole
@@ -441,14 +647,15 @@ func scanSessionEvent(scanner interface {
 	}
 
 	event := &domain.SessionEvent{
-		ID:          id,
-		SessionID:   sessionID,
-		Seq:         seq,
-		Kind:        kind,
-		Role:        role,
-		CallID:      callID,
-		PayloadJSON: payload,
-		CreatedAt:   createdAt,
+		ID:             id,
+		SessionID:      sessionID,
+		Seq:            seq,
+		ItemType:       itemType,
+		ProviderItemID: providerItemID,
+		Role:           role,
+		CallID:         callID,
+		PayloadJSON:    payload,
+		CreatedAt:      createdAt,
 	}
 	event.Normalize()
 	return event, nil
