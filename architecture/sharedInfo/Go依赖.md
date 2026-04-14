@@ -51,7 +51,8 @@ require github.com/mattn/go-sqlite3 v1.14.32
 用途：
 
 1. 为 `pool` 的 SQLite 运行态提供驱动
-2. 支撑并发治理、调用记录、usage 聚合等持久化逻辑
+2. 为 `vos` 的 Session / SessionEvent 独立 SQLite 存储提供驱动
+3. 支撑并发治理、调用记录、usage 聚合与会话事件持久化逻辑
 
 ## 4. 环境依赖
 
