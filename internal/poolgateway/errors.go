@@ -3,8 +3,8 @@ package poolgateway
 import "errors"
 
 var (
-	ErrNoCapacity   = errors.New("no available API")
-	ErrGlobalQuota  = errors.New("global quota reached")
+	ErrNoCapacity  = errors.New("no available API")
+	ErrGlobalQuota = errors.New("global quota reached")
 )
 
 type InvocationFailedError struct {

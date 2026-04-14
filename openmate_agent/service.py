@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from openmate_pool.models import InvokeRequest, LlmMessage, MessageRole
+from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
 from openmate_pool.pool import PoolGateway
 from pydantic import ValidationError
 
@@ -69,12 +69,7 @@ class AgentCapabilityService:
             InvokeRequest(
                 request_id=str(uuid4()),
                 node_id=build.node_id,
-                messages=[
-                    LlmMessage(
-                        role=MessageRole.USER,
-                        content=assembled.prompt,
-                    )
-                ],
+                request=OpenAIResponsesRequest(input=assembled.prompt),
             )
         )
         if response.output_text is None:

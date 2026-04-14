@@ -18,46 +18,30 @@ const (
 	InvocationStatusFailure InvocationStatus = "failure"
 )
 
-type MessageRole string
-
-const (
-	MessageRoleSystem    MessageRole = "system"
-	MessageRoleUser      MessageRole = "user"
-	MessageRoleAssistant MessageRole = "assistant"
-	MessageRoleTool      MessageRole = "tool"
-)
-
-type ResponseMode string
-
-const ResponseModeText ResponseMode = "text"
-
-type LlmMessage struct {
-	Role    MessageRole `json:"role"`
-	Content string      `json:"content"`
-}
-
 type RoutePolicy struct {
 	APIID *string `json:"api_id"`
 }
 
+type OpenAIResponsesRequest map[string]any
+
+type OpenAIResponsesResponse map[string]any
+
 type InvokeRequest struct {
-	RequestID       string                 `json:"request_id"`
-	NodeID          string                 `json:"node_id"`
-	Messages        []LlmMessage           `json:"messages"`
-	ResponseMode    ResponseMode           `json:"response_mode"`
-	Temperature     *float64               `json:"temperature"`
-	MaxOutputTokens *int                   `json:"max_output_tokens"`
-	TimeoutMS       *int                   `json:"timeout_ms"`
-	RoutePolicy     RoutePolicy            `json:"route_policy"`
-	Metadata        map[string]interface{} `json:"metadata"`
+	RequestID   string                 `json:"request_id"`
+	NodeID      string                 `json:"node_id"`
+	Request     OpenAIResponsesRequest `json:"request"`
+	TimeoutMS   *int                   `json:"timeout_ms"`
+	RoutePolicy RoutePolicy            `json:"route_policy"`
 }
 
 type UsageMetrics struct {
-	PromptTokens     *int     `json:"prompt_tokens"`
-	CompletionTokens *int     `json:"completion_tokens"`
-	TotalTokens      *int     `json:"total_tokens"`
-	LatencyMS        *int     `json:"latency_ms"`
-	CostUSD          *float64 `json:"cost_usd"`
+	InputTokens       *int     `json:"input_tokens"`
+	OutputTokens      *int     `json:"output_tokens"`
+	TotalTokens       *int     `json:"total_tokens"`
+	CachedInputTokens *int     `json:"cached_input_tokens"`
+	ReasoningTokens   *int     `json:"reasoning_tokens"`
+	LatencyMS         *int     `json:"latency_ms"`
+	CostUSD           *float64 `json:"cost_usd"`
 }
 
 type RouteDecision struct {
@@ -90,46 +74,48 @@ type InvocationAttempt struct {
 }
 
 type InvokeResponse struct {
-	InvocationID string           `json:"invocation_id"`
-	RequestID    string           `json:"request_id"`
-	NodeID       string           `json:"node_id"`
-	Status       InvocationStatus `json:"status"`
-	Route        *RouteDecision   `json:"route"`
-	OutputText   *string          `json:"output_text"`
-	RawResponse  map[string]any   `json:"raw_response"`
-	Usage        *UsageMetrics    `json:"usage"`
-	Timing       InvocationTiming `json:"timing"`
-	Error        *GatewayError    `json:"error"`
+	InvocationID string                  `json:"invocation_id"`
+	RequestID    string                  `json:"request_id"`
+	NodeID       string                  `json:"node_id"`
+	Status       InvocationStatus        `json:"status"`
+	Route        *RouteDecision          `json:"route"`
+	Response     OpenAIResponsesResponse `json:"response"`
+	OutputText   *string                 `json:"output_text"`
+	Usage        *UsageMetrics           `json:"usage"`
+	Timing       InvocationTiming        `json:"timing"`
+	Error        *GatewayError           `json:"error"`
 }
 
 type InvocationRecord struct {
-	InvocationID string              `json:"invocation_id"`
-	Request      InvokeRequest       `json:"request"`
-	Status       InvocationStatus    `json:"status"`
-	Route        *RouteDecision      `json:"route"`
-	OutputText   *string             `json:"output_text"`
-	RawResponse  map[string]any      `json:"raw_response"`
-	Usage        *UsageMetrics       `json:"usage"`
-	Timing       InvocationTiming    `json:"timing"`
-	Error        *GatewayError       `json:"error"`
-	Attempts     []InvocationAttempt `json:"attempts"`
+	InvocationID string                  `json:"invocation_id"`
+	Request      InvokeRequest           `json:"request"`
+	Status       InvocationStatus        `json:"status"`
+	Route        *RouteDecision          `json:"route"`
+	Response     OpenAIResponsesResponse `json:"response"`
+	OutputText   *string                 `json:"output_text"`
+	Usage        *UsageMetrics           `json:"usage"`
+	Timing       InvocationTiming        `json:"timing"`
+	Error        *GatewayError           `json:"error"`
+	Attempts     []InvocationAttempt     `json:"attempts"`
 }
 
 type UsageSummary struct {
-	NodeID           *string   `json:"node_id"`
-	Limit            *int      `json:"limit"`
-	InvocationCount  int       `json:"invocation_count"`
-	SuccessCount     int       `json:"success_count"`
-	FailureCount     int       `json:"failure_count"`
-	AttemptCount     int       `json:"attempt_count"`
-	RetryCount       int       `json:"retry_count"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	TotalTokens      int       `json:"total_tokens"`
-	TotalCostUSD     *float64  `json:"total_cost_usd"`
-	AvgLatencyMS     *int      `json:"avg_latency_ms"`
-	MaxLatencyMS     *int      `json:"max_latency_ms"`
-	GeneratedAt      time.Time `json:"generated_at"`
+	NodeID            *string   `json:"node_id"`
+	Limit             *int      `json:"limit"`
+	InvocationCount   int       `json:"invocation_count"`
+	SuccessCount      int       `json:"success_count"`
+	FailureCount      int       `json:"failure_count"`
+	AttemptCount      int       `json:"attempt_count"`
+	RetryCount        int       `json:"retry_count"`
+	InputTokens       int       `json:"input_tokens"`
+	OutputTokens      int       `json:"output_tokens"`
+	TotalTokens       int       `json:"total_tokens"`
+	CachedInputTokens int       `json:"cached_input_tokens"`
+	ReasoningTokens   int       `json:"reasoning_tokens"`
+	TotalCostUSD      *float64  `json:"total_cost_usd"`
+	AvgLatencyMS      *int      `json:"avg_latency_ms"`
+	MaxLatencyMS      *int      `json:"max_latency_ms"`
+	GeneratedAt       time.Time `json:"generated_at"`
 }
 
 type CapacitySnapshot struct {
@@ -148,16 +134,19 @@ type SyncResult struct {
 }
 
 type InvocationReservation struct {
-	InvocationID string    `json:"invocation_id"`
-	AttemptID    string    `json:"attempt_id"`
-	RequestID    string    `json:"request_id"`
-	NodeID       string    `json:"node_id"`
-	APIID        string    `json:"api_id"`
-	Provider     string    `json:"provider"`
-	Model        string    `json:"model"`
-	BaseURL      string    `json:"base_url"`
-	APIKey       string    `json:"api_key"`
-	StartedAt    time.Time `json:"started_at"`
+	InvocationID    string            `json:"invocation_id"`
+	AttemptID       string            `json:"attempt_id"`
+	RequestID       string            `json:"request_id"`
+	NodeID          string            `json:"node_id"`
+	APIID           string            `json:"api_id"`
+	Provider        string            `json:"provider"`
+	Model           string            `json:"model"`
+	BaseURL         string            `json:"base_url"`
+	APIKey          string            `json:"api_key"`
+	Headers         map[string]string `json:"headers"`
+	RequestDefaults map[string]any    `json:"request_defaults"`
+	Pricing         *PricingConfig    `json:"pricing"`
+	StartedAt       time.Time         `json:"started_at"`
 }
 
 func (reservation InvocationReservation) Route() RouteDecision {
@@ -169,7 +158,7 @@ func (reservation InvocationReservation) Route() RouteDecision {
 }
 
 type ProviderInvokeResult struct {
-	OutputText  *string        `json:"output_text"`
-	RawResponse map[string]any `json:"raw_response"`
-	Usage       *UsageMetrics  `json:"usage"`
+	Response   OpenAIResponsesResponse `json:"response"`
+	OutputText *string                 `json:"output_text"`
+	Usage      *UsageMetrics           `json:"usage"`
 }

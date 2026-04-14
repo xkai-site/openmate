@@ -81,3 +81,36 @@ func TestLoadModelConfigRejectsInvalidRetryPolicy(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadModelConfigRejectsReservedRequestDefaultsFields(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "model.json")
+	content := []byte(`{
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "api_id": "api-1",
+      "model": "gpt-4.1",
+      "base_url": "http://unused.local/v1",
+      "api_key": "sk-test",
+      "max_concurrent": 1,
+      "enabled": true,
+      "request_defaults": {
+        "model": "should-not-be-here"
+      }
+    }
+  ]
+}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadModelConfig(configPath)
+	if err == nil {
+		t.Fatalf("expected config validation error")
+	}
+	if err.Error() != "request_defaults.model must not be set for api_id=api-1" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

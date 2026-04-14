@@ -1,5 +1,19 @@
 # Agent池架构（当前基线）
 
+## 0. 2026-04-14 补充
+
+调用方对接时，请优先阅读同目录下的 `对接协议.md`。该文档是当前请求/响应与 `model.json` 约定的落地点。
+
+1. 当前主协议已对齐 OpenAI `Responses API`，不再以 `chat/completions` 为主调用契约。
+2. `invoke` 的外层网关封装保持为 `{ request_id, node_id, request, timeout_ms?, route_policy? }`。
+3. 其中 `request` 对齐 OpenAI `Responses create` 请求体；`model`、`api_key`、`base_url`、并发与默认参数不由上层请求直接传入，而由 `model.json` 中命中的 API 配置注入。
+4. `response` 返回完整 OpenAI `response` 对象，同时保留 `output_text / usage / route / timing / error` 作为网关侧标准消费字段。
+5. 工具调用已支持协议透传和观测沉淀：上层可提交 `tools`、接收 `function_call`、再通过下一轮 `input` 提交 `function_call_output`；Agent池不在池内执行工具。
+6. `model.json.apis[*]` 已扩展出 `request_defaults / headers / pricing`：
+   `request_defaults` 用于承载 OpenAI 请求默认参数，
+   `headers` 用于 provider 请求头补充，
+   `pricing` 用于按 `input/output/cached/reasoning` token 维度估算成本。
+
 ## 1. 定位
 
 Agent池的目标定位是 LLM 调用网关与可观测采集面，而不只是“租约分发器”。

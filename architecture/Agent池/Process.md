@@ -1,5 +1,18 @@
 # Agent池内部开发过程（收敛版）
 
+## 2026-04-14 OpenAI Responses 协议切换落地
+
+1. `pool invoke` 的主调用载荷已从旧的 `messages/chat.completions` 形态切到 OpenAI `Responses` 形态；当前外层网关请求为 `{ request_id, node_id, request, timeout_ms, route_policy }`，其中 `request` 对齐 OpenAI `Responses create`，但 `model` 继续由 `model.json` 注入。
+2. provider 适配层已切到 `/v1/responses`，并支持工具调用相关字段透传，包括 `tools / tool_choice / parallel_tool_calls / previous_response_id`；Agent池只负责协议转发、落库、观测与重试，不在池内执行工具。
+3. `InvokeResponse / InvocationRecord` 已改为返回完整 `response` 对象，同时保留 `output_text / route / usage / timing / error` 这组网关侧消费字段，便于上层直接取文本，也能完整回看原始响应。
+4. `model.json.apis[*]` 新增 `request_defaults / headers / pricing`：
+   `request_defaults` 用于承载 OpenAI 请求默认参数，
+   `headers` 用于 provider 侧额外请求头，
+   `pricing` 用于按 `input/output/cached/reasoning` 维度计算 `cost_usd`。
+5. usage 口径已从 `prompt/completion/total_tokens` 切到 `input_tokens / output_tokens / total_tokens / cached_input_tokens / reasoning_tokens`，`usage` 聚合命令和落库记录已同步升级。
+6. 当前测试结果：`go test ./...` 与 `.\.venv\Scripts\python.exe -m unittest discover -s tests -v` 均通过，Python 侧仍为 30 项通过。
+7. 已补充 `architecture/Agent池/对接协议.md`，作为面向调用方的协议文档，明确 `invoke/records/usage/cap/sync/model.json` 的 JSON 结构、错误约定与工具回环示例。
+
 ## 2026-04-12 usage 聚合视图落地
 
 1. 在保留 `records` 原始 invocation/attempt 输出的前提下，新增只读 `usage` 聚合视图命令。

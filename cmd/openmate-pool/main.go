@@ -211,14 +211,8 @@ func runUsage(args []string, gateway *poolgateway.Gateway) int {
 }
 
 func normalizeRequest(request poolgateway.InvokeRequest) poolgateway.InvokeRequest {
-	if request.ResponseMode == "" {
-		request.ResponseMode = poolgateway.ResponseModeText
-	}
-	if request.Metadata == nil {
-		request.Metadata = map[string]any{}
-	}
-	if request.Messages == nil {
-		request.Messages = []poolgateway.LlmMessage{}
+	if request.Request == nil {
+		request.Request = poolgateway.OpenAIResponsesRequest{}
 	}
 	return request
 }
