@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 from openmate_pool.models import (
@@ -23,10 +24,13 @@ from .models import (
 
 class DefaultContextInjector(ContextInjector):
     def inject(self, node_id: str) -> ContextBundle:
+        payload = {
+            "SystemPrompt": {"memory": {}},
+            "UserPrompt": {"session": []},
+        }
         return ContextBundle(
             node_id=node_id,
-            snippets=[f"context for node {node_id}"],
-            summary=f"default context injected for {node_id}",
+            payload=json.dumps(payload, ensure_ascii=False),
         )
 
 
@@ -67,9 +71,11 @@ class DefaultAssembler(Assembler):
     ) -> AgentInput:
         tool_names = ", ".join(tool.name for tool in tools.tools) or "none"
         skill_names = ", ".join(skill.name for skill in skills.skills) or "none"
+        # Keep context injection as a single payload block in prompt assembly.
+        context_payload = context.payload or "{}"
         prompt = (
             f"node={context.node_id}\n"
-            f"context={context.summary or 'no-summary'}\n"
+            f"{context_payload}\n"
             f"tools={tool_names}\n"
             f"skills={skill_names}"
         )

@@ -32,12 +32,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	sessionDBFile := root.String("session-db-file", ".vos_sessions.db", "SQLite session database path")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")
-		fmt.Fprintln(root.Output(), "  vos [--state-file PATH] [--session-db-file PATH] <topic|node|session> <command> [flags]")
+		fmt.Fprintln(root.Output(), "  vos [--state-file PATH] [--session-db-file PATH] <topic|node|session|context> <command> [flags]")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Commands:")
 		fmt.Fprintln(root.Output(), "  topic   Topic operations")
 		fmt.Fprintln(root.Output(), "  node    Node operations")
 		fmt.Fprintln(root.Output(), "  session Session operations")
+		fmt.Fprintln(root.Output(), "  context Context aggregation operations")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Global flags:")
 		root.PrintDefaults()
@@ -71,6 +72,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		defer sessionStore.Close()
 		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
 		return runSession(svc, rest[1:], stdout, stderr)
+	case "context":
+		sessionStore, err := store.NewSQLiteSessionStore(*sessionDBFile)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		defer sessionStore.Close()
+		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
+		return runContext(svc, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown resource: %s\n", rest[0])
 		root.Usage()

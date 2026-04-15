@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from openmate_pool.errors import InvocationFailedError, NoCapacityError
 from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest, RoutePolicy
 from openmate_pool.pool import PoolGateway
@@ -56,6 +58,23 @@ class PoolGatewayTestCase(unittest.TestCase):
             request=OpenAIResponsesRequest(input=f"hello from {node_id}"),
             route_policy=RoutePolicy(api_id=api_id),
         )
+
+    def test_request_rejects_chat_completions_fields(self) -> None:
+        for field, value in [
+            ("messages", [{"role": "user", "content": "hello"}]),
+            ("functions", [{"name": "demo"}]),
+            ("function_call", {"name": "demo"}),
+            ("tool_calls", [{"id": "tc-1"}]),
+            ("max_tokens", 100),
+        ]:
+            with self.subTest(field=field):
+                with self.assertRaises(ValidationError):
+                    OpenAIResponsesRequest.model_validate(
+                        {
+                            "input": "hello",
+                            field: value,
+                        }
+                    )
 
     def test_invoke_success_persists_record(self) -> None:
         server, thread = _start_gateway_server()

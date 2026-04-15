@@ -60,3 +60,35 @@
 1. 按 `node_id` 提供 Session 摘要查询入口（CLI/API 形态待定）。
 2. 评估 `payload_json` 超大体积时的外部 artifact 引用方案。
 3. 评估 Session 热路径摘要字段，降低纯回放查询成本。
+=======
+1. 已在 sharedInfo 新增《工具调用-SessionEvent契约》文档，明确 Agent 层接入 VOS Session 的字段与时序约定。
+2. 契约明确当前 `item_type` 仅支持 `function_call` 与 `function_call_output`，并要求 `call_id` 必填。
+3. 契约同步明确幂等建议（`session_id + call_id + item_type`）与失败载荷结构，避免上层实现分歧。
+4. 兼容策略已收口：不再接受旧 `kind` 与 `open/closed`，旧 schema 需手工迁移或重建库。
+
+## 2026-04-15 Context 聚合快照接口
+
+1. 新增 VOS 聚合读取能力：`vos context snapshot --node-id <NODE_ID>`。
+2. 新增领域输出结构 `ContextSnapshot`，对外固定字段：
+   - `node_id`
+   - `user_memory`
+   - `topic_memory`
+   - `node_memory`（优先父节点 `memory`，无父节点时回退当前节点）
+   - `global_index`
+   - `session_history`
+3. `session_history` 聚合规则：
+   - 按 `Node.session` 顺序遍历全部 session（不分页、不限流）
+   - 每个 session 内按 `seq` 升序返回全部事件
+4. 新增服务层实现：
+   - `Service.GetContextSnapshot(nodeID string)`
+   - 对 `sessionStore` 未配置、`node_id` 缺失等错误路径给出显式返回
+5. 新增 CLI 子命令：
+   - root 资源新增 `context`
+   - `vos context <snapshot> [flags]`
+6. 测试覆盖新增：
+   - `internal/vos/service/context_service_test.go`
+   - `internal/vos/cli/context_cli_test.go`
+   - 覆盖父节点记忆优先、根节点回退、多 session/事件顺序、参数校验
+7. 验证结果：
+   - `go test ./internal/vos/...` 通过
+   - `go test ./...` 通过

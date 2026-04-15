@@ -30,6 +30,18 @@ func validateInvokeRequest(request InvokeRequest) error {
 	if _, exists := request.Request["model"]; exists {
 		return errors.New("request.model must not be set; model comes from model.json")
 	}
+	legacyChatFields := []string{
+		"messages",
+		"functions",
+		"function_call",
+		"tool_calls",
+		"max_tokens",
+	}
+	for _, field := range legacyChatFields {
+		if _, exists := request.Request[field]; exists {
+			return fmt.Errorf("request.%s is ChatCompletions-only and is not supported; use Responses API fields", field)
+		}
+	}
 	if stream, ok := request.Request["stream"].(bool); ok && stream {
 		return errors.New("request.stream is not supported yet")
 	}

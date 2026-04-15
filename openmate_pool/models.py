@@ -57,6 +57,18 @@ class OpenAIResponsesRequest(BaseModel):
         extras = self.model_extra or {}
         if "model" in extras:
             raise ValueError("request.model must not be set; model comes from model.json")
+        legacy_chat_fields = {
+            "messages",
+            "functions",
+            "function_call",
+            "tool_calls",
+            "max_tokens",
+        }
+        for field in sorted(legacy_chat_fields):
+            if field in extras:
+                raise ValueError(
+                    f"request.{field} is ChatCompletions-only and is not supported; use Responses API fields"
+                )
         if self.stream is True:
             raise ValueError("request.stream is not supported yet")
         return self
