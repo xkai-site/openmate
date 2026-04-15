@@ -15,8 +15,7 @@ class Build(BaseModel):
 
 class ContextBundle(BaseModel):
     node_id: str = Field(min_length=1)
-    snippets: list[str] = Field(default_factory=list)
-    summary: str | None = None
+    payload: str = ""
 
 
 class ToolSpec(BaseModel):

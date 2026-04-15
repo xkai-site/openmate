@@ -296,3 +296,60 @@
    - `.\.venv\Scripts\python.exe -m unittest tests.test_pool -v` 通过（8 项）
    - `go test ./...` 通过（含 `internal/poolgateway`）
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（43 项）
+
+### 能力层可插拔重构落地（4 组件 + 编排解耦）
+
+1. 已新增可插拔构建管线 `BuildPipeline`：
+   - 固定顺序执行 `ContextInjector -> ToolInjector -> SkillInjector -> Assembler`
+   - 输出统一 `AgentInput`
+2. 已新增执行编排层 `ExecutionOrchestrator` 与 `ExecutionRunner` 抽象：
+   - 默认实现 `ResponsesExecutionRunner` 承载 OpenAI Responses 工具循环
+   - 新增 `LangGraphExecutionRunner` 适配接缝（当前委托 fallback，保持行为不变）
+3. `AgentCapabilityService.execute()` 已收敛为薄入口：
+   - 先调用 `BuildPipeline.build(node_id)`
+   - 再调用 `ExecutionOrchestrator.execute(...)`
+   - 对外接口与现有调用方保持兼容
+4. 服务层新增代码注入装配点（不引入配置驱动）：
+   - `build_pipeline`
+   - `execution_orchestrator`
+   - `execution_runner`
+5. 已新增测试覆盖（可插拔与解耦）：
+   - `tests/test_pipeline_orchestration.py`
+   - 覆盖构建顺序、异常冒泡、runner 注入、LangGraph 适配委托、service 对注入组件的消费
+6. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_pipeline_orchestration -v` 通过（5 项）
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（48 项）
+
+### ContextInjector 对接 VOS 聚合快照（四组件实现补齐）
+
+1. 新增 `VosContextGateway`（`openmate_agent/context_gateway.py`）：
+   - 通过 `vos context snapshot --node-id ...` 读取 VOS 聚合上下文。
+   - 统一解析为强类型 `ContextSnapshotRecord`（`openmate_agent/context_models.py`）。
+2. 新增 `VosContextInjector`（`openmate_agent/context_injector.py`）：
+   - 将快照组装为单一上下文载荷（内部包含 `SystemPrompt.memory` + `UserPrompt.session`）。
+   - 不再注入 `rendered_text/current_node_input/task`。
+3. `AgentCapabilityService` 装配策略更新：
+   - 若显式传入 `context_injector`，优先使用显式实现。
+   - 否则当存在 `vos_state_file / vos_session_db_file / vos_binary_path` 任一配置时，默认切换到 `VosContextInjector`。
+   - 无 VOS 配置时继续使用 `DefaultContextInjector`。
+4. `DefaultAssembler` 调整：
+   - 组装 prompt 时直接消费 `ContextBundle.payload`，不再依赖 `summary/snippets` 等中间概念。
+5. 新增测试覆盖：
+   - `tests/test_context_injector.py`（gateway 解析、空输出报错、injector 渲染、service 装配优先级）
+6. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector -v` 通过（5 项）
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）
+
+### Context 注入语义收敛（对外仅保留“上下文注入”）
+
+1. `ContextBundle` 字段从 `summary/snippets` 收敛为单一 `payload`，避免暴露中间概念。
+2. `VosContextInjector` 改为输出单一上下文载荷：
+   - 内部包含 `SystemPrompt.memory`
+   - 内部包含 `UserPrompt.session`
+3. `DefaultAssembler` 不再拼接 `context=...` 文本行，改为直接消费 `ContextBundle.payload`。
+4. 在组装/编排层补充必要英文注释：
+   - `openmate_agent/pipeline.py`
+   - `openmate_agent/orchestration.py`
+5. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_pipeline_orchestration tests.test_service -v` 通过（28 项）
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）
