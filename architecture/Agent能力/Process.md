@@ -266,3 +266,33 @@
 3. 当前 `Agent能力` 文档区保留：
    - `Agent能力.md`（规范主文档）
    - `Process.md`（过程记录）
+
+## 2026-04-15
+
+### 协议收敛记录（ChatCompletions 清理 + 并行暂缓）
+
+1. 已对 `openmate_agent / openmate_pool / internal/poolgateway / tests` 完成全仓检索与核对：
+   - 未发现 `/v1/chat/completions` 路径调用。
+   - 未发现旧 ChatCompletions `tool_calls/function_calling` 分支实现。
+2. 当前主链路已统一为 OpenAI Responses：
+   - provider 侧请求路径为 `/responses`。
+   - agent 侧通过 `function_call -> function_call_output -> previous_response_id` 形成闭环。
+3. 结论：Agent 层可视为已完成旧 ChatCompletions function-calling 收敛，不再保留该兼容路径。
+4. 决策（本轮冻结）：
+   - 暂不实现并行工具执行。
+   - 维持 `parallel_tool_calls=false` 的串行执行策略。
+5. 后续计划（未开工）：
+   - 在后续迭代再实现并行工具调用与结果归并。
+
+### 旧协议硬收敛落地（校验层）
+
+1. 已在 Python 适配层 `OpenAIResponsesRequest` 增加显式拦截：当请求含旧 ChatCompletions 字段时直接拒绝。
+   - 拦截字段：`messages / functions / function_call / tool_calls / max_tokens`
+2. 已在 Go 网关 `validateInvokeRequest` 增加同等拦截，避免绕过 Python 适配层直接调用时出现旧字段回流。
+3. 已新增测试覆盖：
+   - Python：`tests/test_pool.py::test_request_rejects_chat_completions_fields`
+   - Go：`internal/poolgateway/openai_responses_test.go::TestValidateInvokeRequestRejectsLegacyChatCompletionsFields`
+4. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_pool -v` 通过（8 项）
+   - `go test ./...` 通过（含 `internal/poolgateway`）
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（43 项）
