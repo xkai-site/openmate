@@ -342,10 +342,6 @@ func (service *Service) CreateNode(input CreateNodeInput) (*domain.Node, error) 
 	return cloneNode(node), nil
 }
 
-func (service *Service) ListNodes(topicID string) ([]*domain.Node, error) {
-	return service.ListNodesByFilter(topicID, NodeListFilter{})
-}
-
 func (service *Service) ListNodesByFilter(topicID string, filter NodeListFilter) ([]*domain.Node, error) {
 	state, err := service.store.Load()
 	if err != nil {

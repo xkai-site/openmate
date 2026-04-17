@@ -365,3 +365,9 @@
 5. 回归结果：
    - `go test ./...` 通过
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）
+
+## 2026-04-17 Dead Code Cleanup
+
+1. Removed unused default implementations `DefaultAgentExecutor` and `DefaultLlmGateway` from `openmate_agent.defaults`.
+2. Kept public `priority()` contract and current session/tool orchestration behavior unchanged.
+3. Verified Python unit tests (`unittest discover -s tests -p "test_*.py" -v`) passed.

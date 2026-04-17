@@ -183,3 +183,8 @@
    - `PRAGMA journal_mode = WAL` 持续启用。
 5. 新增 `internal/vos/cli/session_cli_test.go` 用例，覆盖 `--db-file` 驱动 session 命令成功链路。
 6. 回归结果：`go test ./...` 通过。
+
+## 2026-04-17 Dead Code Cleanup
+
+1. Removed unused service wrapper `Service.ListNodes(topicID)` and kept `ListNodesByFilter` as the single list entrypoint.
+2. Verified VOS module tests with repo-local `GOCACHE/GOMODCACHE` and full `go test ./...` passed.

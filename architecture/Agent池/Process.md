@@ -76,3 +76,9 @@
 
 1. 将默认重试策略参数化到配置层，但在开放前先保持当前代码内默认值稳定。
 2. 视需要继续扩 `usage` 维度，例如按 api/provider/model 的分桶聚合，但保持 `records` 作为原始事实来源。
+
+## 2026-04-17 Dead Code Cleanup
+
+1. Removed unused helper functions `intPtr` and `parseInt` from `cmd/openmate-pool/main.go`.
+2. Kept all pool CLI contracts (`invoke/cap/records/usage/sync`) unchanged.
+3. Verified `go test ./internal/poolgateway/...` and full `go test ./...` passed.

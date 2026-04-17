@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"vos/internal/poolgateway"
 )
@@ -235,19 +234,4 @@ func printJSON(value any) {
 		return
 	}
 	fmt.Fprintln(os.Stdout, string(payload))
-}
-
-func intPtr(value int) *int {
-	return &value
-}
-
-func parseInt(value string) *int {
-	if value == "" {
-		return nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return nil
-	}
-	return intPtr(parsed)
 }
