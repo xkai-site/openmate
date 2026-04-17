@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"vos/internal/vos/cli"
@@ -127,5 +128,29 @@ func TestSessionCLIRejectsLegacyFlagsAndStatuses(t *testing.T) {
 	)
 	if code == 0 {
 		t.Fatalf("session append-event with --kind should fail")
+	}
+}
+
+func TestSessionCLIUsesUnifiedDBFileByDefault(t *testing.T) {
+	tempDir := t.TempDir()
+	stateFile := tempDir + "/vos_state.json"
+	dbFile := tempDir + "/openmate.db"
+	base := []string{"--state-file", stateFile, "--db-file", dbFile}
+
+	if code := cli.Run(append(base, "topic", "create", "--topic-id", "topic-1", "--name", "Topic One"), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("topic create code = %d, want 0", code)
+	}
+	if code := cli.Run(append(base, "node", "create", "--topic-id", "topic-1", "--node-id", "node-1", "--name", "Node One"), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("node create code = %d, want 0", code)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(append(base, "session", "create", "--node-id", "node-1", "--session-id", "session-unified"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("session create code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"id": "session-unified"`) {
+		t.Fatalf("session create output = %q, want session-unified id", stdout.String())
 	}
 }

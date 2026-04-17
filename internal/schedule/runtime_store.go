@@ -15,6 +15,11 @@ import (
 
 var errNotFound = errors.New("not found")
 
+const (
+	sqliteBusyRetryDelay = 25 * time.Millisecond
+	sqliteBusyMaxRetries = 200
+)
+
 type TopicControlState struct {
 	TopicID             string
 	QueueLevel          TopicQueueLevel
@@ -64,6 +69,7 @@ func OpenRuntimeStore(path string, now func() time.Time) (*RuntimeStore, error) 
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite runtime db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	store := &RuntimeStore{db: db, now: now}
 	if store.now == nil {
 		store.now = func() time.Time { return time.Now().UTC() }
@@ -84,6 +90,9 @@ func (store *RuntimeStore) Close() error {
 
 func (store *RuntimeStore) migrate() error {
 	statements := []string{
+		`PRAGMA foreign_keys = ON`,
+		`PRAGMA busy_timeout = 5000`,
+		`PRAGMA journal_mode = WAL`,
 		`CREATE TABLE IF NOT EXISTS topic_runtime (
 			topic_id TEXT PRIMARY KEY,
 			queue_level TEXT NOT NULL,
@@ -133,7 +142,7 @@ func (store *RuntimeStore) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_dispatch_history_topic_created ON dispatch_history(topic_id, created_at DESC);`,
 	}
 	for _, statement := range statements {
-		if _, err := store.db.Exec(statement); err != nil {
+		if _, err := store.execWithRetry(statement); err != nil {
 			return fmt.Errorf("migrate schedule runtime db: %w", err)
 		}
 	}
@@ -145,7 +154,7 @@ func (store *RuntimeStore) EnsureTopic(topicID string) error {
 		return ValidationError{Message: "topic_id must not be empty"}
 	}
 	now := formatTime(store.now())
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`INSERT INTO topic_runtime (topic_id, queue_level, priority_dirty, updated_at)
 		 VALUES (?, ?, 1, ?)
 		 ON CONFLICT(topic_id) DO NOTHING`,
@@ -182,82 +191,73 @@ func (store *RuntimeStore) UpsertEnqueueNode(request EnqueueRequest) (bool, erro
 		return false, fmt.Errorf("marshal agent spec: %w", err)
 	}
 
-	tx, err := store.db.Begin()
-	if err != nil {
-		return false, fmt.Errorf("begin enqueue tx: %w", err)
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
+	created := false
+	if err := store.withWriteTx("enqueue", func(tx *sql.Tx) error {
+		var existingNodeID string
+		queryErr := tx.QueryRow(`SELECT node_id FROM node_queue WHERE topic_id = ? AND node_id = ?`, request.TopicID, request.NodeID).Scan(&existingNodeID)
+		created = errors.Is(queryErr, sql.ErrNoRows)
+		if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+			return fmt.Errorf("query node existence: %w", queryErr)
 		}
-	}()
 
-	var existingNodeID string
-	err = tx.QueryRow(`SELECT node_id FROM node_queue WHERE topic_id = ? AND node_id = ?`, request.TopicID, request.NodeID).Scan(&existingNodeID)
-	created := errors.Is(err, sql.ErrNoRows)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("query node existence: %w", err)
-	}
-
-	if created {
-		_, err = tx.Exec(
-			`INSERT INTO node_queue (
-				topic_id, node_id, name, is_priority_node, priority_label, priority_rank, status,
-				entered_priority_at, last_worked_at, agent_spec_json, session_id, idempotency_key, updated_at
-			) VALUES (?, ?, ?, 0, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
-			request.TopicID,
-			request.NodeID,
-			request.NodeName,
-			request.Priority.Label,
-			request.Priority.Rank,
-			string(NodeStatusReady),
-			formatTime(now),
-			string(specRaw),
-			request.IdempotencyKey,
-			formatTime(now),
-		)
-		if err != nil {
-			return false, fmt.Errorf("insert node queue: %w", err)
+		if created {
+			_, queryErr = tx.Exec(
+				`INSERT INTO node_queue (
+					topic_id, node_id, name, is_priority_node, priority_label, priority_rank, status,
+					entered_priority_at, last_worked_at, agent_spec_json, session_id, idempotency_key, updated_at
+				) VALUES (?, ?, ?, 0, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
+				request.TopicID,
+				request.NodeID,
+				request.NodeName,
+				request.Priority.Label,
+				request.Priority.Rank,
+				string(NodeStatusReady),
+				formatTime(now),
+				string(specRaw),
+				request.IdempotencyKey,
+				formatTime(now),
+			)
+			if queryErr != nil {
+				return fmt.Errorf("insert node queue: %w", queryErr)
+			}
+		} else {
+			_, queryErr = tx.Exec(
+				`UPDATE node_queue
+					SET name = ?, agent_spec_json = ?, idempotency_key = ?, updated_at = ?
+				  WHERE topic_id = ? AND node_id = ?`,
+				request.NodeName,
+				string(specRaw),
+				request.IdempotencyKey,
+				formatTime(now),
+				request.TopicID,
+				request.NodeID,
+			)
+			if queryErr != nil {
+				return fmt.Errorf("update node queue: %w", queryErr)
+			}
 		}
-	} else {
-		_, err = tx.Exec(
-			`UPDATE node_queue
-				SET name = ?, agent_spec_json = ?, idempotency_key = ?, updated_at = ?
-			  WHERE topic_id = ? AND node_id = ?`,
-			request.NodeName,
-			string(specRaw),
-			request.IdempotencyKey,
-			formatTime(now),
-			request.TopicID,
-			request.NodeID,
-		)
-		if err != nil {
-			return false, fmt.Errorf("update node queue: %w", err)
-		}
-	}
 
-	if request.MarkPriorityDirty {
-		_, err = tx.Exec(
-			`UPDATE topic_runtime
-				SET priority_dirty = 1, updated_at = ?
-			  WHERE topic_id = ?`,
-			formatTime(now),
-			request.TopicID,
-		)
-		if err != nil {
-			return false, fmt.Errorf("mark topic dirty on enqueue: %w", err)
+		if request.MarkPriorityDirty {
+			_, queryErr = tx.Exec(
+				`UPDATE topic_runtime
+					SET priority_dirty = 1, updated_at = ?
+				  WHERE topic_id = ?`,
+				formatTime(now),
+				request.TopicID,
+			)
+			if queryErr != nil {
+				return fmt.Errorf("mark topic dirty on enqueue: %w", queryErr)
+			}
 		}
+		return nil
+	}); err != nil {
+		return false, err
 	}
-
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit enqueue tx: %w", err)
-	}
-	tx = nil
 	return created, nil
 }
 
 func (store *RuntimeStore) SetTopicPriorityNode(topicID, nodeID string) error {
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`UPDATE topic_runtime SET priority_node_id = ?, updated_at = ? WHERE topic_id = ?`,
 		nodeID,
 		formatTime(store.now()),
@@ -281,7 +281,7 @@ func (store *RuntimeStore) UpsertPriorityNode(topicID, nodeID string, spec Agent
 		return fmt.Errorf("marshal priority node agent spec: %w", err)
 	}
 	now := formatTime(store.now())
-	_, err = store.db.Exec(
+	_, err = store.execWithRetry(
 		`INSERT INTO node_queue (
 			topic_id, node_id, name, is_priority_node, priority_label, priority_rank, status,
 			entered_priority_at, last_worked_at, agent_spec_json, session_id, idempotency_key, updated_at
@@ -322,7 +322,7 @@ func (store *RuntimeStore) MarkPriorityNodeReady(topicID string) error {
 		return ValidationError{Message: "priority node is not set"}
 	}
 	now := formatTime(store.now())
-	_, err = store.db.Exec(
+	_, err = store.execWithRetry(
 		`UPDATE node_queue
 			SET status = ?, priority_rank = ?, priority_label = ?, entered_priority_at = ?, updated_at = ?
 		  WHERE topic_id = ? AND node_id = ?`,
@@ -341,7 +341,7 @@ func (store *RuntimeStore) MarkPriorityNodeReady(topicID string) error {
 }
 
 func (store *RuntimeStore) ClearPriorityDirty(topicID string, lastErr *string) error {
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`UPDATE topic_runtime
 			SET priority_dirty = 0, last_priority_error = ?, updated_at = ?
 		  WHERE topic_id = ?`,
@@ -356,66 +356,55 @@ func (store *RuntimeStore) ClearPriorityDirty(topicID string, lastErr *string) e
 }
 
 func (store *RuntimeStore) ApplyPriorityPlan(topicID string, assignments []WorkerPriorityAssignment) error {
-	tx, err := store.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin apply priority plan tx: %w", err)
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
+	return store.withWriteTx("apply priority plan", func(tx *sql.Tx) error {
+		now := formatTime(store.now())
+		for _, assignment := range assignments {
+			if assignment.NodeID == "" {
+				continue
+			}
+			_, err := tx.Exec(
+				`UPDATE node_queue
+					SET priority_label = ?, priority_rank = ?, entered_priority_at = ?, updated_at = ?
+				  WHERE topic_id = ? AND node_id = ? AND is_priority_node = 0`,
+				assignment.Label,
+				assignment.Rank,
+				now,
+				now,
+				topicID,
+				assignment.NodeID,
+			)
+			if err != nil {
+				return fmt.Errorf("update priority assignment for %s: %w", assignment.NodeID, err)
+			}
 		}
-	}()
-	now := formatTime(store.now())
-	for _, assignment := range assignments {
-		if assignment.NodeID == "" {
-			continue
-		}
-		_, err = tx.Exec(
-			`UPDATE node_queue
-				SET priority_label = ?, priority_rank = ?, entered_priority_at = ?, updated_at = ?
-			  WHERE topic_id = ? AND node_id = ? AND is_priority_node = 0`,
-			assignment.Label,
-			assignment.Rank,
-			now,
-			now,
-			topicID,
-			assignment.NodeID,
-		)
-		if err != nil {
-			return fmt.Errorf("update priority assignment for %s: %w", assignment.NodeID, err)
-		}
-	}
-	_, err = tx.Exec(
-		`UPDATE topic_runtime
-			SET priority_dirty = 0, last_priority_error = NULL, priority_plan_version = priority_plan_version + 1, updated_at = ?
-		  WHERE topic_id = ?`,
-		now,
-		topicID,
-	)
-	if err != nil {
-		return fmt.Errorf("update topic runtime priority version: %w", err)
-	}
-	topic, err := store.getTopicTx(tx, topicID)
-	if err != nil {
-		return err
-	}
-	if topic.PriorityNodeID != nil {
-		_, err = tx.Exec(
-			`UPDATE node_queue SET status = ?, updated_at = ? WHERE topic_id = ? AND node_id = ?`,
-			string(NodeStatusSucceeded),
+		_, err := tx.Exec(
+			`UPDATE topic_runtime
+				SET priority_dirty = 0, last_priority_error = NULL, priority_plan_version = priority_plan_version + 1, updated_at = ?
+			  WHERE topic_id = ?`,
 			now,
 			topicID,
-			*topic.PriorityNodeID,
 		)
 		if err != nil {
-			return fmt.Errorf("mark priority node succeeded: %w", err)
+			return fmt.Errorf("update topic runtime priority version: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit priority plan tx: %w", err)
-	}
-	tx = nil
-	return nil
+		topic, err := store.getTopicTx(tx, topicID)
+		if err != nil {
+			return err
+		}
+		if topic.PriorityNodeID != nil {
+			_, err = tx.Exec(
+				`UPDATE node_queue SET status = ?, updated_at = ? WHERE topic_id = ? AND node_id = ?`,
+				string(NodeStatusSucceeded),
+				now,
+				topicID,
+				*topic.PriorityNodeID,
+			)
+			if err != nil {
+				return fmt.Errorf("mark priority node succeeded: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 func (store *RuntimeStore) ListTopics() ([]TopicControlState, error) {
@@ -555,7 +544,7 @@ func (store *RuntimeStore) GetNode(topicID, nodeID string) (NodeQueueState, erro
 }
 
 func (store *RuntimeStore) SetNodeSessionID(topicID, nodeID, sessionID string) error {
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`UPDATE node_queue SET session_id = ?, updated_at = ? WHERE topic_id = ? AND node_id = ?`,
 		sessionID,
 		formatTime(store.now()),
@@ -569,95 +558,70 @@ func (store *RuntimeStore) SetNodeSessionID(topicID, nodeID, sessionID string) e
 }
 
 func (store *RuntimeStore) MarkNodeRunning(topicID, nodeID string) error {
-	tx, err := store.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin mark running tx: %w", err)
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
+	return store.withWriteTx("mark running", func(tx *sql.Tx) error {
+		now := formatTime(store.now())
+		_, err := tx.Exec(
+			`UPDATE node_queue SET status = ?, updated_at = ? WHERE topic_id = ? AND node_id = ?`,
+			string(NodeStatusRunning),
+			now,
+			topicID,
+			nodeID,
+		)
+		if err != nil {
+			return fmt.Errorf("update running node status: %w", err)
 		}
-	}()
-	now := formatTime(store.now())
-	_, err = tx.Exec(
-		`UPDATE node_queue SET status = ?, updated_at = ? WHERE topic_id = ? AND node_id = ?`,
-		string(NodeStatusRunning),
-		now,
-		topicID,
-		nodeID,
-	)
-	if err != nil {
-		return fmt.Errorf("update running node status: %w", err)
-	}
-	if err := store.syncTopicRunningNodeIDsTx(tx, topicID, nodeID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit mark running tx: %w", err)
-	}
-	tx = nil
-	return nil
+		return store.syncTopicRunningNodeIDsTx(tx, topicID, nodeID)
+	})
 }
 
 func (store *RuntimeStore) MarkNodeFinished(topicID, nodeID string, status NodeStatus) error {
-	tx, err := store.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin mark finished tx: %w", err)
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
+	return store.withWriteTx("mark finished", func(tx *sql.Tx) error {
+		now := store.now()
+		nowText := formatTime(now)
+		_, err := tx.Exec(
+			`UPDATE node_queue
+				SET status = ?, last_worked_at = ?, updated_at = ?
+			  WHERE topic_id = ? AND node_id = ?`,
+			string(status),
+			nowText,
+			nowText,
+			topicID,
+			nodeID,
+		)
+		if err != nil {
+			return fmt.Errorf("update finished node status: %w", err)
 		}
-	}()
-	now := store.now()
-	nowText := formatTime(now)
-	_, err = tx.Exec(
-		`UPDATE node_queue
-			SET status = ?, last_worked_at = ?, updated_at = ?
-		  WHERE topic_id = ? AND node_id = ?`,
-		string(status),
-		nowText,
-		nowText,
-		topicID,
-		nodeID,
-	)
-	if err != nil {
-		return fmt.Errorf("update finished node status: %w", err)
-	}
-	if err := store.syncTopicRunningNodeIDsTx(tx, topicID, ""); err != nil {
-		return err
-	}
-	currentNode, err := store.getTopicCurrentNodeTx(tx, topicID)
-	if err != nil {
-		return err
-	}
-	switchCountAdd := 0
-	if currentNode == nil || *currentNode != nodeID {
-		switchCountAdd = 1
-	}
-	_, err = tx.Exec(
-		`UPDATE topic_runtime
-			SET last_worked_node_id = ?, last_worked_at = ?, current_node_id = ?, switch_count = switch_count + ?, updated_at = ?
-		  WHERE topic_id = ?`,
-		nodeID,
-		nowText,
-		nodeID,
-		switchCountAdd,
-		nowText,
-		topicID,
-	)
-	if err != nil {
-		return fmt.Errorf("update topic worked pointers: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit mark finished tx: %w", err)
-	}
-	tx = nil
-	return nil
+		if err := store.syncTopicRunningNodeIDsTx(tx, topicID, ""); err != nil {
+			return err
+		}
+		currentNode, err := store.getTopicCurrentNodeTx(tx, topicID)
+		if err != nil {
+			return err
+		}
+		switchCountAdd := 0
+		if currentNode == nil || *currentNode != nodeID {
+			switchCountAdd = 1
+		}
+		_, err = tx.Exec(
+			`UPDATE topic_runtime
+				SET last_worked_node_id = ?, last_worked_at = ?, current_node_id = ?, switch_count = switch_count + ?, updated_at = ?
+			  WHERE topic_id = ?`,
+			nodeID,
+			nowText,
+			nodeID,
+			switchCountAdd,
+			nowText,
+			topicID,
+		)
+		if err != nil {
+			return fmt.Errorf("update topic worked pointers: %w", err)
+		}
+		return nil
+	})
 }
 
 func (store *RuntimeStore) RecordDispatch(record DispatchRecord) error {
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`INSERT INTO dispatch_history (
 			request_id, topic_id, node_id, event_id, status, error_message, retryable, duration_ms, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -681,7 +645,7 @@ func (store *RuntimeStore) SetTopicQueueLevel(topicID string, level TopicQueueLe
 	if err := level.Validate(); err != nil {
 		return err
 	}
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`UPDATE topic_runtime SET queue_level = ?, updated_at = ? WHERE topic_id = ?`,
 		string(level),
 		formatTime(store.now()),
@@ -694,7 +658,7 @@ func (store *RuntimeStore) SetTopicQueueLevel(topicID string, level TopicQueueLe
 }
 
 func (store *RuntimeStore) TouchTopicServed(topicID string) error {
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`UPDATE topic_runtime SET last_served_at = ?, updated_at = ? WHERE topic_id = ?`,
 		formatTime(store.now()),
 		formatTime(store.now()),
@@ -753,7 +717,7 @@ func (store *RuntimeStore) HasRunnableNodes(topicID string) (bool, error) {
 }
 
 func (store *RuntimeStore) EnsurePriorityDirty(topicID string, reason string) error {
-	_, err := store.db.Exec(
+	_, err := store.execWithRetry(
 		`UPDATE topic_runtime
 			SET priority_dirty = 1, last_priority_error = ?, updated_at = ?
 		  WHERE topic_id = ?`,
@@ -1060,4 +1024,61 @@ func demoteLevel(level TopicQueueLevel) TopicQueueLevel {
 	default:
 		return TopicQueueLevelL3
 	}
+}
+
+func (store *RuntimeStore) execWithRetry(query string, args ...any) (sql.Result, error) {
+	var result sql.Result
+	err := retryOnSQLiteBusy(func() error {
+		value, execErr := store.db.Exec(query, args...)
+		if execErr != nil {
+			return execErr
+		}
+		result = value
+		return nil
+	})
+	return result, err
+}
+
+func (store *RuntimeStore) withWriteTx(action string, fn func(tx *sql.Tx) error) error {
+	return retryOnSQLiteBusy(func() error {
+		tx, err := store.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin %s tx: %w", action, err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
+		if err := fn(tx); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit %s tx: %w", action, err)
+		}
+		committed = true
+		return nil
+	})
+}
+
+func retryOnSQLiteBusy(fn func() error) error {
+	var err error
+	for attempt := 0; attempt < sqliteBusyMaxRetries; attempt++ {
+		err = fn()
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(sqliteBusyRetryDelay)
+	}
+	return err
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy")
 }

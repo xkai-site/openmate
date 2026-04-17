@@ -22,8 +22,8 @@ class VosContextGateway:
         binary_path: str | Path | None = None,
     ) -> None:
         self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
-        self._state_file = Path(state_file or self._workspace_root / ".vos_state.json").resolve()
-        self._session_db_file = Path(session_db_file or self._workspace_root / ".vos_sessions.db").resolve()
+        self._state_file = Path(state_file or self._workspace_root / ".openmate" / "runtime" / "vos_state.json").resolve()
+        self._session_db_file = Path(session_db_file or self._workspace_root / ".openmate" / "runtime" / "openmate.db").resolve()
         self._binary_path = binary_path
 
     def snapshot(self, node_id: str) -> ContextSnapshotRecord:

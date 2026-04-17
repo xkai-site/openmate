@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -28,11 +29,12 @@ func (values *multiString) Set(raw string) error {
 func Run(args []string, stdout, stderr io.Writer) int {
 	root := flag.NewFlagSet("vos", flag.ContinueOnError)
 	root.SetOutput(stderr)
-	stateFile := root.String("state-file", ".vos_state.json", "JSON state file path")
-	sessionDBFile := root.String("session-db-file", ".vos_sessions.db", "SQLite session database path")
+	dbFile := root.String("db-file", filepath.FromSlash(".openmate/runtime/openmate.db"), "Unified SQLite database path for VOS session operations")
+	stateFile := root.String("state-file", filepath.FromSlash(".openmate/runtime/vos_state.json"), "JSON state file path")
+	sessionDBFile := root.String("session-db-file", "", "SQLite session database path (overrides --db-file)")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")
-		fmt.Fprintln(root.Output(), "  vos [--state-file PATH] [--session-db-file PATH] <topic|node|session|context> <command> [flags]")
+		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context> <command> [flags]")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Commands:")
 		fmt.Fprintln(root.Output(), "  topic   Topic operations")
@@ -51,6 +53,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	setFlags := map[string]bool{}
+	root.Visit(func(flagValue *flag.Flag) {
+		setFlags[flagValue.Name] = true
+	})
+	resolvedSessionDBFile := strings.TrimSpace(*sessionDBFile)
+	if !setFlags["session-db-file"] {
+		resolvedSessionDBFile = strings.TrimSpace(*dbFile)
+	}
+	if resolvedSessionDBFile == "" {
+		fmt.Fprintln(stderr, "session-db-file must not be empty")
+		return 2
+	}
+
 	rest := root.Args()
 	if len(rest) == 0 {
 		root.Usage()
@@ -65,7 +80,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		svc := service.New(store.NewJSONStateStore(*stateFile))
 		return runNode(svc, rest[1:], stdout, stderr)
 	case "session":
-		sessionStore, err := store.NewSQLiteSessionStore(*sessionDBFile)
+		sessionStore, err := store.NewSQLiteSessionStore(resolvedSessionDBFile)
 		if err != nil {
 			return printError(err, stderr)
 		}
@@ -73,7 +88,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
 		return runSession(svc, rest[1:], stdout, stderr)
 	case "context":
-		sessionStore, err := store.NewSQLiteSessionStore(*sessionDBFile)
+		sessionStore, err := store.NewSQLiteSessionStore(resolvedSessionDBFile)
 		if err != nil {
 			return printError(err, stderr)
 		}

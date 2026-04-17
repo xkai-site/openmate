@@ -193,7 +193,7 @@ class AgentCapabilityService:
             assembler=self._assembler,
         )
         self._gateway = gateway or PoolGateway(
-            db_path=Path(pool_db_path or self._workspace_root / ".pool_state.db"),
+            db_path=Path(pool_db_path or self._workspace_root / ".openmate" / "runtime" / "openmate.db"),
             model_config_path=Path(pool_model_config_path or self._workspace_root / "model.json"),
             binary_path=pool_binary_path,
             workspace_root=self._workspace_root,

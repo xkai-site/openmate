@@ -353,3 +353,15 @@
 5. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_pipeline_orchestration tests.test_service -v` 通过（28 项）
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）
+
+## 2026-04-17 统一数据库路径对齐（一期）
+
+1. `openmate_agent.service.AgentCapabilityService` 默认 `pool_db_path` 改为 `.openmate/runtime/openmate.db`。
+2. `VosContextGateway` 与 `VosSessionGateway` 默认路径改为：
+   - `state_file`: `.openmate/runtime/vos_state.json`
+   - `session_db_file`: `.openmate/runtime/openmate.db`
+3. Agent 侧默认配置与 `vos --db-file`、`openmate-pool --db-file` 完成对齐，未显式传参即可走统一数据库联调。
+4. 本轮范围内不引入历史库自动迁移，旧路径数据迁移由后续运维动作单独处理。
+5. 回归结果：
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）

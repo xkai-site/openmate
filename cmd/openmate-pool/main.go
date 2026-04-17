@@ -20,7 +20,7 @@ func main() {
 func run(args []string) int {
 	root := flag.NewFlagSet("pool", flag.ContinueOnError)
 	root.SetOutput(os.Stdout)
-	dbFile := root.String("db-file", ".pool_state.db", "SQLite state database path")
+	dbFile := root.String("db-file", filepath.FromSlash(".openmate/runtime/openmate.db"), "SQLite state database path")
 	modelConfig := root.String("model-config", "model.json", "Model config JSON path")
 	root.Usage = func() {
 		fmt.Fprintln(os.Stdout, "usage: pool [--db-file DB_FILE] [--model-config MODEL_CONFIG] {invoke,cap,records,usage,sync} ...")

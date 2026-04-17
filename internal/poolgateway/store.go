@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,12 +25,16 @@ const (
 )
 
 func NewStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", path)
+	cleanPath := filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create pool database directory: %w", err)
+	}
+	db, err := sql.Open("sqlite3", cleanPath)
 	if err != nil {
 		return nil, err
 	}
 	store := &Store{
-		path: path,
+		path: cleanPath,
 		db:   db,
 	}
 	if err := store.initDB(context.Background()); err != nil {

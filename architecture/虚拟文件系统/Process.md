@@ -171,3 +171,15 @@
 7. 验证结果：
    - `go test ./internal/vos/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-17 Session 数据并入统一 SQLite（一期）
+
+1. `vos` CLI 新增统一参数 `--db-file`，默认值为 `.openmate/runtime/openmate.db`。
+2. `--session-db-file` 改为覆盖参数；未显式设置时默认跟随 `--db-file`。
+3. `state_file` 默认路径同步调整为 `.openmate/runtime/vos_state.json`，保持状态文件与会话库同目录管理。
+4. `internal/vos/store/session_store.go` 增补 SQLite 并发稳定性：
+   - 写路径 busy/locked 重试。
+   - `PRAGMA busy_timeout = 5000`。
+   - `PRAGMA journal_mode = WAL` 持续启用。
+5. 新增 `internal/vos/cli/session_cli_test.go` 用例，覆盖 `--db-file` 驱动 session 命令成功链路。
+6. 回归结果：`go test ./...` 通过。

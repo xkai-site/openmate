@@ -95,3 +95,52 @@ func TestRunPlanNegativeSlots(t *testing.T) {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
 }
+
+func TestResolveRuntimeDBFilesUsesUnifiedPathByDefault(t *testing.T) {
+	runtimePath, sessionPath, err := resolveRuntimeDBFiles(
+		".openmate/runtime/openmate.db",
+		"",
+		"",
+		map[string]bool{},
+	)
+	if err != nil {
+		t.Fatalf("resolveRuntimeDBFiles() error = %v", err)
+	}
+	if runtimePath != ".openmate/runtime/openmate.db" {
+		t.Fatalf("runtimePath = %s, want .openmate/runtime/openmate.db", runtimePath)
+	}
+	if sessionPath != ".openmate/runtime/openmate.db" {
+		t.Fatalf("sessionPath = %s, want .openmate/runtime/openmate.db", sessionPath)
+	}
+}
+
+func TestResolveRuntimeDBFilesKeepsExplicitOverrides(t *testing.T) {
+	runtimePath, sessionPath, err := resolveRuntimeDBFiles(
+		".openmate/runtime/openmate.db",
+		".openmate/runtime/schedule.db",
+		".openmate/runtime/vos_sessions.db",
+		map[string]bool{
+			"runtime-db-file":     true,
+			"vos-session-db-file": true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveRuntimeDBFiles() error = %v", err)
+	}
+	if runtimePath != ".openmate/runtime/schedule.db" {
+		t.Fatalf("runtimePath = %s, want .openmate/runtime/schedule.db", runtimePath)
+	}
+	if sessionPath != ".openmate/runtime/vos_sessions.db" {
+		t.Fatalf("sessionPath = %s, want .openmate/runtime/vos_sessions.db", sessionPath)
+	}
+}
+
+func TestResolveRuntimeDBFilesRejectsEmptyUnifiedPath(t *testing.T) {
+	_, _, err := resolveRuntimeDBFiles("", "", "", map[string]bool{})
+	if err == nil {
+		t.Fatalf("resolveRuntimeDBFiles() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "db-file must not be empty") {
+		t.Fatalf("error = %v, want db-file validation", err)
+	}
+}

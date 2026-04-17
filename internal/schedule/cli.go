@@ -16,11 +16,12 @@ import (
 func Run(args []string, stdout, stderr io.Writer) int {
 	root := flag.NewFlagSet("openmate-schedule", flag.ContinueOnError)
 	root.SetOutput(stderr)
-	runtimeDBFile := root.String("runtime-db-file", filepath.FromSlash(".openmate/runtime/schedule.db"), "Schedule runtime SQLite database path")
+	dbFile := root.String("db-file", defaultUnifiedDBFile(), "Unified SQLite database path for schedule runtime and VOS sessions")
+	runtimeDBFile := root.String("runtime-db-file", "", "Schedule runtime SQLite database path (overrides --db-file)")
 	workdir := root.String("workdir", ".", "Working directory for shell-out commands")
 	vosCommandRaw := root.String("vos-command", defaultVOSCommand(), "Command used to invoke VOS CLI")
 	vosStateFile := root.String("vos-state-file", filepath.FromSlash(".openmate/runtime/vos_state.json"), "VOS state file path passed to vos command")
-	vosSessionDBFile := root.String("vos-session-db-file", filepath.FromSlash(".openmate/runtime/vos_sessions.db"), "VOS session database path passed to vos command")
+	vosSessionDBFile := root.String("vos-session-db-file", "", "VOS session database path passed to vos command (overrides --db-file)")
 	workerCommandRaw := root.String("worker-command", defaultWorkerCommand(), "Command used to invoke agent worker CLI")
 	defaultTimeoutMS := root.Int("default-timeout-ms", 120000, "Default worker timeout in milliseconds")
 	agingSeconds := root.Int("aging-seconds", 600, "Topic aging promotion threshold in seconds")
@@ -50,6 +51,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	setFlags := map[string]bool{}
+	root.Visit(func(flagValue *flag.Flag) {
+		setFlags[flagValue.Name] = true
+	})
+	resolvedRuntimeDBFile, resolvedVOSSessionDBFile, err := resolveRuntimeDBFiles(
+		*dbFile,
+		*runtimeDBFile,
+		*vosSessionDBFile,
+		setFlags,
+	)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
 	rest := root.Args()
 	if len(rest) == 0 {
 		root.Usage()
@@ -61,44 +77,44 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPlan(rest[1:], stdout, stderr)
 	case "enqueue":
 		return runEnqueue(rest[1:], stdout, stderr, runtimeCommandConfig{
-			RuntimeDBFile:    *runtimeDBFile,
+			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
-			VOSSessionDBFile: *vosSessionDBFile,
+			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
 		})
 	case "tick":
 		return runTick(rest[1:], stdout, stderr, runtimeCommandConfig{
-			RuntimeDBFile:    *runtimeDBFile,
+			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
-			VOSSessionDBFile: *vosSessionDBFile,
+			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
 		})
 	case "run":
 		return runLoop(rest[1:], stdout, stderr, runtimeCommandConfig{
-			RuntimeDBFile:    *runtimeDBFile,
+			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
-			VOSSessionDBFile: *vosSessionDBFile,
+			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
 		})
 	case "state":
 		return runState(rest[1:], stdout, stderr, runtimeCommandConfig{
-			RuntimeDBFile:    *runtimeDBFile,
+			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
-			VOSSessionDBFile: *vosSessionDBFile,
+			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
@@ -383,6 +399,36 @@ func loadInputPayload(requestFile, requestJSON string) ([]byte, error) {
 	return []byte(requestJSON), nil
 }
 
+func resolveRuntimeDBFiles(
+	dbFile string,
+	runtimeDBFile string,
+	vosSessionDBFile string,
+	setFlags map[string]bool,
+) (string, string, error) {
+	unified := strings.TrimSpace(dbFile)
+	if unified == "" {
+		return "", "", ValidationError{Message: "db-file must not be empty"}
+	}
+
+	runtimePath := strings.TrimSpace(runtimeDBFile)
+	if !setFlags["runtime-db-file"] {
+		runtimePath = unified
+	}
+	if runtimePath == "" {
+		return "", "", ValidationError{Message: "runtime-db-file must not be empty"}
+	}
+
+	vosSessionPath := strings.TrimSpace(vosSessionDBFile)
+	if !setFlags["vos-session-db-file"] {
+		vosSessionPath = unified
+	}
+	if vosSessionPath == "" {
+		return "", "", ValidationError{Message: "vos-session-db-file must not be empty"}
+	}
+
+	return runtimePath, vosSessionPath, nil
+}
+
 func splitCommand(raw string) []string {
 	fields := strings.Fields(strings.TrimSpace(raw))
 	result := make([]string, 0, len(fields))
@@ -445,6 +491,10 @@ func defaultVOSCommand() string {
 		return defaultBinary
 	}
 	return "go run ./cmd/vos"
+}
+
+func defaultUnifiedDBFile() string {
+	return filepath.FromSlash(".openmate/runtime/openmate.db")
 }
 
 func defaultWorkerCommand() string {

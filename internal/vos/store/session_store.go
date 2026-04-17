@@ -31,6 +31,11 @@ type SQLiteSessionStore struct {
 	db   *sql.DB
 }
 
+const (
+	sqliteBusyRetryDelay = 25 * time.Millisecond
+	sqliteBusyMaxRetries = 200
+)
+
 func NewSQLiteSessionStore(path string) (*SQLiteSessionStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create session database directory: %w", err)
@@ -64,17 +69,20 @@ func (store *SQLiteSessionStore) CreateSession(session *domain.Session) error {
 	session.Normalize()
 	ctx := context.Background()
 
-	_, err := store.db.ExecContext(
-		ctx,
-		`INSERT INTO sessions (id, node_id, status, created_at, updated_at, last_seq)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		session.ID,
-		session.NodeID,
-		string(session.Status),
-		formatSessionTime(session.CreatedAt),
-		formatSessionTime(session.UpdatedAt),
-		session.LastSeq,
-	)
+	err := retryOnSQLiteBusy(ctx, func() error {
+		_, execErr := store.db.ExecContext(
+			ctx,
+			`INSERT INTO sessions (id, node_id, status, created_at, updated_at, last_seq)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			session.ID,
+			session.NodeID,
+			string(session.Status),
+			formatSessionTime(session.CreatedAt),
+			formatSessionTime(session.UpdatedAt),
+			session.LastSeq,
+		)
+		return execErr
+	})
 	if err != nil {
 		if isSQLiteConstraint(err) {
 			return domain.DuplicateEntityError{Kind: "session", ID: session.ID}
@@ -86,7 +94,15 @@ func (store *SQLiteSessionStore) CreateSession(session *domain.Session) error {
 
 func (store *SQLiteSessionStore) DeleteSession(sessionID string) error {
 	ctx := context.Background()
-	result, err := store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sessionID)
+	var result sql.Result
+	err := retryOnSQLiteBusy(ctx, func() error {
+		value, execErr := store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sessionID)
+		if execErr != nil {
+			return execErr
+		}
+		result = value
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -328,6 +344,9 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		return err
 	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
 		return err
 	}
@@ -369,7 +388,10 @@ func (store *SQLiteSessionStore) initDB(ctx context.Context) error {
 	}
 
 	for _, statement := range statements {
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
+		if err := retryOnSQLiteBusy(ctx, func() error {
+			_, execErr := conn.ExecContext(ctx, statement)
+			return execErr
+		}); err != nil {
 			return err
 		}
 	}
@@ -572,6 +594,12 @@ func tableDefinitionSQL(ctx context.Context, conn *sql.Conn, table string) (stri
 }
 
 func (store *SQLiteSessionStore) withImmediateTx(ctx context.Context, fn func(conn *sql.Conn) error) error {
+	return retryOnSQLiteBusy(ctx, func() error {
+		return store.withImmediateTxOnce(ctx, fn)
+	})
+}
+
+func (store *SQLiteSessionStore) withImmediateTxOnce(ctx context.Context, fn func(conn *sql.Conn) error) error {
 	conn, err := store.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -579,6 +607,9 @@ func (store *SQLiteSessionStore) withImmediateTx(ctx context.Context, fn func(co
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
@@ -733,6 +764,39 @@ func formatSessionTime(value time.Time) string {
 
 func parseSessionTime(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
+}
+
+func retryOnSQLiteBusy(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 0; attempt < sqliteBusyMaxRetries; attempt++ {
+		err = fn()
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		if waitErr := waitWithContext(ctx, sqliteBusyRetryDelay); waitErr != nil {
+			return waitErr
+		}
+	}
+	return err
+}
+
+func waitWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy")
 }
 
 func isSQLiteConstraint(err error) bool {

@@ -93,3 +93,14 @@
 1. `priority_node` 当前为启发式编排，尚未接入真实 LLM PriorityAgent 评分提示词与策略。
 2. Topic 热度评分尚未完整接入交互事件流，当前一级仍偏工程侧轮转/层级机制。
 3. worker 超时/取消/重试策略已留契约位，但取消 token 与强一致回收仍需增强。
+
+## 2026-04-17 统一 SQLite 数据库一期整合
+
+1. `openmate-schedule` 新增统一参数 `--db-file`，默认值为 `.openmate/runtime/openmate.db`。
+2. `--runtime-db-file` 与 `--vos-session-db-file` 改为显式覆盖参数；未显式设置时默认跟随 `--db-file`。
+3. 调度运行时 SQLite 稳定性增强：
+   - 启用 `PRAGMA journal_mode = WAL`。
+   - 启用 `PRAGMA busy_timeout = 5000`。
+   - 写入与写事务路径补充 busy/locked 重试。
+4. 新增路径解析测试（`internal/schedule/cli_test.go`）覆盖默认跟随、显式覆盖、空值校验。
+5. 回归结果：`go test ./...` 通过。

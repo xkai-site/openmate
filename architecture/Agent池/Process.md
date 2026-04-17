@@ -62,6 +62,16 @@
 4. 已修复为显式关闭初始化连接。
 5. 当前可直接继续在 `openmate_pool` 上开发。
 
+## 2026-04-17 统一数据库路径对齐（一期）
+
+1. `cmd/openmate-pool` 默认 `--db-file` 改为 `.openmate/runtime/openmate.db`，与调度和 VOS session 统一。
+2. `internal/poolgateway.NewStore` 新增路径收敛与目录自动创建，避免首次启动因目录不存在而失败。
+3. Python 适配层 `openmate_pool.PoolGateway` 默认 `db_path` 改为 `.openmate/runtime/openmate.db`。
+4. 与 Agent 侧 `PoolGateway` 默认入参保持一致，减少跨模块联调时的路径分叉配置。
+5. 回归结果：
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）
+
 ## 后续待办（仅保留有效项）
 
 1. 将默认重试策略参数化到配置层，但在开放前先保持当前代码内默认值稳定。

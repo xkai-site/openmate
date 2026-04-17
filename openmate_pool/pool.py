@@ -24,7 +24,7 @@ class PoolGateway:
         binary_path: str | Path | None = None,
     ) -> None:
         self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
-        self._db_path = Path(db_path or self._workspace_root / ".pool_state.db").resolve()
+        self._db_path = Path(db_path or self._workspace_root / ".openmate" / "runtime" / "openmate.db").resolve()
         self._model_config_path = Path(model_config_path or self._workspace_root / "model.json").resolve()
         self._binary_path = binary_path
 
