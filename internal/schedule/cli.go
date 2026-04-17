@@ -7,10 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"vos/internal/openmate/observability"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -18,18 +21,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root.SetOutput(stderr)
 	dbFile := root.String("db-file", defaultUnifiedDBFile(), "Unified SQLite database path for schedule runtime and VOS sessions")
 	runtimeDBFile := root.String("runtime-db-file", "", "Schedule runtime SQLite database path (overrides --db-file)")
-	workdir := root.String("workdir", ".", "Working directory for shell-out commands")
+	workdir := root.String("workdir", ".", "Working directory for worker command execution")
+	vosMode := root.String("vos-mode", "direct", "VOS gateway mode: direct or shell")
 	vosCommandRaw := root.String("vos-command", defaultVOSCommand(), "Command used to invoke VOS CLI")
 	vosStateFile := root.String("vos-state-file", filepath.FromSlash(".openmate/runtime/vos_state.json"), "VOS state file path passed to vos command")
 	vosSessionDBFile := root.String("vos-session-db-file", "", "VOS session database path passed to vos command (overrides --db-file)")
 	workerCommandRaw := root.String("worker-command", defaultWorkerCommand(), "Command used to invoke agent worker CLI")
 	defaultTimeoutMS := root.Int("default-timeout-ms", 120000, "Default worker timeout in milliseconds")
 	agingSeconds := root.Int("aging-seconds", 600, "Topic aging promotion threshold in seconds")
+	logLevel := root.String("log-level", "info", "Log level: debug|info|warn|error")
+	logFormat := root.String("log-format", "json", "Log format: json|text")
 	root.Usage = func() {
 		fmt.Fprintln(stdout, "usage: openmate-schedule <command> [flags]")
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "OpenMate schedule control-plane CLI.")
-		fmt.Fprintln(stdout, "Module boundaries are frozen at CLI + JSON contracts.")
+		fmt.Fprintln(stdout, "Default path uses direct Go VOS gateway; Python worker stays on CLI + JSON boundary.")
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Commands:")
 		fmt.Fprintln(stdout, "  plan   Build one topic dispatch plan from a topic snapshot JSON file")
@@ -50,6 +56,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	logger, err := observability.NewLogger(observability.Config{
+		Level:  *logLevel,
+		Format: *logFormat,
+		Writer: stderr,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	logger = logger.With(slog.String(observability.FieldComponent, "schedule"))
 
 	setFlags := map[string]bool{}
 	root.Visit(func(flagValue *flag.Flag) {
@@ -62,6 +78,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		setFlags,
 	)
 	if err != nil {
+		logger.Error("resolve runtime db files failed", slog.Any("error", err))
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
@@ -79,45 +96,53 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runEnqueue(rest[1:], stdout, stderr, runtimeCommandConfig{
 			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
+			VOSMode:          *vosMode,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
 			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
+			Logger:           logger,
 		})
 	case "tick":
 		return runTick(rest[1:], stdout, stderr, runtimeCommandConfig{
 			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
+			VOSMode:          *vosMode,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
 			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
+			Logger:           logger,
 		})
 	case "run":
 		return runLoop(rest[1:], stdout, stderr, runtimeCommandConfig{
 			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
+			VOSMode:          *vosMode,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
 			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
+			Logger:           logger,
 		})
 	case "state":
 		return runState(rest[1:], stdout, stderr, runtimeCommandConfig{
 			RuntimeDBFile:    resolvedRuntimeDBFile,
 			Workdir:          *workdir,
+			VOSMode:          *vosMode,
 			VOSCommand:       splitCommand(*vosCommandRaw),
 			VOSStateFile:     *vosStateFile,
 			VOSSessionDBFile: resolvedVOSSessionDBFile,
 			WorkerCommand:    splitCommand(*workerCommandRaw),
 			DefaultTimeoutMS: *defaultTimeoutMS,
 			AgingThreshold:   time.Duration(*agingSeconds) * time.Second,
+			Logger:           logger,
 		})
 	case "help":
 		root.Usage()
@@ -132,12 +157,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 type runtimeCommandConfig struct {
 	RuntimeDBFile    string
 	Workdir          string
+	VOSMode          string
 	VOSCommand       []string
 	VOSStateFile     string
 	VOSSessionDBFile string
 	WorkerCommand    []string
 	DefaultTimeoutMS int
 	AgingThreshold   time.Duration
+	Logger           *slog.Logger
 }
 
 func runPlan(args []string, stdout, stderr io.Writer) int {
@@ -228,7 +255,8 @@ func runEnqueue(args []string, stdout, stderr io.Writer, config runtimeCommandCo
 	}
 	defer closer()
 
-	result, err := engine.Enqueue(context.Background(), request)
+	ctx := observability.WithLogger(context.Background(), config.Logger)
+	result, err := engine.Enqueue(ctx, request)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -264,7 +292,8 @@ func runTick(args []string, stdout, stderr io.Writer, config runtimeCommandConfi
 	}
 	defer closer()
 
-	result, err := engine.Tick(context.Background(), *maxDispatch)
+	ctx := observability.WithLogger(context.Background(), config.Logger)
+	result, err := engine.Tick(ctx, *maxDispatch)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -302,13 +331,14 @@ func runLoop(args []string, stdout, stderr io.Writer, config runtimeCommandConfi
 		return 1
 	}
 	defer closer()
+	ctx := observability.WithLogger(context.Background(), config.Logger)
 
 	results := []TickResult{}
 	ticker := time.NewTicker(time.Duration(*intervalMS) * time.Millisecond)
 	defer ticker.Stop()
 
 	for tick := 0; ; tick++ {
-		result, err := engine.Tick(context.Background(), *maxDispatch)
+		result, err := engine.Tick(ctx, *maxDispatch)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
@@ -446,19 +476,45 @@ func openEngine(config runtimeCommandConfig) (*Engine, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
+
+	cleanups := []func(){
+		func() { _ = store.Close() },
+	}
 	cleanup := func() {
-		_ = store.Close()
+		for index := len(cleanups) - 1; index >= 0; index-- {
+			cleanups[index]()
+		}
 	}
-	vosGateway, err := NewShellVOSGateway(ShellGatewayConfig{
-		Workdir:          config.Workdir,
-		VOSCommand:       config.VOSCommand,
-		VOSStateFile:     config.VOSStateFile,
-		VOSSessionDBFile: config.VOSSessionDBFile,
-	})
-	if err != nil {
+
+	var vosGateway VOSGateway
+	switch strings.ToLower(strings.TrimSpace(config.VOSMode)) {
+	case "", "direct":
+		directGateway, closeDirect, directErr := OpenDirectVOSGateway(config.VOSStateFile, config.VOSSessionDBFile)
+		if directErr != nil {
+			cleanup()
+			return nil, nil, directErr
+		}
+		if closeDirect != nil {
+			cleanups = append(cleanups, closeDirect)
+		}
+		vosGateway = directGateway
+	case "shell":
+		shellGateway, shellErr := NewShellVOSGateway(ShellGatewayConfig{
+			Workdir:          config.Workdir,
+			VOSCommand:       config.VOSCommand,
+			VOSStateFile:     config.VOSStateFile,
+			VOSSessionDBFile: config.VOSSessionDBFile,
+		})
+		if shellErr != nil {
+			cleanup()
+			return nil, nil, shellErr
+		}
+		vosGateway = shellGateway
+	default:
 		cleanup()
-		return nil, nil, err
+		return nil, nil, ValidationError{Message: "vos-mode must be one of: direct, shell"}
 	}
+
 	workerGateway, err := NewShellWorkerGateway(ShellGatewayConfig{
 		Workdir:       config.Workdir,
 		WorkerCommand: config.WorkerCommand,
@@ -475,6 +531,7 @@ func openEngine(config runtimeCommandConfig) (*Engine, func(), error) {
 			MaxDispatchPerTick: 1,
 			DefaultTimeoutMS:   config.DefaultTimeoutMS,
 			AgingThreshold:     config.AgingThreshold,
+			Logger:             config.Logger,
 		},
 		nil,
 	)

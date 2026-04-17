@@ -371,3 +371,17 @@
 1. Removed unused default implementations `DefaultAgentExecutor` and `DefaultLlmGateway` from `openmate_agent.defaults`.
 2. Kept public `priority()` contract and current session/tool orchestration behavior unchanged.
 3. Verified Python unit tests (`unittest discover -s tests -p "test_*.py" -v`) passed.
+
+## 2026-04-17 Assistant 文本增量事件落地（assistant_delta）
+
+1. SessionEvent 枚举补充 `assistant_delta`，用于 assistant 文本增量回放。
+2. `ResponsesExecutionRunner` 在写最终 `message` 前，按分段写入 `assistant_delta` 事件：
+   - `item_type=assistant_delta`
+   - `role=assistant`
+   - `payload.delta=<文本分段>`
+3. 工具调用事件语义保持不变，继续使用：
+   - `function_call`
+   - `function_call_output`
+4. 单测已同步更新 `tests/test_service.py`，放宽事件数量断言并校验 `assistant_delta` 存在。
+5. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）

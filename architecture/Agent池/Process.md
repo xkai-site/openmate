@@ -82,3 +82,25 @@
 1. Removed unused helper functions `intPtr` and `parseInt` from `cmd/openmate-pool/main.go`.
 2. Kept all pool CLI contracts (`invoke/cap/records/usage/sync`) unchanged.
 3. Verified `go test ./internal/poolgateway/...` and full `go test ./...` passed.
+
+## 2026-04-17 统一 Go 运行时装配接入
+
+1. 新增统一运行时装配层 `internal/openmate/runtime`，已将 `poolgateway` 纳入同一装配上下文。
+2. 当前行为为：
+   - `pool` 运行时与 `vos/schedule` 共享 `.openmate/runtime/openmate.db` 默认路径
+   - `pool` 对外 `cmd/openmate-pool` CLI 语义保持不变
+3. 该变更用于支撑同进程运行形态，不改变现有 Python adapter 调用方式。
+
+## 2026-04-17 Pool 日志链路接入（slog）
+
+1. `internal/poolgateway/gateway.go` 已接入结构化日志，覆盖调用生命周期：
+   - 调用预留
+   - 尝试执行与重试
+   - 成功/失败收敛
+2. `cmd/openmate-pool` 新增统一日志参数：
+   - `--log-level`（`debug|info|warn|error`）
+   - `--log-format`（`json|text`）
+3. CLI 兼容性要求保持不变：业务 JSON 始终输出到 `stdout`，日志仅写入 `stderr`。
+4. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过

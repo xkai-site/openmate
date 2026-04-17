@@ -22,6 +22,7 @@ const (
 
 const (
 	SessionItemTypeMessage            = "message"
+	SessionItemTypeAssistantDelta     = "assistant_delta"
 	SessionItemTypeFunctionCall       = "function_call"
 	SessionItemTypeFunctionCallOutput = "function_call_output"
 	SessionItemTypeReasoning          = "reasoning"

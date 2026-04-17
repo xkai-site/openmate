@@ -6,6 +6,7 @@
 - VOS 只负责事件存储、顺序回放、按 `call_id` 查询，不负责工具执行。
 - `item_type` 采用 Responses 对齐策略：
   - 工具相关：`function_call`、`function_call_output`
+  - 流式文本：`assistant_delta`
   - 非工具输出：`message`（无工具调用时的 assistant 回复）
   - 其他 Responses 类型按非空字符串前向兼容（如 `reasoning`、`web_search_call` 等）
 
@@ -99,6 +100,22 @@
 - `role` 建议为 `assistant`。
 - 可附加 `response_id`、原始 `content` 片段用于 UI 回放。
 
+## 6.1 assistant_delta 载荷（流式增量）
+
+`item_type=assistant_delta` 时，建议最小结构：
+
+```json
+{
+  "role": "assistant",
+  "delta": "text chunk",
+  "response_id": "resp_xxx"
+}
+```
+
+- `delta`：必填，单次增量文本片段。
+- `call_id` 为空。
+- `next_status` 通常保持 `active`，最终仍由 `message` 事件落完成态。
+
 ## 7. 幂等与重试约定
 
 - 幂等键建议：`session_id + call_id + item_type`
@@ -113,11 +130,13 @@
 2. VOS 追加事件（可置 `waiting`）
 3. 上层执行工具
 4. 上层写入 `function_call_output`（可置 `active`）
-5. Agent 产出最终 `message`（`completed/failed`）
+5. Agent 产出 `assistant_delta*`（可选，多条）
+6. Agent 产出最终 `message`（`completed/failed`）
 
 无工具调用：
-1. Agent 直接产出 `message`
-2. VOS 追加 `message` 并按执行策略设置 `completed/failed`
+1. Agent 可先产出 `assistant_delta*`（可选）
+2. Agent 产出 `message`
+3. VOS 追加 `message` 并按执行策略设置 `completed/failed`
 
 ## 9. 兼容策略
 

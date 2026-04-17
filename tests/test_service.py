@@ -39,8 +39,10 @@ class AgentCapabilityServiceTests(unittest.TestCase):
 
         self.assertEqual(result, "executed node=node-no-tool")
         self.assertEqual(session_gateway.ensure_calls, [("node-no-tool", "session-no-tool")])
-        self.assertEqual(len(session_gateway.events), 1)
-        event = session_gateway.events[0]
+        self.assertGreaterEqual(len(session_gateway.events), 2)
+        delta_events = [event for event in session_gateway.events if event.item_type == "assistant_delta"]
+        self.assertGreaterEqual(len(delta_events), 1)
+        event = session_gateway.events[-1]
         self.assertEqual(event.item_type, "message")
         self.assertEqual(event.role.value, "assistant")
         self.assertEqual(event.next_status.value, "completed")
@@ -71,13 +73,14 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(second.request.input[0]["type"], "function_call_output")
         self.assertEqual(second.request.input[0]["call_id"], "call-1")
 
-        self.assertEqual(len(session_gateway.events), 3)
+        self.assertGreaterEqual(len(session_gateway.events), 4)
         self.assertEqual(session_gateway.events[0].item_type, "function_call")
         self.assertEqual(session_gateway.events[0].next_status.value, "waiting")
         self.assertEqual(session_gateway.events[1].item_type, "function_call_output")
         self.assertEqual(session_gateway.events[1].next_status.value, "active")
-        self.assertEqual(session_gateway.events[2].item_type, "message")
-        self.assertEqual(session_gateway.events[2].next_status.value, "completed")
+        self.assertIn("assistant_delta", [event.item_type for event in session_gateway.events])
+        self.assertEqual(session_gateway.events[-1].item_type, "message")
+        self.assertEqual(session_gateway.events[-1].next_status.value, "completed")
 
     def test_execute_marks_failed_status_when_gateway_raises_after_tool_call(self) -> None:
         gateway = _ToolLoopThenFailGateway()

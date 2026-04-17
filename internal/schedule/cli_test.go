@@ -144,3 +144,16 @@ func TestResolveRuntimeDBFilesRejectsEmptyUnifiedPath(t *testing.T) {
 		t.Fatalf("error = %v, want db-file validation", err)
 	}
 }
+
+func TestRunTickRejectsUnknownVOSMode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Run([]string{"--vos-mode", "unknown", "tick"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "vos-mode must be one of") {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+}

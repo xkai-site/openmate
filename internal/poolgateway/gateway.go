@@ -3,7 +3,10 @@ package poolgateway
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
+
+	"vos/internal/openmate/observability"
 )
 
 type ProviderFactory func(provider string) (ProviderClient, error)
@@ -14,6 +17,7 @@ type Gateway struct {
 	providerFactory ProviderFactory
 	retryPolicy     *RetryPolicy
 	sleepFn         func(context.Context, time.Duration) error
+	logger          *slog.Logger
 }
 
 func NewGateway(store *Store, modelConfigPath string) *Gateway {
@@ -22,7 +26,12 @@ func NewGateway(store *Store, modelConfigPath string) *Gateway {
 		modelConfigPath: modelConfigPath,
 		providerFactory: GetProviderClient,
 		sleepFn:         waitWithContext,
+		logger:          observability.NormalizeLogger(nil),
 	}
+}
+
+func (gateway *Gateway) SetLogger(logger *slog.Logger) {
+	gateway.logger = observability.NormalizeLogger(logger)
 }
 
 func (gateway *Gateway) SetProviderFactory(factory ProviderFactory) {
@@ -43,19 +52,43 @@ func (gateway *Gateway) SetSleepFn(sleepFn func(context.Context, time.Duration) 
 }
 
 func (gateway *Gateway) Invoke(ctx context.Context, request InvokeRequest) (InvokeResponse, error) {
+	logger := observability.LoggerFromContext(ctx, gateway.logger).With(
+		slog.String(observability.FieldOperation, "pool.invoke"),
+		slog.String(observability.FieldRequestID, request.RequestID),
+		slog.String(observability.FieldNodeID, request.NodeID),
+	)
+	invokedAt := utcNow()
 	config, err := LoadModelConfig(gateway.modelConfigPath)
 	if err != nil {
+		logger.Error("load model config failed", slog.Any("error", err))
 		return InvokeResponse{}, err
 	}
 	request = normalizeRequest(request)
 	if err := validateInvokeRequest(request); err != nil {
+		logger.Error("validate invoke request failed", slog.Any("error", err))
 		return InvokeResponse{}, err
 	}
 	reservation, err := gateway.store.ReserveInvocation(ctx, config, request)
 	if err != nil {
+		logger.Error("reserve invocation failed", slog.Any("error", err))
 		return InvokeResponse{}, err
 	}
-	return gateway.invokeReserved(ctx, config, request, reservation)
+	logger = logger.With(
+		slog.String(observability.FieldInvocationID, reservation.InvocationID),
+		slog.String(observability.FieldAttemptID, reservation.AttemptID),
+	)
+	ctx = observability.WithLogger(ctx, logger)
+	response, err := gateway.invokeReserved(ctx, config, request, reservation)
+	if err != nil {
+		logger.Error("invoke failed", slog.Any("error", err))
+		return response, err
+	}
+	logger.Info(
+		"invoke succeeded",
+		slog.String("status", string(response.Status)),
+		slog.Int64(observability.FieldDurationMS, int64(utcNow().Sub(invokedAt).Milliseconds())),
+	)
+	return response, nil
 }
 
 func (gateway *Gateway) invokeReserved(
@@ -64,11 +97,26 @@ func (gateway *Gateway) invokeReserved(
 	request InvokeRequest,
 	reservation InvocationReservation,
 ) (InvokeResponse, error) {
+	logger := observability.LoggerFromContext(ctx, gateway.logger).With(
+		slog.String(observability.FieldOperation, "pool.invoke_reserved"),
+		slog.String(observability.FieldInvocationID, reservation.InvocationID),
+		slog.String(observability.FieldAttemptID, reservation.AttemptID),
+	)
 	policy := gateway.resolveRetryPolicy(config)
 	currentReservation := reservation
 	for attempt := 1; ; attempt++ {
+		attemptLogger := logger.With(
+			slog.Int("attempt", attempt),
+			slog.String(observability.FieldAttemptID, currentReservation.AttemptID),
+		)
+		attemptLogger.Debug(
+			"attempt started",
+			slog.String("provider", currentReservation.Provider),
+			slog.String("api_id", currentReservation.APIID),
+		)
 		provider, err := gateway.providerFactory(currentReservation.Provider)
 		if err != nil {
+			attemptLogger.Error("provider factory failed", slog.Any("error", err))
 			return gateway.finishInternalFailure(ctx, currentReservation, err)
 		}
 
@@ -76,34 +124,51 @@ func (gateway *Gateway) invokeReserved(
 		if err != nil {
 			providerErr, ok := err.(*ProviderInvocationError)
 			if !ok {
+				attemptLogger.Error("provider invoke failed with non-provider error", slog.Any("error", err))
 				return gateway.finishInternalFailure(ctx, currentReservation, err)
 			}
 
 			finishedAt := utcNow()
 			if err := gateway.store.CompleteAttemptFailure(ctx, currentReservation, providerErr.GatewayError, finishedAt); err != nil {
+				attemptLogger.Error("complete attempt failure failed", slog.Any("error", err))
 				return InvokeResponse{}, err
 			}
+			attemptLogger.Warn(
+				"attempt failed",
+				slog.String("error_code", providerErr.GatewayError.Code),
+				slog.Bool("retryable", providerErr.GatewayError.Retryable),
+			)
 			if !policy.shouldRetry(attempt, providerErr.GatewayError) {
 				return gateway.finishInvocationFailure(ctx, currentReservation.InvocationID, providerErr.GatewayError, finishedAt)
 			}
 			if err := gateway.sleepFn(ctx, policy.backoffFor(attempt)); err != nil {
+				attemptLogger.Error("retry backoff interrupted", slog.Any("error", err))
 				return gateway.finishInvocationFailure(ctx, currentReservation.InvocationID, internalGatewayError(err), utcNow())
 			}
 
 			nextReservation, reserveErr := gateway.store.ReserveRetryAttempt(ctx, config, currentReservation.InvocationID, request)
 			if reserveErr != nil {
+				attemptLogger.Error("reserve retry attempt failed", slog.Any("error", reserveErr))
 				if errors.Is(reserveErr, ErrNoCapacity) || errors.Is(reserveErr, ErrGlobalQuota) {
 					return gateway.finishInvocationFailure(ctx, currentReservation.InvocationID, providerErr.GatewayError, utcNow())
 				}
 				return gateway.finishInvocationFailure(ctx, currentReservation.InvocationID, internalGatewayError(reserveErr), utcNow())
 			}
 			currentReservation = nextReservation
+			attemptLogger.Debug(
+				"retry reserved",
+				slog.String(observability.FieldAttemptID, currentReservation.AttemptID),
+			)
 			continue
 		}
 
 		finishedAt := utcNow()
 		latencyMS := int(finishedAt.Sub(currentReservation.StartedAt).Milliseconds())
 		usage := finalizeUsage(providerResult.Usage, latencyMS, currentReservation.Pricing)
+		attemptLogger.Info(
+			"attempt succeeded",
+			slog.Int("latency_ms", latencyMS),
+		)
 		return gateway.store.CompleteInvocationSuccess(
 			ctx,
 			currentReservation,

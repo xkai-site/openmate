@@ -16,6 +16,7 @@ class SessionStatus(str, Enum):
 
 class SessionItemType(str, Enum):
     MESSAGE = "message"
+    ASSISTANT_DELTA = "assistant_delta"
     FUNCTION_CALL = "function_call"
     FUNCTION_CALL_OUTPUT = "function_call_output"
     REASONING = "reasoning"

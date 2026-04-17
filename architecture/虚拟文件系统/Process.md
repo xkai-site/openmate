@@ -254,3 +254,64 @@
    - `go test ./...` 通过。
    - `go run ./cmd/openmate-vos-api --help` 正常输出。
 7. 本次仅调整 HTTP 前后端适配层，不变更 `cmd/vos` CLI 既有交互链路。
+
+## 2026-04-17 Chat API 落地（SessionEvent + Schedule 入队）
+
+1. `internal/vos/httpapi` 已新增真实对话接口：
+   - `POST /api/v1/chat`
+   - `POST /api/v1/chat/stream`（SSE）
+2. 聊天请求主链路收口为：
+   - 创建新 Session（每次用户消息一轮）
+   - 追加 user `message` 事件落库
+   - 通过 `openmate-schedule enqueue` 入队（携带 `session_id`）
+   - 轮询 SessionEvent 增量回放并对 SSE 输出
+3. SSE 事件与前端对齐：
+   - `phase`
+   - `tool_call`
+   - `assistant_delta`
+   - `assistant_done`
+   - `summary`
+   - `fatal`
+4. SessionEvent 扩展补充：
+   - 新增 `assistant_delta`（用于 assistant 文本增量回放）
+   - 最终仍写 `message` 作为稳定完成事件
+5. 回归结果：
+   - `go test ./internal/vos/httpapi/...` 通过
+   - `go test ./...` 通过
+
+## 2026-04-17 Chat node_id 兼容补充（Home 首轮对话）
+
+1. `POST /api/v1/chat` 与 `POST /api/v1/chat/stream` 支持 `node_id` 为空：
+   - 若传入有效 `node_id`，继续复用目标节点。
+   - 若未传 `node_id`，后端自动创建 Topic + RootNode，随后创建 Session 并入队。
+2. 该兼容用于首页首轮对话场景，避免前端首次发消息时报 `node_id is required`。
+3. 回归结果：
+   - `go test ./internal/vos/httpapi/...` 通过
+
+## 2026-04-17 Chat 同进程调度内聚（inproc）
+
+1. `internal/vos/httpapi` 新增调度模式：
+   - 默认 `inproc`：直接调用同进程 `schedule.Engine.Enqueue/Tick`
+   - 兼容 `shell`：保留原 `openmate-schedule` 命令调用路径
+2. `vos-api` 构造阶段新增统一运行时装配，收敛：
+   - `vos service + session store`
+   - `schedule runtime store + engine`
+   - `pool gateway`（统一 Go 运行时装配层）
+3. `/api/v1/chat*` 保持对外协议不变，内部不再强依赖外部调度进程。
+4. 回归结果：
+   - `go test ./internal/vos/httpapi/...` 通过
+   - `go test ./...` 通过
+
+## 2026-04-17 VOS API 日志链路接入（slog）
+
+1. `internal/vos/httpapi` 已接入请求级结构化日志，并贯穿 chat 主链路：
+   - `prepare -> enqueue -> wait`
+   - 同步与 SSE 流式路径均接入
+2. `cmd/openmate-vos-api` 新增统一日志参数：
+   - `--log-level`（`debug|info|warn|error`）
+   - `--log-format`（`json|text`）
+3. `request_id` 已支持从请求头透传（`X-Request-ID/X-Trace-ID/X-Correlation-ID`），未传时自动生成。
+4. `chat.wait` 补齐空状态保护，避免日志字段读取导致空指针；同步聊天完成日志补齐真实 `duration_ms`。
+5. 回归结果：
+   - `go test ./internal/vos/httpapi/...` 通过
+   - `go test ./...` 通过

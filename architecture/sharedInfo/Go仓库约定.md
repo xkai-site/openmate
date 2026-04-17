@@ -16,7 +16,7 @@
 1. 仓库根目录只保留一份 `go.mod`
 2. 仓库根目录只保留一份 `go.sum`
 3. Go 模块之间不再各自维护独立根级 `go.mod`
-4. 即使同语言、同仓库，模块之间仍统一走 CLI + JSON，不直接跨模块引用内部实现
+4. 同语言同进程场景优先内部调用；CLI + JSON 作为兼容入口保留
 5. `internal/*` 目录只供模块自身实现与本模块测试使用
 6. CLI 既保留给人工操作与测试，也承担模块间调用边界
 
@@ -59,10 +59,11 @@ openmate_agent/             # Python capability layer
 ### 5.1 模块间调用
 
 1. `schedule -> vos`：通过 `vos` CLI + JSON
-2. `schedule -> pool`：通过 `openmate-pool` CLI + JSON
-3. `schedule -> agent`：通过独立 worker CLI + JSON 契约
-4. `agent -> pool`：通过 `openmate_pool` adapter，对外仍体现为 CLI + JSON 边界
-5. 不把 `internal/vos`、`internal/poolgateway`、`internal/schedule` 当成跨模块共享接口
+2. `schedule -> vos` 在同进程场景下默认走 `internal/vos/service` 直调
+3. `schedule -> pool`：统一由 Go 运行时装配层管理（调用链可按场景选择内部/CLI 兼容路径）
+4. `schedule -> agent`：通过独立 worker CLI + JSON 契约
+5. `agent -> pool`：通过 `openmate_pool` adapter，对外仍体现为 CLI + JSON 边界
+6. 不把 `internal/vos`、`internal/poolgateway`、`internal/schedule` 当成仓库外共享接口
 
 ## 6. 变更规则
 
@@ -85,6 +86,6 @@ openmate_agent/             # Python capability layer
 
 ## 8. 当前结论
 
-1. `schedule` 改用 Go 后，仍然保持模块级硬边界，不因同语言而直接共享内部实现
-2. 单根模块解决的是仓库管理与依赖统一，不改变模块间 CLI + JSON 契约
-3. 后续若要拆仓库或拆进程，当前边界可直接复用
+1. 单根模块解决仓库管理与依赖统一，同时允许 Go 模块在仓库内直调协作
+2. 跨语言边界仍冻结在 worker CLI + JSON 契约
+3. 后续若要拆仓库或拆进程，CLI 兼容入口仍可直接复用

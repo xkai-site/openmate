@@ -25,6 +25,7 @@ type EnqueueRequest struct {
 	TopicID           string       `json:"topic_id"`
 	NodeID            string       `json:"node_id"`
 	NodeName          string       `json:"node_name"`
+	SessionID         string       `json:"session_id,omitempty"`
 	AgentSpec         AgentSpec    `json:"agent_spec"`
 	Priority          NodePriority `json:"priority"`
 	IdempotencyKey    string       `json:"idempotency_key,omitempty"`

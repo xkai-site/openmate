@@ -3,8 +3,11 @@ package schedule
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
+
+	"vos/internal/openmate/observability"
 )
 
 type SessionEventRecord struct {
@@ -28,6 +31,7 @@ type EngineConfig struct {
 	MaxDispatchPerTick int
 	DefaultTimeoutMS   int
 	AgingThreshold     time.Duration
+	Logger             *slog.Logger
 }
 
 type Engine struct {
@@ -36,6 +40,7 @@ type Engine struct {
 	worker WorkerGateway
 	now    func() time.Time
 	config EngineConfig
+	logger *slog.Logger
 }
 
 func NewEngine(store *RuntimeStore, vos VOSGateway, worker WorkerGateway, config EngineConfig, now func() time.Time) (*Engine, error) {
@@ -66,11 +71,17 @@ func NewEngine(store *RuntimeStore, vos VOSGateway, worker WorkerGateway, config
 		worker: worker,
 		now:    now,
 		config: config,
+		logger: observability.NormalizeLogger(config.Logger),
 	}, nil
 }
 
 func (engine *Engine) Enqueue(ctx context.Context, request EnqueueRequest) (EnqueueResult, error) {
-	_ = ctx
+	logger := observability.LoggerFromContext(ctx, engine.logger).With(
+		slog.String(observability.FieldOperation, "schedule.enqueue"),
+		slog.String(observability.FieldTopicID, request.TopicID),
+		slog.String(observability.FieldNodeID, request.NodeID),
+	)
+	logger.Debug("enqueue requested")
 	if request.TopicID == "" {
 		return EnqueueResult{}, ValidationError{Message: "topic_id must not be empty"}
 	}
@@ -86,10 +97,12 @@ func (engine *Engine) Enqueue(ctx context.Context, request EnqueueRequest) (Enqu
 
 	created, err := engine.store.UpsertEnqueueNode(request)
 	if err != nil {
+		logger.Error("enqueue failed", slog.Any("error", err))
 		return EnqueueResult{}, err
 	}
 	topic, err := engine.store.GetTopic(request.TopicID)
 	if err != nil {
+		logger.Error("load topic after enqueue failed", slog.Any("error", err))
 		return EnqueueResult{}, err
 	}
 	result := EnqueueResult{
@@ -103,10 +116,20 @@ func (engine *Engine) Enqueue(ctx context.Context, request EnqueueRequest) (Enqu
 	if topic.PriorityNodeID != nil {
 		result.PriorityNodeID = *topic.PriorityNodeID
 	}
+	logger.Info(
+		"enqueue succeeded",
+		slog.Bool("created", result.Created),
+		slog.Bool("priority_dirty", result.PriorityDirty),
+		slog.String("queue_level", result.QueueLevel),
+	)
 	return result, nil
 }
 
 func (engine *Engine) Tick(ctx context.Context, maxDispatch int) (TickResult, error) {
+	logger := observability.LoggerFromContext(ctx, engine.logger).With(
+		slog.String(observability.FieldOperation, "schedule.tick"),
+	)
+	startedAt := engine.now()
 	result := TickResult{}
 	result.Normalize()
 
@@ -119,68 +142,94 @@ func (engine *Engine) Tick(ctx context.Context, maxDispatch int) (TickResult, er
 	}
 
 	if err := engine.store.PromoteAgedTopics(engine.config.AgingThreshold); err != nil {
+		logger.Error("promote aged topics failed", slog.Any("error", err))
 		return result, err
 	}
 
 	topic, err := engine.selectTopic()
 	if err != nil {
+		logger.Error("select topic failed", slog.Any("error", err))
 		return result, err
 	}
 	if topic == nil {
 		result.Reasons = append(result.Reasons, "no runnable topic found")
+		logger.Debug("tick finished without runnable topic")
 		return result, nil
 	}
 	result.SelectedTopicID = topic.TopicID
 	result.QueueLevel = string(topic.QueueLevel)
+	logger = logger.With(
+		slog.String(observability.FieldTopicID, topic.TopicID),
+		slog.String("queue_level", string(topic.QueueLevel)),
+	)
 
 	if topic.PriorityDirty {
 		if len(topic.RunningNodeIDs) > 0 {
 			result.Reasons = append(result.Reasons, "priority_node waits until current sessionevent calls complete")
+			logger.Debug("priority node skipped because topic has running nodes")
 			return result, nil
 		}
 		if err := engine.ensurePriorityNode(ctx, topic.TopicID); err != nil {
+			logger.Error("ensure priority node failed", slog.Any("error", err))
 			return result, err
 		}
 		if err := engine.store.MarkPriorityNodeReady(topic.TopicID); err != nil {
+			logger.Error("mark priority node ready failed", slog.Any("error", err))
 			return result, err
 		}
 	}
 
 	snapshot, err := engine.store.BuildTopicSnapshot(topic.TopicID)
 	if err != nil {
+		logger.Error("build topic snapshot failed", slog.Any("error", err))
 		return result, err
 	}
 	plan, err := planTopicDispatch(snapshot, limit)
 	if err != nil {
+		logger.Error("build dispatch plan failed", slog.Any("error", err))
 		return result, err
 	}
 	if len(plan.Reasons) > 0 {
 		result.Reasons = append(result.Reasons, plan.Reasons...)
 	}
 	if len(plan.DispatchNodeIDs) == 0 {
+		logger.Debug("dispatch plan has no runnable nodes")
 		return result, nil
 	}
 
 	for _, nodeID := range plan.DispatchNodeIDs {
 		record, dispatchErr := engine.dispatchOne(ctx, topic.TopicID, nodeID)
 		if dispatchErr != nil {
+			logger.Error(
+				"dispatch node failed",
+				slog.String(observability.FieldNodeID, nodeID),
+				slog.Any("error", dispatchErr),
+			)
 			return result, dispatchErr
 		}
 		result.Dispatched = append(result.Dispatched, record)
 	}
 
 	if err := engine.store.TouchTopicServed(topic.TopicID); err != nil {
+		logger.Error("touch topic served failed", slog.Any("error", err))
 		return result, err
 	}
 	hasRunnable, err := engine.store.HasRunnableNodes(topic.TopicID)
 	if err != nil {
+		logger.Error("check runnable nodes failed", slog.Any("error", err))
 		return result, err
 	}
 	if hasRunnable {
 		if err := engine.store.DemoteTopic(topic.TopicID); err != nil {
+			logger.Error("demote topic failed", slog.Any("error", err))
 			return result, err
 		}
 	}
+	logger.Info(
+		"tick completed",
+		slog.Int("dispatched_count", len(result.Dispatched)),
+		slog.Int64(observability.FieldDurationMS, int64(engine.now().Sub(startedAt).Milliseconds())),
+	)
 
 	return result, nil
 }
@@ -204,25 +253,42 @@ func (engine *Engine) ensurePriorityNode(ctx context.Context, topicID string) er
 }
 
 func (engine *Engine) dispatchOne(ctx context.Context, topicID, nodeID string) (DispatchRecord, error) {
+	baseLogger := observability.LoggerFromContext(ctx, engine.logger).With(
+		slog.String(observability.FieldOperation, "schedule.dispatch"),
+		slog.String(observability.FieldTopicID, topicID),
+		slog.String(observability.FieldNodeID, nodeID),
+	)
+	startedAt := engine.now()
+
 	node, err := engine.store.GetNode(topicID, nodeID)
 	if err != nil {
+		baseLogger.Error("load node failed", slog.Any("error", err))
 		return DispatchRecord{}, err
 	}
 	if err := engine.store.MarkNodeRunning(topicID, nodeID); err != nil {
+		baseLogger.Error("mark node running failed", slog.Any("error", err))
 		return DispatchRecord{}, err
 	}
 
 	sessionID, err := engine.vos.EnsureSession(ctx, nodeID, node.SessionID)
 	if err != nil {
+		baseLogger.Error("ensure session failed", slog.Any("error", err))
 		return DispatchRecord{}, fmt.Errorf("ensure session for node %s: %w", nodeID, err)
 	}
+	dispatchLogger := baseLogger.With(slog.String(observability.FieldSessionID, sessionID))
 	if node.SessionID == nil || *node.SessionID != sessionID {
 		if err := engine.store.SetNodeSessionID(topicID, nodeID, sessionID); err != nil {
+			dispatchLogger.Error("persist node session id failed", slog.Any("error", err))
 			return DispatchRecord{}, err
 		}
 	}
 
 	requestID := fmt.Sprintf("%s-%d", nodeID, engine.now().UnixNano())
+	dispatchLogger = dispatchLogger.With(
+		slog.String(observability.FieldTraceID, requestID),
+		slog.String(observability.FieldRequestID, requestID),
+	)
+	ctx = observability.WithLogger(ctx, dispatchLogger)
 	startEvent, err := engine.vos.AppendDispatchAuthorizedEvent(ctx, sessionID, map[string]any{
 		"kind":       "dispatch_authorized",
 		"request_id": requestID,
@@ -230,8 +296,11 @@ func (engine *Engine) dispatchOne(ctx context.Context, topicID, nodeID string) (
 		"node_id":    nodeID,
 	})
 	if err != nil {
+		dispatchLogger.Error("append dispatch authorized event failed", slog.Any("error", err))
 		return DispatchRecord{}, fmt.Errorf("append dispatch authorized event: %w", err)
 	}
+	dispatchLogger = dispatchLogger.With(slog.String(observability.FieldEventID, startEvent.ID))
+	dispatchLogger.Info("dispatch started")
 
 	workerRequest := WorkerExecuteRequest{
 		RequestID: requestID,
@@ -256,16 +325,19 @@ func (engine *Engine) dispatchOne(ctx context.Context, topicID, nodeID string) (
 	response, err := engine.worker.Execute(ctx, workerRequest)
 	if err != nil {
 		_ = engine.store.MarkNodeFinished(topicID, nodeID, NodeStatusFailed)
+		dispatchLogger.Error("worker execute failed", slog.Any("error", err))
 		return DispatchRecord{}, fmt.Errorf("worker execute failed: %w", err)
 	}
 
 	finishedStatus := resolveNodeStatus(node, response)
 	if err := engine.store.MarkNodeFinished(topicID, nodeID, finishedStatus); err != nil {
+		dispatchLogger.Error("mark node finished failed", slog.Any("error", err))
 		return DispatchRecord{}, err
 	}
 	if node.IsPriorityNode {
 		if response.Status == "succeeded" {
 			if err := engine.store.ApplyPriorityPlan(topicID, response.PriorityPlan); err != nil {
+				dispatchLogger.Error("apply priority plan failed", slog.Any("error", err))
 				return DispatchRecord{}, err
 			}
 		} else {
@@ -274,6 +346,7 @@ func (engine *Engine) dispatchOne(ctx context.Context, topicID, nodeID string) (
 				message = "priority node execution failed"
 			}
 			if err := engine.store.ClearPriorityDirty(topicID, &message); err != nil {
+				dispatchLogger.Error("clear priority dirty failed", slog.Any("error", err))
 				return DispatchRecord{}, err
 			}
 		}
@@ -305,8 +378,15 @@ func (engine *Engine) dispatchOne(ctx context.Context, topicID, nodeID string) (
 		DurationMS: response.DurationMS,
 	}
 	if err := engine.store.RecordDispatch(record); err != nil {
+		dispatchLogger.Error("record dispatch failed", slog.Any("error", err))
 		return DispatchRecord{}, err
 	}
+	dispatchLogger.Info(
+		"dispatch finished",
+		slog.String("status", record.Status),
+		slog.Bool("retryable", record.Retryable),
+		slog.Int64(observability.FieldDurationMS, int64(engine.now().Sub(startedAt).Milliseconds())),
+	)
 	return record, nil
 }
 

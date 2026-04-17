@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,12 +112,58 @@ func TestServerV1UnimplementedEndpoint(t *testing.T) {
 		testServer.Close()
 	}()
 
-	response := mustRequestEnvelope(t, testServer.Client(), http.MethodGet, testServer.URL+"/api/v1/chat", nil, http.StatusNotImplemented)
+	response := mustRequestEnvelope(t, testServer.Client(), http.MethodGet, testServer.URL+"/api/v1/planlist", nil, http.StatusNotImplemented)
 	if response.Code != http.StatusNotImplemented {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNotImplemented)
 	}
 	if response.Message != notImplementedV1Msg {
 		t.Fatalf("response message = %q, want %q", response.Message, notImplementedV1Msg)
+	}
+}
+
+func TestServerV1ChatRequiresPost(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	response := mustRequestEnvelope(t, testServer.Client(), http.MethodGet, testServer.URL+"/api/v1/chat", nil, http.StatusMethodNotAllowed)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestServerV1ChatValidatesMessage(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	response := mustRequestEnvelope(t, testServer.Client(), http.MethodPost, testServer.URL+"/api/v1/chat", map[string]any{
+		"node_id": "node-1",
+	}, http.StatusBadRequest)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if response.Message == "" {
+		t.Fatalf("response message should not be empty")
+	}
+}
+
+func TestNewServerRejectsInvalidScheduleMode(t *testing.T) {
+	tempDir := t.TempDir()
+	_, err := NewServer(Config{
+		StateFile:     filepath.Join(tempDir, "vos_state.json"),
+		SessionDBFile: filepath.Join(tempDir, "openmate.db"),
+		ScheduleMode:  "invalid",
+	})
+	if err == nil {
+		t.Fatalf("NewServer() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "schedule_mode") {
+		t.Fatalf("error = %v, want schedule_mode validation", err)
 	}
 }
 

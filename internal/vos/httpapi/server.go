@@ -5,15 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"vos/internal/openmate/observability"
+	omruntime "vos/internal/openmate/runtime"
 	"vos/internal/vos/domain"
 	"vos/internal/vos/service"
-	"vos/internal/vos/store"
 )
 
 const (
@@ -22,15 +27,34 @@ const (
 )
 
 type Config struct {
-	StateFile     string
-	SessionDBFile string
+	StateFile        string
+	SessionDBFile    string
+	WorkspaceRoot    string
+	ModelConfig      string
+	ScheduleDB       string
+	ScheduleMode     string
+	ScheduleCmd      []string
+	WorkerCommand    []string
+	DefaultTimeoutMS int
+	AgingSeconds     int
+	Logger           *slog.Logger
 }
 
 type Server struct {
-	service      *service.Service
-	sessionStore store.SessionStore
-	mux          *http.ServeMux
-	handler      http.Handler
+	service              *service.Service
+	runtime              *omruntime.Runtime
+	mux                  *http.ServeMux
+	handler              http.Handler
+	stateFile            string
+	sessionDB            string
+	workspace            string
+	modelConfig          string
+	scheduleDB           string
+	scheduleMode         string
+	scheduleCmd          []string
+	scheduleTickInterval time.Duration
+	scheduleMu           sync.Mutex
+	logger               *slog.Logger
 }
 
 type v1Envelope struct {
@@ -42,28 +66,115 @@ type v1Envelope struct {
 type nodeIncludeSet map[string]bool
 
 func NewServer(config Config) (*Server, error) {
+	logger := observability.NormalizeLogger(config.Logger).With(
+		slog.String(observability.FieldComponent, "vos-api"),
+	)
 	if strings.TrimSpace(config.StateFile) == "" {
+		logger.Error("state_file must not be empty")
 		return nil, domain.ValidationError{Message: "state_file must not be empty"}
 	}
 	if strings.TrimSpace(config.SessionDBFile) == "" {
+		logger.Error("session_db_file must not be empty")
 		return nil, domain.ValidationError{Message: "session_db_file must not be empty"}
 	}
 
-	sessionStore, err := store.NewSQLiteSessionStore(config.SessionDBFile)
+	workspaceRoot := strings.TrimSpace(config.WorkspaceRoot)
+	if workspaceRoot == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve workspace root: %w", err)
+		}
+		workspaceRoot = cwd
+	}
+	workspaceRoot = filepath.Clean(workspaceRoot)
+
+	modelConfig := strings.TrimSpace(config.ModelConfig)
+	if modelConfig == "" {
+		modelConfig = filepath.Join(workspaceRoot, "model.json")
+	}
+
+	scheduleMode := strings.ToLower(strings.TrimSpace(config.ScheduleMode))
+	if scheduleMode == "" {
+		scheduleMode = "inproc"
+	}
+	if scheduleMode != "inproc" && scheduleMode != "shell" {
+		logger.Error("schedule_mode must be one of: inproc, shell", slog.String("schedule_mode", scheduleMode))
+		return nil, domain.ValidationError{Message: "schedule_mode must be one of: inproc, shell"}
+	}
+
+	scheduleDB := strings.TrimSpace(config.ScheduleDB)
+	if scheduleDB == "" {
+		scheduleDB = strings.TrimSpace(config.SessionDBFile)
+	}
+	if scheduleDB == "" {
+		logger.Error("schedule_db must not be empty")
+		return nil, domain.ValidationError{Message: "schedule_db must not be empty"}
+	}
+
+	defaultTimeoutMS := config.DefaultTimeoutMS
+	if defaultTimeoutMS <= 0 {
+		defaultTimeoutMS = 120000
+	}
+	agingThreshold := time.Duration(config.AgingSeconds) * time.Second
+	if agingThreshold <= 0 {
+		agingThreshold = 10 * time.Minute
+	}
+	tickInterval := chatPollInterval
+
+	runtime, err := omruntime.Open(omruntime.Config{
+		StateFile:       config.StateFile,
+		SessionDBFile:   config.SessionDBFile,
+		ScheduleDBFile:  scheduleDB,
+		WorkspaceRoot:   workspaceRoot,
+		ModelConfigFile: modelConfig,
+		WorkerCommand:   config.WorkerCommand,
+		DefaultTimeout:  defaultTimeoutMS,
+		AgingThreshold:  agingThreshold,
+		Logger:          logger,
+	})
 	if err != nil {
+		logger.Error("open runtime failed", slog.Any("error", err))
 		return nil, err
 	}
 
+	scheduleCmd := make([]string, 0, len(config.ScheduleCmd))
+	for _, value := range config.ScheduleCmd {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		scheduleCmd = append(scheduleCmd, trimmed)
+	}
+	if scheduleMode == "shell" && len(scheduleCmd) == 0 {
+		scheduleCmd = defaultScheduleCommand(workspaceRoot)
+	}
+	if scheduleMode == "shell" && len(scheduleCmd) == 0 {
+		_ = runtime.Close()
+		logger.Error("schedule_cmd must not be empty in shell mode")
+		return nil, domain.ValidationError{Message: "schedule_cmd must not be empty"}
+	}
+
 	server := &Server{
-		service: service.NewWithSessionStore(
-			store.NewJSONStateStore(config.StateFile),
-			sessionStore,
-		),
-		sessionStore: sessionStore,
-		mux:          http.NewServeMux(),
+		service:              runtime.Service,
+		runtime:              runtime,
+		mux:                  http.NewServeMux(),
+		stateFile:            filepath.Clean(config.StateFile),
+		sessionDB:            filepath.Clean(config.SessionDBFile),
+		workspace:            workspaceRoot,
+		modelConfig:          filepath.Clean(modelConfig),
+		scheduleDB:           filepath.Clean(scheduleDB),
+		scheduleMode:         scheduleMode,
+		scheduleCmd:          scheduleCmd,
+		scheduleTickInterval: tickInterval,
+		logger:               logger,
 	}
 	server.registerRoutes()
 	server.handler = server.wrapAPIHeaders(server.mux)
+	logger.Info(
+		"vos api server initialized",
+		slog.String("schedule_mode", scheduleMode),
+		slog.String("schedule_db", filepath.Clean(scheduleDB)),
+	)
 	return server, nil
 }
 
@@ -72,10 +183,16 @@ func (server *Server) Handler() http.Handler {
 }
 
 func (server *Server) Close() error {
-	if server.sessionStore == nil {
+	if server.runtime == nil {
 		return nil
 	}
-	return server.sessionStore.Close()
+	err := server.runtime.Close()
+	if err != nil {
+		observability.NormalizeLogger(server.logger).Error("close runtime failed", slog.Any("error", err))
+		return err
+	}
+	observability.NormalizeLogger(server.logger).Info("server closed")
+	return nil
 }
 
 func (server *Server) registerRoutes() {
@@ -90,8 +207,8 @@ func (server *Server) registerRoutes() {
 	server.mux.HandleFunc(v1Prefix+"/tree", server.handleV1TreeEntry)
 	server.mux.HandleFunc(v1Prefix+"/tree/", server.handleV1TreeEntry)
 
-	server.mux.HandleFunc(v1Prefix+"/chat", server.handleV1Unimplemented)
-	server.mux.HandleFunc(v1Prefix+"/chat/", server.handleV1Unimplemented)
+	server.mux.HandleFunc(v1Prefix+"/chat", server.handleV1ChatEntry)
+	server.mux.HandleFunc(v1Prefix+"/chat/", server.handleV1ChatEntry)
 	server.mux.HandleFunc(v1Prefix+"/topic", server.handleV1Unimplemented)
 	server.mux.HandleFunc(v1Prefix+"/topic/", server.handleV1Unimplemented)
 	server.mux.HandleFunc(v1Prefix+"/planlist", server.handleV1Unimplemented)

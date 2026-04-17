@@ -6,9 +6,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
+	"vos/internal/openmate/observability"
 	"vos/internal/poolgateway"
 )
 
@@ -21,6 +23,8 @@ func run(args []string) int {
 	root.SetOutput(os.Stdout)
 	dbFile := root.String("db-file", filepath.FromSlash(".openmate/runtime/openmate.db"), "SQLite state database path")
 	modelConfig := root.String("model-config", "model.json", "Model config JSON path")
+	logLevel := root.String("log-level", "info", "Log level: debug|info|warn|error")
+	logFormat := root.String("log-format", "json", "Log format: json|text")
 	root.Usage = func() {
 		fmt.Fprintln(os.Stdout, "usage: pool [--db-file DB_FILE] [--model-config MODEL_CONFIG] {invoke,cap,records,usage,sync} ...")
 		fmt.Fprintln(os.Stdout)
@@ -39,35 +43,48 @@ func run(args []string) int {
 		root.Usage()
 		return 1
 	}
+	logger, err := observability.NewLogger(observability.Config{
+		Level:  *logLevel,
+		Format: *logFormat,
+		Writer: os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	logger = logger.With(slog.String(observability.FieldComponent, "pool"))
 
 	store, err := poolgateway.NewStore(*dbFile)
 	if err != nil {
+		logger.Error("open pool store failed", slog.Any("error", err))
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	defer store.Close()
 
 	gateway := poolgateway.NewGateway(store, *modelConfig)
+	gateway.SetLogger(logger)
 
 	switch rest[0] {
 	case "invoke":
-		return runInvoke(rest[1:], gateway)
+		return runInvoke(rest[1:], gateway, logger)
 	case "cap":
-		return runCap(rest[1:], gateway)
+		return runCap(rest[1:], gateway, logger)
 	case "records":
-		return runRecords(rest[1:], gateway)
+		return runRecords(rest[1:], gateway, logger)
 	case "usage":
-		return runUsage(rest[1:], gateway)
+		return runUsage(rest[1:], gateway, logger)
 	case "sync":
-		return runSync(rest[1:], gateway)
+		return runSync(rest[1:], gateway, logger)
 	default:
+		logger.Error("unknown command", slog.String("command", rest[0]))
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", rest[0])
 		root.Usage()
 		return 2
 	}
 }
 
-func runInvoke(args []string, gateway *poolgateway.Gateway) int {
+func runInvoke(args []string, gateway *poolgateway.Gateway, logger *slog.Logger) int {
 	cmd := flag.NewFlagSet("invoke", flag.ContinueOnError)
 	cmd.SetOutput(os.Stdout)
 	requestJSON := cmd.String("request-json", "", "Inline InvokeRequest JSON")
@@ -100,7 +117,8 @@ func runInvoke(args []string, gateway *poolgateway.Gateway) int {
 	}
 	request = normalizeRequest(request)
 
-	response, err := gateway.Invoke(context.Background(), request)
+	ctx := observability.WithLogger(context.Background(), logger)
+	response, err := gateway.Invoke(ctx, request)
 	if err != nil {
 		if invocationErr, ok := err.(*poolgateway.InvocationFailedError); ok {
 			printJSON(invocationErr.Response)
@@ -113,7 +131,7 @@ func runInvoke(args []string, gateway *poolgateway.Gateway) int {
 	return 0
 }
 
-func runCap(args []string, gateway *poolgateway.Gateway) int {
+func runCap(args []string, gateway *poolgateway.Gateway, logger *slog.Logger) int {
 	cmd := flag.NewFlagSet("cap", flag.ContinueOnError)
 	cmd.SetOutput(os.Stdout)
 	if err := cmd.Parse(args); err != nil {
@@ -123,7 +141,8 @@ func runCap(args []string, gateway *poolgateway.Gateway) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	capacity, err := gateway.Capacity(context.Background())
+	ctx := observability.WithLogger(context.Background(), logger)
+	capacity, err := gateway.Capacity(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -132,7 +151,7 @@ func runCap(args []string, gateway *poolgateway.Gateway) int {
 	return 0
 }
 
-func runRecords(args []string, gateway *poolgateway.Gateway) int {
+func runRecords(args []string, gateway *poolgateway.Gateway, logger *slog.Logger) int {
 	cmd := flag.NewFlagSet("records", flag.ContinueOnError)
 	cmd.SetOutput(os.Stdout)
 	nodeID := cmd.String("node-id", "", "Filter by node ID")
@@ -152,7 +171,8 @@ func runRecords(args []string, gateway *poolgateway.Gateway) int {
 	if *limit > 0 {
 		limitFilter = limit
 	}
-	records, err := gateway.Records(context.Background(), nodeFilter, limitFilter)
+	ctx := observability.WithLogger(context.Background(), logger)
+	records, err := gateway.Records(ctx, nodeFilter, limitFilter)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -161,7 +181,7 @@ func runRecords(args []string, gateway *poolgateway.Gateway) int {
 	return 0
 }
 
-func runSync(args []string, gateway *poolgateway.Gateway) int {
+func runSync(args []string, gateway *poolgateway.Gateway, logger *slog.Logger) int {
 	cmd := flag.NewFlagSet("sync", flag.ContinueOnError)
 	cmd.SetOutput(os.Stdout)
 	if err := cmd.Parse(args); err != nil {
@@ -171,7 +191,8 @@ func runSync(args []string, gateway *poolgateway.Gateway) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	result, err := gateway.Sync(context.Background())
+	ctx := observability.WithLogger(context.Background(), logger)
+	result, err := gateway.Sync(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -180,7 +201,7 @@ func runSync(args []string, gateway *poolgateway.Gateway) int {
 	return 0
 }
 
-func runUsage(args []string, gateway *poolgateway.Gateway) int {
+func runUsage(args []string, gateway *poolgateway.Gateway, logger *slog.Logger) int {
 	cmd := flag.NewFlagSet("usage", flag.ContinueOnError)
 	cmd.SetOutput(os.Stdout)
 	nodeID := cmd.String("node-id", "", "Filter by node ID")
@@ -200,7 +221,8 @@ func runUsage(args []string, gateway *poolgateway.Gateway) int {
 	if *limit > 0 {
 		limitFilter = limit
 	}
-	summary, err := gateway.Usage(context.Background(), nodeFilter, limitFilter)
+	ctx := observability.WithLogger(context.Background(), logger)
+	summary, err := gateway.Usage(ctx, nodeFilter, limitFilter)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

@@ -182,6 +182,7 @@ func (store *RuntimeStore) UpsertEnqueueNode(request EnqueueRequest) (bool, erro
 	if err := request.Priority.Validate(); err != nil {
 		return false, err
 	}
+	request.SessionID = strings.TrimSpace(request.SessionID)
 	if err := store.EnsureTopic(request.TopicID); err != nil {
 		return false, err
 	}
@@ -201,11 +202,15 @@ func (store *RuntimeStore) UpsertEnqueueNode(request EnqueueRequest) (bool, erro
 		}
 
 		if created {
+			var sessionID any
+			if request.SessionID != "" {
+				sessionID = request.SessionID
+			}
 			_, queryErr = tx.Exec(
 				`INSERT INTO node_queue (
 					topic_id, node_id, name, is_priority_node, priority_label, priority_rank, status,
 					entered_priority_at, last_worked_at, agent_spec_json, session_id, idempotency_key, updated_at
-				) VALUES (?, ?, ?, 0, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
+				) VALUES (?, ?, ?, 0, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
 				request.TopicID,
 				request.NodeID,
 				request.NodeName,
@@ -214,6 +219,7 @@ func (store *RuntimeStore) UpsertEnqueueNode(request EnqueueRequest) (bool, erro
 				string(NodeStatusReady),
 				formatTime(now),
 				string(specRaw),
+				sessionID,
 				request.IdempotencyKey,
 				formatTime(now),
 			)
@@ -221,13 +227,24 @@ func (store *RuntimeStore) UpsertEnqueueNode(request EnqueueRequest) (bool, erro
 				return fmt.Errorf("insert node queue: %w", queryErr)
 			}
 		} else {
+			var sessionID any
+			if request.SessionID != "" {
+				sessionID = request.SessionID
+			}
 			_, queryErr = tx.Exec(
 				`UPDATE node_queue
-					SET name = ?, agent_spec_json = ?, idempotency_key = ?, updated_at = ?
+					SET name = ?, agent_spec_json = ?, idempotency_key = ?, session_id = ?,
+					    priority_label = ?, priority_rank = ?, entered_priority_at = ?,
+					    status = ?, updated_at = ?
 				  WHERE topic_id = ? AND node_id = ?`,
 				request.NodeName,
 				string(specRaw),
 				request.IdempotencyKey,
+				sessionID,
+				request.Priority.Label,
+				request.Priority.Rank,
+				formatTime(now),
+				string(NodeStatusReady),
 				formatTime(now),
 				request.TopicID,
 				request.NodeID,

@@ -86,6 +86,12 @@ class ResponsesExecutionRunner:
                     if output_text is None:
                         raise RuntimeError(f"gateway returned empty output for node={build.node_id}")
                     if session_started and session_gateway and session_id:
+                        self._append_assistant_deltas(
+                            session_gateway=session_gateway,
+                            session_id=session_id,
+                            output_text=output_text,
+                            response_id=previous_response_id,
+                        )
                         session_gateway.append_event(
                             AppendSessionEventInput(
                                 session_id=session_id,
@@ -294,6 +300,42 @@ class ResponsesExecutionRunner:
             "response_id": response_id,
             "content": output_items or [],
         }
+
+    @staticmethod
+    def _append_assistant_deltas(
+        *,
+        session_gateway: SessionEventGateway,
+        session_id: str,
+        output_text: str,
+        response_id: str | None,
+    ) -> None:
+        for chunk in ResponsesExecutionRunner._split_output_deltas(output_text):
+            session_gateway.append_event(
+                AppendSessionEventInput(
+                    session_id=session_id,
+                    item_type=SessionItemType.ASSISTANT_DELTA,
+                    role=SessionRole.ASSISTANT,
+                    payload_json={
+                        "role": SessionRole.ASSISTANT.value,
+                        "delta": chunk,
+                        "response_id": response_id,
+                    },
+                    next_status=SessionStatus.ACTIVE,
+                )
+            )
+
+    @staticmethod
+    def _split_output_deltas(text: str, chunk_size: int = 12) -> list[str]:
+        if chunk_size <= 0:
+            chunk_size = 12
+        if text == "":
+            return []
+        chunks: list[str] = []
+        index = 0
+        while index < len(text):
+            chunks.append(text[index : index + chunk_size])
+            index += chunk_size
+        return chunks
 
 
 class LangGraphExecutionRunner:

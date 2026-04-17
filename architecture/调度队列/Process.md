@@ -104,3 +104,46 @@
    - 写入与写事务路径补充 busy/locked 重试。
 4. 新增路径解析测试（`internal/schedule/cli_test.go`）覆盖默认跟随、显式覆盖、空值校验。
 5. 回归结果：`go test ./...` 通过。
+
+## 2026-04-17 Chat 入队契约补齐（session_id + 交互优先）
+
+1. `EnqueueRequest` 新增可选字段 `session_id`，支持外部先建 Session 后再入队。
+2. `RuntimeStore.UpsertEnqueueNode` 更新：
+   - 新建节点入队时可直接写入 `session_id`。
+   - 已存在节点再次入队时会重置为 `ready`，并覆盖：
+     - `priority_label / priority_rank`
+     - `entered_priority_at`
+     - `session_id`
+3. 当前行为用于“前端发消息后交互优先”场景，确保被触发节点可立即进入可调度态。
+4. 回归结果：
+   - `go test ./internal/schedule/...` 通过
+   - `go test ./...` 通过
+
+## 2026-04-17 Go 内部直调整合（schedule <-> vos）
+
+1. `openmate-schedule` 新增 `--vos-mode`，默认值改为 `direct`，支持：
+   - `direct`：通过 `internal/vos/service` 直调（默认）
+   - `shell`：保留原 `vos` CLI shell-out 兼容路径
+2. 新增 `DirectVOSGateway`，对齐原 `VOSGateway` 接口，覆盖：
+   - `EnsurePriorityNode`
+   - `EnsureSession`
+   - `AppendDispatchAuthorizedEvent`
+   - `AppendDispatchResultEvent`
+3. CLI 装配层 `openEngine()` 改为按 `vos-mode` 选择网关，并保留 `worker` CLI 边界不变。
+4. 新增测试：
+   - `internal/schedule/direct_vos_gateway_test.go`
+   - `internal/schedule/cli_test.go` 补 `--vos-mode` 非法值断言
+5. 回归结果：
+   - `go test ./internal/schedule/...` 通过
+
+## 2026-04-17 调度可观测性接入（slog）
+
+1. 调度引擎 `internal/schedule/engine.go` 已接入结构化日志（`log/slog`），覆盖 `enqueue/tick/dispatch` 关键路径。
+2. CLI `openmate-schedule` 新增：
+   - `--log-level`（`debug|info|warn|error`）
+   - `--log-format`（`json|text`）
+3. 日志字段统一对齐共享键：`trace_id/request_id/topic_id/node_id/session_id/event_id/duration_ms`。
+4. CLI 仍保持业务 JSON 输出走 `stdout`，日志仅写入 `stderr`，不污染契约输出。
+5. 回归结果：
+   - `go test ./internal/schedule/...` 通过
+   - `go test ./...` 通过

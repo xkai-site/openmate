@@ -41,6 +41,7 @@ require github.com/mattn/go-sqlite3 v1.14.32
 10. `sort`
 11. `strings`
 12. `time`
+13. `log/slog`
 
 ### 3.2 第三方依赖
 
@@ -53,6 +54,11 @@ require github.com/mattn/go-sqlite3 v1.14.32
 1. 为 `pool` 的 SQLite 运行态提供驱动
 2. 为 `vos` 的 Session / SessionEvent 独立 SQLite 存储提供驱动
 3. 支撑并发治理、调用记录、usage 聚合与会话事件持久化逻辑
+
+补充说明：
+
+1. `vos/schedule/pool` 日志技术栈统一为标准库 `log/slog`（结构化日志）。
+2. 该选型不新增第三方依赖，维持轻量与低维护成本。
 
 ## 4. 环境依赖
 
