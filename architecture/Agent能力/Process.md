@@ -385,3 +385,58 @@
 4. 单测已同步更新 `tests/test_service.py`，放宽事件数量断言并校验 `assistant_delta` 存在。
 5. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（53 项）
+
+## 2026-04-17 worker 复用已有 Session 修复（避免重复创建）
+
+1. 问题定位：
+   - 调度链路已先创建 session 并把 `session_id` 传给 worker。
+   - Agent 侧 `VosSessionGateway.ensure_session()` 仍直接调用 `vos session create --session-id ...`，导致重复创建冲突（`session already exists`）。
+2. 修复策略：
+   - 当传入 `session_id` 时，先执行 `vos session get --session-id ...`。
+   - 若 session 存在且 `node_id` 匹配：直接复用，不再创建。
+   - 若返回 `session not found`：再走 `session create`。
+   - 若 session 存在但属于其它 `node_id`：返回明确错误并中止执行。
+3. 代码变更：
+   - `openmate_agent/session_gateway.py`
+     - `ensure_session()` 增加“先查后建”逻辑。
+     - 新增 `_try_get_session()` 与 `_is_session_not_found_error()`。
+4. 测试补充：
+   - 新增 `tests/test_session_gateway.py`，覆盖：
+     - 已有 session 复用
+     - session 不存在后创建
+     - session 与 node 不匹配拒绝
+     - 未提供 session_id 时直接创建
+5. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_session_gateway -v` 通过（4 项）
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service -v` 通过（18 项）
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（57 项）
+
+## 2026-04-17 Windows 子进程 UTF-8 解码修复
+
+1. 问题现象：
+   - worker 执行链路在 Windows 下出现 `Exception in thread ... _readerthread`，来源为 Python `subprocess` 文本读取线程。
+2. 根因定位：
+   - 多处 `subprocess.run(..., text=True)` 未显式指定 `encoding`，默认系统代码页解码与 UTF-8 输出不一致时会触发读取线程异常。
+3. Agent 侧修复：
+   - `openmate_agent/session_gateway.py`
+   - `openmate_agent/context_gateway.py`
+   - `openmate_agent/vos_binary.py`
+   - `openmate_agent/tooling/tools.py`
+   - 统一补充 `encoding="utf-8", errors="replace"`。
+4. 测试补充：
+   - `tests/test_context_injector.py` 新增 `test_snapshot_runs_subprocess_with_utf8_decode`，校验 subprocess 调用参数。
+5. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_pool.PoolGatewayTestCase.test_run_command_uses_utf8_decode` 通过（7 项）
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_session_gateway` 通过（4 项）
+
+## 2026-04-17 Responses input 首轮格式修正
+
+1. 问题：首轮调用 Responses API 时，`input` 仍以字符串传递，不符合当前约定的消息数组形式。
+2. 修复：
+   - `openmate_agent/orchestration.py` 中 `ResponsesExecutionRunner` 首轮输入改为：
+     - `input=[{"role":"user","content":"..."}]`
+   - 工具续轮输入保持 `function_call_output` 数组，不变。
+3. 测试更新：
+   - `tests/test_service.py` 增加首轮 `request.input` 结构断言（数组 + `role=user`）。
+4. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service.AgentCapabilityServiceTests.test_execute_runs_responses_tool_loop_and_writes_session_events` 通过

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,9 +236,33 @@ func TestServerOldAPIRoutesNotExposed(t *testing.T) {
 func openTestServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	tempDir := t.TempDir()
+	modelConfig := filepath.Join(tempDir, "model.json")
+	if err := os.WriteFile(modelConfig, []byte(`{
+  "global_max_concurrent": 1,
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "api_id": "api-1",
+      "provider": "openai_compatible",
+      "model": "gpt-4.1-mini",
+      "base_url": "https://example.invalid/v1",
+      "api_key": "sk-test",
+      "max_concurrent": 1,
+      "enabled": true
+    }
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write model config error = %v", err)
+	}
 	server, err := NewServer(Config{
-		StateFile:     filepath.Join(tempDir, "vos_state.json"),
-		SessionDBFile: filepath.Join(tempDir, "openmate.db"),
+		StateFile:        filepath.Join(tempDir, "vos_state.json"),
+		SessionDBFile:    filepath.Join(tempDir, "openmate.db"),
+		WorkspaceRoot:    tempDir,
+		ModelConfig:      modelConfig,
+		ScheduleDB:       filepath.Join(tempDir, "openmate.db"),
+		ScheduleMode:     "inproc",
+		DefaultTimeoutMS: 120000,
+		AgingSeconds:     600,
 	})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)

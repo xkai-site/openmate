@@ -49,7 +49,7 @@ class ResponsesExecutionRunner:
         tool_executor: ToolExecutor,
     ) -> str:
         previous_response_id: str | None = None
-        current_input: object = agent_input.prompt
+        current_input: object = self._build_initial_input(agent_input.prompt)
         session_id = build.session_id
         session_started = False
         last_call_id: str | None = None
@@ -203,6 +203,16 @@ class ResponsesExecutionRunner:
                 except Exception:
                     pass
             raise
+
+    @staticmethod
+    def _build_initial_input(prompt: str) -> list[dict[str, str]]:
+        # Responses API initial turn should use message array input.
+        return [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ]
 
     @staticmethod
     def _extract_function_calls(output_items: list[dict[str, Any]] | None) -> list[_ParsedFunctionCall]:

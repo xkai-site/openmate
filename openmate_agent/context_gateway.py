@@ -50,6 +50,8 @@ class VosContextGateway:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             cwd=self._workspace_root,
         )

@@ -76,25 +76,16 @@ func NewEngine(store *RuntimeStore, vos VOSGateway, worker WorkerGateway, config
 }
 
 func (engine *Engine) Enqueue(ctx context.Context, request EnqueueRequest) (EnqueueResult, error) {
+	request, err := normalizeBusinessEnqueueRequest(request)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
 	logger := observability.LoggerFromContext(ctx, engine.logger).With(
 		slog.String(observability.FieldOperation, "schedule.enqueue"),
 		slog.String(observability.FieldTopicID, request.TopicID),
 		slog.String(observability.FieldNodeID, request.NodeID),
 	)
 	logger.Debug("enqueue requested")
-	if request.TopicID == "" {
-		return EnqueueResult{}, ValidationError{Message: "topic_id must not be empty"}
-	}
-	if request.NodeID == "" {
-		return EnqueueResult{}, ValidationError{Message: "node_id must not be empty"}
-	}
-	if request.NodeName == "" {
-		request.NodeName = request.NodeID
-	}
-	if request.Priority.Label == "" {
-		request.Priority = NodePriority{Label: "normal", Rank: 1}
-	}
-
 	created, err := engine.store.UpsertEnqueueNode(request)
 	if err != nil {
 		logger.Error("enqueue failed", slog.Any("error", err))
@@ -123,6 +114,37 @@ func (engine *Engine) Enqueue(ctx context.Context, request EnqueueRequest) (Enqu
 		slog.String("queue_level", result.QueueLevel),
 	)
 	return result, nil
+}
+
+func normalizeBusinessEnqueueRequest(request EnqueueRequest) (EnqueueRequest, error) {
+	if request.TopicID == "" {
+		return EnqueueRequest{}, ValidationError{Message: "topic_id must not be empty"}
+	}
+	if request.NodeID == "" {
+		return EnqueueRequest{}, ValidationError{Message: "node_id must not be empty"}
+	}
+	if request.NodeName == "" {
+		request.NodeName = request.NodeID
+	}
+	if request.Priority.Label == "" {
+		request.Priority = NodePriority{
+			Label: BusinessNodePriorityLabel,
+			Rank:  BusinessNodePriorityRank,
+		}
+	}
+	if err := request.Priority.Validate(); err != nil {
+		return EnqueueRequest{}, err
+	}
+	if request.Priority.Label != BusinessNodePriorityLabel || request.Priority.Rank != BusinessNodePriorityRank {
+		return EnqueueRequest{}, ValidationError{
+			Message: fmt.Sprintf(
+				"business node priority must be fixed to label=%q rank=%d",
+				BusinessNodePriorityLabel,
+				BusinessNodePriorityRank,
+			),
+		}
+	}
+	return request, nil
 }
 
 func (engine *Engine) Tick(ctx context.Context, maxDispatch int) (TickResult, error) {

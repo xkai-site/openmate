@@ -149,7 +149,11 @@ export default function HomePage() {
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
           return;
         }
-        console.warn('流式对话失败，自动降级为非流式:', streamErr);
+        const shouldFallback = streamErr instanceof TypeError;
+        if (!shouldFallback) {
+          throw streamErr;
+        }
+        console.warn('流式对话网络失败，自动降级为非流式:', streamErr);
 
         const fallback = await sendChatMessage({
           node_id: nodeId,

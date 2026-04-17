@@ -67,6 +67,9 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertIsNotNone(first.request.tools)
         self.assertEqual(first.request.tool_choice, "auto")
         self.assertEqual(first.request.parallel_tool_calls, False)
+        self.assertIsInstance(first.request.input, list)
+        self.assertEqual(first.request.input[0]["role"], "user")
+        self.assertIsInstance(first.request.input[0]["content"], str)
         second = gateway.requests[1]
         self.assertEqual(second.request.previous_response_id, "resp-tool-1")
         self.assertIsInstance(second.request.input, list)
@@ -637,14 +640,23 @@ def _extract_input_text(value: object) -> str:
         for item in value:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") != "message":
+            role = item.get("role")
+            if isinstance(role, str) and role in {"user", "assistant", "system"}:
+                content = item.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+                    continue
+                if isinstance(content, list):
+                    for content_item in content:
+                        if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                            parts.append(str(content_item.get("text", "")))
                 continue
-            content = item.get("content", [])
-            if not isinstance(content, list):
-                continue
-            for content_item in content:
-                if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
-                    parts.append(str(content_item.get("text", "")))
+            if item.get("type") == "message":
+                content = item.get("content", [])
+                if isinstance(content, list):
+                    for content_item in content:
+                        if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                            parts.append(str(content_item.get("text", "")))
         return "".join(parts)
     return ""
 

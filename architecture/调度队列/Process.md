@@ -147,3 +147,28 @@
 5. 回归结果：
    - `go test ./internal/schedule/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-17 调度边界收敛与优先级冲突修复（临时策略）
+
+1. 明确当前阶段边界：`schedule` 仅调度可执行 Node，不承载 user message 语义。
+2. 固化业务 Node 入队优先级（PriorityAgent 未完成阶段）：
+   - `label=interactive`
+   - `rank=1`
+   - `__priority__` 继续保留并独占 `priority/rank=0`
+3. `Engine.Enqueue` 增加标准化与校验：
+   - 未显式传优先级时，自动补默认 `interactive/rank=1`
+   - 非 `interactive/rank=1` 的业务 Node 入队直接返回校验错误
+4. `RuntimeStore.UpsertEnqueueNode` 增加同 Topic 内 rank/label 映射防御：
+   - 同一 `rank` 若已绑定其它 `label`，在入队阶段直接报错，避免脏数据延后到 tick 才暴露
+5. Chat 入队链路对齐同一优先级常量：
+   - `internal/vos/httpapi/chat.go` 中 inproc/shell 两条 enqueue 分支统一使用 `interactive/rank=1`
+6. 新增与更新测试：
+   - `internal/schedule/engine_test.go`
+     - 默认优先级补全
+     - 非法业务优先级拒绝
+   - `internal/schedule/runtime_store_priority_test.go`
+     - rank/label 冲突防御
+     - 同 rank 同 label 允许
+7. 回归结果：
+   - `go test ./internal/schedule/...` 通过
+   - `go test ./...` 通过

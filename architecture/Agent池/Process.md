@@ -1,5 +1,73 @@
 # Agent池内部开发过程（收敛版）
 
+## 2026-04-17 Chat/Responses 切换兼容与日志增强
+
+1. 针对“仅切 `model.json` 不改前端”诉求，`api_mode=chat_completions` 时已支持继续接收 `request`（Responses 形态）并在池内自动转换为 Chat 请求。
+2. `chat_request` 仍可用；当前为：
+   - `chat_request`：原生 Chat 入参
+   - `request`：兼容入参（在 chat 模式下自动转换）
+3. 调用日志增强（默认 `info` 可见）：
+   - 新增 `attempt started` 日志，输出 `provider/api_id/api_mode/model/base_url`
+   - `attempt failed` 日志新增 `error_message/error_details/provider_status_code`
+4. 该改动用于快速排查 `HTTP 5xx/4xx`、路由模式误配及上游网关兼容问题。
+5. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（61 项）
+
+## 2026-04-17 Chat 工具调用与双协议入参收敛
+
+1. `InvokeRequest` 已支持双入参：
+   - `request`（Responses）
+   - `chat_request`（Chat Completions）
+2. 入参校验收敛为“二选一”：
+   - `request` 与 `chat_request` 不能同时传，也不能都不传。
+   - 并在命中 `api_mode` 后做二次校验（responses 模式必须有 `request`，chat 模式必须有 `chat_request`）。
+3. Chat 路径已取消 `tool_choice=none` 强制覆盖，支持透传 `tools/tool_choice/response_format/max_tokens` 等 Chat 字段。
+4. Chat 响应归一化增强：
+   - 可将 `choices[0].message.tool_calls` 归一化为 Responses 风格 `output[type=function_call]`。
+   - 继续保持统一 `InvokeResponse` 消费口径。
+5. 上下文边界已明确：
+   - Responses 与 Chat 的上下文均由调用方维护；
+   - `pool` 不维护会话历史。
+6. Python 适配层同步：
+   - 新增 `OpenAIChatCompletionsRequest` 模型；
+   - `InvokeRequest` 增加 `chat_request` 并做互斥校验。
+7. 测试与回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（61 项）
+
+## 2026-04-17 provider 字段降级为统计标签
+
+1. `internal/poolgateway/providers.go::GetProviderClient` 已调整为不再依据 `provider` 字段做硬性路由判定。
+2. 当前调用路径统一走 `OpenAICompatibleProvider`，`provider` 仅作为观测/统计标签保留在记录中，不再触发 `unsupported provider` 阻断。
+3. 新增回归测试 `TestGetProviderClientAcceptsArbitraryProviderLabel`，覆盖 `provider="Xcode"` 这类自定义标签场景。
+4. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过
+
+## 2026-04-17 5xx 快速失败（不重试）
+
+1. `internal/poolgateway/providers.go::classifyHTTPError` 已调整：provider 返回 `5xx` 时不再标记 `retryable=true`。
+2. 该变更用于避免同一用户请求在上游故障期触发多次重复调用（快速失败，减少重复成本）。
+3. 新增回归测试 `TestOpenAICompatibleProviderClassifies5xxAsNonRetryable`。
+4. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过
+
+## 2026-04-17 支持 chat/completions 模式
+
+1. `model.json.apis[*]` 新增 `api_mode`，当前支持：
+   - `responses`（默认）
+   - `chat_completions`
+2. `pool` 在 `chat_completions` 模式下会将内部 `Responses` 形态请求转换为 `chat/completions` 请求并调用 `/chat/completions`。
+3. 返回结果会被规范化为既有 `Responses` 风格输出结构，保证上层消费口径不变。
+4. 为避免跨轮工具回环语义差异，`chat_completions` 模式下默认关闭工具调用（`tool_choice=none`），目标是先保证基础问答稳定可用。
+5. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过
+
 ## 2026-04-14 OpenAI Responses 协议切换落地
 
 1. `pool invoke` 的主调用载荷已从旧的 `messages/chat.completions` 形态切到 OpenAI `Responses` 形态；当前外层网关请求为 `{ request_id, node_id, request, timeout_ms, route_policy }`，其中 `request` 对齐 OpenAI `Responses create`，但 `model` 继续由 `model.json` 注入。
@@ -104,3 +172,46 @@
 4. 回归结果：
    - `go test ./internal/poolgateway/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-17 model.json 哈希增量同步
+
+1. `internal/poolgateway/store.go` 新增 `model_config_hash` 元信息，`syncConfig` 改为先比对哈希：
+   - 配置未变化：跳过 `apis/meta` 重写，避免每次调用都执行 upsert。
+   - 配置变化：执行完整同步，并在事务内回写新哈希。
+2. 为降低无意义抖动，哈希计算前对 `ModelConfig` 做标准化：
+   - `apis` 按 `api_id`（及次级字段）排序后再计算；
+   - `headers/request_defaults` 统一深拷贝，保证序列化稳定。
+3. 新增测试：
+   - `TestStoreSyncFromModelConfigSkipsWriteWhenHashUnchanged`
+   - `TestStoreSyncFromModelConfigAppliesWhenHashChanged`
+4. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `go test ./...` 通过
+
+## 2026-04-17 Windows 子进程 UTF-8 解码修复（Python Adapter）
+
+1. 问题现象：
+   - 调度调用 `openmate_agent.cli worker run` 时，链路内 Python adapter 可能触发 `subprocess` 读取线程异常，导致 worker 失败。
+2. 适配层修复：
+   - `openmate_pool/pool.py`
+   - `openmate_pool/binary.py`
+   - `openmate_pool/cli.py`
+   - 所有 `subprocess.run(..., text=True)` 统一改为显式 `encoding="utf-8", errors="replace"`。
+3. 测试补充：
+   - `tests/test_pool.py` 新增 `test_run_command_uses_utf8_decode`，校验 `PoolGateway` 的 subprocess 参数。
+4. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_pool.PoolGatewayTestCase.test_run_command_uses_utf8_decode` 通过
+
+## 2026-04-17 Responses input 统一归一化为消息数组
+
+1. 问题：上游可能以字符串传入 `request.input`，导致发送外部 `/responses` 时请求形态不一致。
+2. 修复：
+   - `internal/poolgateway/providers.go` 在 `invokeResponses` 增加 `normalizeResponsesInput()`：
+     - 字符串自动归一化为 `[{\"role\":\"user\",\"content\":\"...\"}]`
+     - 数组输入保持数组
+     - 对象输入包装为单元素数组
+3. 测试更新：
+   - `internal/poolgateway/providers_test.go` 校验 `/responses` 外发 payload 的 `input` 为消息数组而非字符串。
+4. 回归结果：
+   - `go test ./internal/poolgateway/...` 通过

@@ -29,7 +29,7 @@ class PoolGateway:
         self._binary_path = binary_path
 
     def invoke(self, request: InvokeRequest) -> InvokeResponse:
-        request_payload = request.model_dump(mode="json")
+        request_payload = request.model_dump(mode="json", exclude_none=True)
         with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as handle:
             request_file = Path(handle.name)
             json.dump(request_payload, handle, ensure_ascii=False)
@@ -102,6 +102,8 @@ class PoolGateway:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             cwd=self._workspace_root,
         )

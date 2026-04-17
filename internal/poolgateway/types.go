@@ -23,15 +23,17 @@ type RoutePolicy struct {
 }
 
 type OpenAIResponsesRequest map[string]any
+type OpenAIChatCompletionsRequest map[string]any
 
 type OpenAIResponsesResponse map[string]any
 
 type InvokeRequest struct {
-	RequestID   string                 `json:"request_id"`
-	NodeID      string                 `json:"node_id"`
-	Request     OpenAIResponsesRequest `json:"request"`
-	TimeoutMS   *int                   `json:"timeout_ms"`
-	RoutePolicy RoutePolicy            `json:"route_policy"`
+	RequestID   string                       `json:"request_id"`
+	NodeID      string                       `json:"node_id"`
+	Request     OpenAIResponsesRequest       `json:"request,omitempty"`
+	ChatRequest OpenAIChatCompletionsRequest `json:"chat_request,omitempty"`
+	TimeoutMS   *int                         `json:"timeout_ms"`
+	RoutePolicy RoutePolicy                  `json:"route_policy"`
 }
 
 type UsageMetrics struct {
@@ -140,6 +142,7 @@ type InvocationReservation struct {
 	NodeID          string            `json:"node_id"`
 	APIID           string            `json:"api_id"`
 	Provider        string            `json:"provider"`
+	APIMode         APIMode           `json:"api_mode"`
 	Model           string            `json:"model"`
 	BaseURL         string            `json:"base_url"`
 	APIKey          string            `json:"api_key"`

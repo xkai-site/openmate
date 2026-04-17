@@ -74,14 +74,49 @@ class OpenAIResponsesRequest(BaseModel):
         return self
 
 
+class OpenAIChatCompletionsRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    response_format: dict[str, Any] | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    user: str | None = None
+    store: bool | None = None
+    stream: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_reserved_fields(self) -> "OpenAIChatCompletionsRequest":
+        if len(self.messages) == 0:
+            raise ValueError("chat_request.messages is required")
+        extras = self.model_extra or {}
+        if "model" in extras:
+            raise ValueError("chat_request.model must not be set; model comes from model.json")
+        if self.stream is True:
+            raise ValueError("chat_request.stream is not supported yet")
+        return self
+
+
 class InvokeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
-    request: OpenAIResponsesRequest
+    request: OpenAIResponsesRequest | None = None
+    chat_request: OpenAIChatCompletionsRequest | None = None
     timeout_ms: int | None = Field(default=None, ge=1)
     route_policy: RoutePolicy = Field(default_factory=RoutePolicy)
+
+    @model_validator(mode="after")
+    def validate_request_shape(self) -> "InvokeRequest":
+        has_request = self.request is not None
+        has_chat_request = self.chat_request is not None
+        if has_request == has_chat_request:
+            raise ValueError("exactly one of request or chat_request is required")
+        return self
 
 
 class UsageMetrics(BaseModel):

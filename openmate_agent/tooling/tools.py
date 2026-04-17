@@ -309,7 +309,15 @@ class GrepTool(Tool):
                 command.extend(["-g", args.file_glob])
             command = _with_ignore_file(command=command, workspace_root=context.workspace_root)
 
-            proc = subprocess.run(command, capture_output=True, text=True, check=False, cwd=str(context.workspace_root))
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                cwd=str(context.workspace_root),
+            )
             if proc.returncode in {0, 1}:
                 return ToolResult(tool_name=self.name, output=proc.stdout.strip())
             return ToolResult(tool_name=self.name, success=False, error=proc.stderr.strip() or "rg failed")
@@ -342,7 +350,15 @@ class GlobTool(Tool):
                 str(scope_path),
             ]
             command = _with_ignore_file(command=command, workspace_root=context.workspace_root)
-            proc = subprocess.run(command, capture_output=True, text=True, check=False, cwd=str(context.workspace_root))
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                cwd=str(context.workspace_root),
+            )
             if proc.returncode not in {0, 1}:
                 return ToolResult(tool_name=self.name, success=False, error=proc.stderr.strip() or "rg failed")
 
@@ -384,6 +400,8 @@ class ExecTool(Tool):
                 args.command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=str(cwd_path),
                 check=False,
                 timeout=args.timeout_seconds,
@@ -450,6 +468,8 @@ class ShellTool(Tool):
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=str(cwd_path),
                 check=False,
                 timeout=args.timeout_seconds,

@@ -7,11 +7,12 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
-from openmate_pool.errors import InvocationFailedError, NoCapacityError
-from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest, RoutePolicy
+from openmate_pool.errors import InvocationFailedError
+from openmate_pool.models import OpenAIChatCompletionsRequest, InvokeRequest, OpenAIResponsesRequest, RoutePolicy
 from openmate_pool.pool import PoolGateway
 
 
@@ -59,6 +60,31 @@ class PoolGatewayTestCase(unittest.TestCase):
             route_policy=RoutePolicy(api_id=api_id),
         )
 
+    def test_run_command_uses_utf8_decode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = Path(tmpdir) / "pool_state.db"
+            model_config = Path(tmpdir) / "model.json"
+            self._write_model_config(model_config, base_url="http://127.0.0.1:1/v1")
+
+            gateway = PoolGateway(
+                workspace_root=tmpdir,
+                db_path=db_file,
+                model_config_path=model_config,
+            )
+
+            with patch("openmate_pool.pool.ensure_pool_binary", return_value=Path(tmpdir, "openmate-pool.exe")):
+                with patch("openmate_pool.pool.subprocess.run") as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = '{"ok":true}'
+                    mock_run.return_value.stderr = ""
+
+                    gateway._run_command(["sync"])  # noqa: SLF001
+
+                    kwargs = mock_run.call_args.kwargs
+                    self.assertTrue(kwargs["text"])
+                    self.assertEqual(kwargs["encoding"], "utf-8")
+                    self.assertEqual(kwargs["errors"], "replace")
+
     def test_request_rejects_chat_completions_fields(self) -> None:
         for field, value in [
             ("messages", [{"role": "user", "content": "hello"}]),
@@ -75,6 +101,88 @@ class PoolGatewayTestCase(unittest.TestCase):
                             field: value,
                         }
                     )
+
+    def test_invoke_request_requires_exactly_one_payload(self) -> None:
+        with self.assertRaises(ValidationError):
+            InvokeRequest.model_validate(
+                {
+                    "request_id": "req-1",
+                    "node_id": "node-1",
+                }
+            )
+
+        with self.assertRaises(ValidationError):
+            InvokeRequest.model_validate(
+                {
+                    "request_id": "req-1",
+                    "node_id": "node-1",
+                    "request": {"input": "hello"},
+                    "chat_request": {
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                }
+            )
+
+    def test_chat_request_rejects_stream(self) -> None:
+        with self.assertRaises(ValidationError):
+            OpenAIChatCompletionsRequest.model_validate(
+                {
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                }
+            )
+
+    def test_invoke_payload_omits_none_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = Path(tmpdir) / "pool_state.db"
+            model_config = Path(tmpdir) / "model.json"
+            self._write_model_config(model_config, base_url="http://127.0.0.1:1/v1")
+
+            gateway = PoolGateway(
+                workspace_root=tmpdir,
+                db_path=db_file,
+                model_config_path=model_config,
+            )
+
+            captured_payload: dict[str, Any] = {}
+
+            def fake_run_command(command: list[str]) -> str:
+                request_file = Path(command[2])
+                captured_payload.update(json.loads(request_file.read_text(encoding="utf-8")))
+                return json.dumps(
+                    {
+                        "invocation_id": "inv-1",
+                        "request_id": "req-1",
+                        "node_id": "node-1",
+                        "status": "success",
+                        "route": None,
+                        "response": None,
+                        "output_text": "ok",
+                        "usage": None,
+                        "timing": {
+                            "started_at": "2026-04-17T00:00:00Z",
+                            "finished_at": "2026-04-17T00:00:00Z",
+                            "latency_ms": 0,
+                        },
+                        "error": None,
+                    }
+                )
+
+            gateway._run_command = fake_run_command  # type: ignore[method-assign]
+
+            gateway.invoke(
+                InvokeRequest(
+                    request_id="req-1",
+                    node_id="node-1",
+                    request=OpenAIResponsesRequest(input="hello"),
+                )
+            )
+
+            request_payload = captured_payload.get("request", {})
+            self.assertIn("input", request_payload)
+            self.assertNotIn("metadata", request_payload)
+            self.assertNotIn("truncation", request_payload)
+            self.assertNotIn("stream", request_payload)
 
     def test_invoke_success_persists_record(self) -> None:
         server, thread = _start_gateway_server()
@@ -132,7 +240,7 @@ class PoolGatewayTestCase(unittest.TestCase):
             self.assertIsNotNone(response.route)
             self.assertEqual(response.route.api_id, "api-2")
 
-    def test_failure_threshold_moves_api_offline(self) -> None:
+    def test_http_5xx_failure_does_not_move_api_offline(self) -> None:
         server, thread = _start_gateway_server(fail=True)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -162,9 +270,9 @@ class PoolGatewayTestCase(unittest.TestCase):
             self.assertEqual(records[0].error.code, "provider_http_error")
 
             capacity = gateway.capacity()
-            self.assertEqual(capacity.offline_apis, 1)
+            self.assertEqual(capacity.offline_apis, 0)
 
-            with self.assertRaises(NoCapacityError):
+            with self.assertRaises(InvocationFailedError):
                 gateway.invoke(self._request("node-4", api_id="api-1"))
 
     def test_retryable_failure_can_succeed_after_rate_limit(self) -> None:
@@ -580,6 +688,17 @@ def _extract_input_text(value: Any) -> str:
         parts: list[str] = []
         for item in value:
             if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            if isinstance(role, str) and role in {"user", "assistant", "system"}:
+                content = item.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+                    continue
+                if isinstance(content, list):
+                    for content_item in content:
+                        if isinstance(content_item, dict) and content_item.get("type") in {"input_text", "text"}:
+                            parts.append(str(content_item.get("text", "")))
                 continue
             if item.get("type") == "message":
                 content = item.get("content", [])

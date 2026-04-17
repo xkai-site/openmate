@@ -2,12 +2,15 @@ package poolgateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +25,10 @@ type Store struct {
 const (
 	sqliteBusyRetryDelay = 25 * time.Millisecond
 	sqliteBusyMaxRetries = 200
+
+	metaKeyGlobalMaxConcurrent     = "global_max_concurrent"
+	metaKeyOfflineFailureThreshold = "offline_failure_threshold"
+	metaKeyModelConfigHash         = "model_config_hash"
 )
 
 func NewStore(path string) (*Store, error) {
@@ -463,10 +470,22 @@ func isSQLiteBusy(err error) bool {
 }
 
 func (store *Store) syncConfig(ctx context.Context, conn *sql.Conn, config ModelConfig) error {
-	if err := store.setMeta(ctx, conn, "global_max_concurrent", nullableIntString(config.GlobalMaxConcurrent)); err != nil {
+	configHash, err := modelConfigHash(config)
+	if err != nil {
 		return err
 	}
-	if err := store.setMeta(ctx, conn, "offline_failure_threshold", fmt.Sprintf("%d", config.OfflineFailureThreshold)); err != nil {
+	existingHash, err := store.getMeta(ctx, conn, metaKeyModelConfigHash)
+	if err != nil {
+		return err
+	}
+	if existingHash != nil && *existingHash == configHash {
+		return nil
+	}
+
+	if err := store.setMeta(ctx, conn, metaKeyGlobalMaxConcurrent, nullableIntString(config.GlobalMaxConcurrent)); err != nil {
+		return err
+	}
+	if err := store.setMeta(ctx, conn, metaKeyOfflineFailureThreshold, fmt.Sprintf("%d", config.OfflineFailureThreshold)); err != nil {
 		return err
 	}
 
@@ -520,8 +539,10 @@ func (store *Store) syncConfig(ctx context.Context, conn *sql.Conn, config Model
 	}
 
 	if len(configured) == 0 {
-		_, err := conn.ExecContext(ctx, `UPDATE apis SET enabled = 0, status = 'offline'`)
-		return err
+		if _, err := conn.ExecContext(ctx, `UPDATE apis SET enabled = 0, status = 'offline'`); err != nil {
+			return err
+		}
+		return store.setMeta(ctx, conn, metaKeyModelConfigHash, configHash)
 	}
 
 	query := `UPDATE apis SET enabled = 0, status = 'offline' WHERE api_id NOT IN (` + placeholders(len(configured)) + `)`
@@ -529,8 +550,10 @@ func (store *Store) syncConfig(ctx context.Context, conn *sql.Conn, config Model
 	for apiID := range configured {
 		args = append(args, apiID)
 	}
-	_, err := conn.ExecContext(ctx, query, args...)
-	return err
+	if _, err := conn.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	return store.setMeta(ctx, conn, metaKeyModelConfigHash, configHash)
 }
 
 func (store *Store) reserveAttemptTx(
@@ -680,6 +703,7 @@ func (store *Store) reserveAttemptTx(
 		NodeID:          request.NodeID,
 		APIID:           apiID,
 		Provider:        provider,
+		APIMode:         apiConfig.APIMode,
 		Model:           model,
 		BaseURL:         baseURL,
 		APIKey:          apiKey,
@@ -1016,7 +1040,7 @@ func (store *Store) getMeta(ctx context.Context, conn *sql.Conn, key string) (*s
 }
 
 func (store *Store) getGlobalLimit(ctx context.Context, conn *sql.Conn) (*int, error) {
-	value, err := store.getMeta(ctx, conn, "global_max_concurrent")
+	value, err := store.getMeta(ctx, conn, metaKeyGlobalMaxConcurrent)
 	if err != nil {
 		return nil, err
 	}
@@ -1031,7 +1055,7 @@ func (store *Store) getGlobalLimit(ctx context.Context, conn *sql.Conn) (*int, e
 }
 
 func (store *Store) getOfflineFailureThreshold(ctx context.Context, conn *sql.Conn) int {
-	value, err := store.getMeta(ctx, conn, "offline_failure_threshold")
+	value, err := store.getMeta(ctx, conn, metaKeyOfflineFailureThreshold)
 	if err != nil || value == nil || *value == "" {
 		return 3
 	}
@@ -1181,6 +1205,73 @@ func cloneStringMap(source map[string]string) map[string]string {
 		result[key] = value
 	}
 	return result
+}
+
+func modelConfigHash(config ModelConfig) (string, error) {
+	normalized := normalizeModelConfigForHash(config)
+	payload, err := json.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func normalizeModelConfigForHash(config ModelConfig) ModelConfig {
+	normalized := ModelConfig{
+		OfflineFailureThreshold: config.OfflineFailureThreshold,
+		Retry: RetryConfig{
+			MaxAttempts:   cloneIntPointer(config.Retry.MaxAttempts),
+			BaseBackoffMS: cloneIntPointer(config.Retry.BaseBackoffMS),
+		},
+		APIs: make([]APIConfig, 0, len(config.APIs)),
+	}
+	if config.GlobalMaxConcurrent != nil {
+		value := *config.GlobalMaxConcurrent
+		normalized.GlobalMaxConcurrent = &value
+	}
+
+	for _, api := range config.APIs {
+		normalized.APIs = append(normalized.APIs, APIConfig{
+			APIID:           api.APIID,
+			Provider:        api.Provider,
+			APIMode:         api.APIMode,
+			Model:           api.Model,
+			BaseURL:         api.BaseURL,
+			APIKey:          api.APIKey,
+			MaxConcurrent:   api.MaxConcurrent,
+			Enabled:         api.Enabled,
+			Headers:         cloneStringMap(api.Headers),
+			RequestDefaults: cloneMap(api.RequestDefaults),
+			Pricing:         copyPricing(api.Pricing),
+		})
+	}
+	sort.Slice(normalized.APIs, func(i, j int) bool {
+		left := normalized.APIs[i]
+		right := normalized.APIs[j]
+		if left.APIID != right.APIID {
+			return left.APIID < right.APIID
+		}
+		if left.Provider != right.Provider {
+			return left.Provider < right.Provider
+		}
+		if left.APIMode != right.APIMode {
+			return left.APIMode < right.APIMode
+		}
+		if left.Model != right.Model {
+			return left.Model < right.Model
+		}
+		return left.BaseURL < right.BaseURL
+	})
+	return normalized
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func copyPricing(value *PricingConfig) *PricingConfig {

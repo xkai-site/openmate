@@ -39,7 +39,10 @@ func TestEnginePriorityNodeRunsBeforeNormalNodes(t *testing.T) {
 		AgentSpec: AgentSpec{
 			Mode: "simulate_success",
 		},
-		Priority:          NodePriority{Label: "normal", Rank: 2},
+		Priority: NodePriority{
+			Label: BusinessNodePriorityLabel,
+			Rank:  BusinessNodePriorityRank,
+		},
 		MarkPriorityDirty: true,
 	})
 	if err != nil {
@@ -100,7 +103,10 @@ func TestEnginePriorityWaitsForRunningNodes(t *testing.T) {
 		AgentSpec: AgentSpec{
 			Mode: "simulate_success",
 		},
-		Priority:          NodePriority{Label: "normal", Rank: 2},
+		Priority: NodePriority{
+			Label: BusinessNodePriorityLabel,
+			Rank:  BusinessNodePriorityRank,
+		},
 		MarkPriorityDirty: true,
 	})
 	if err != nil {
@@ -138,6 +144,99 @@ func openTestRuntimeStore(t *testing.T) *RuntimeStore {
 func fixedNow(value time.Time) func() time.Time {
 	return func() time.Time {
 		return value
+	}
+}
+
+func TestEngineEnqueueDefaultsBusinessPriority(t *testing.T) {
+	store := openTestRuntimeStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	vos := &fakeVOSGateway{}
+	worker := &fakeWorkerGateway{}
+	engine, err := NewEngine(
+		store,
+		vos,
+		worker,
+		EngineConfig{
+			MaxDispatchPerTick: 1,
+			DefaultTimeoutMS:   120000,
+			AgingThreshold:     10 * time.Minute,
+		},
+		fixedNow(time.Date(2026, time.April, 14, 9, 0, 0, 0, time.UTC)),
+	)
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	_, err = engine.Enqueue(context.Background(), EnqueueRequest{
+		TopicID:  "topic-1",
+		NodeID:   "node-a",
+		NodeName: "node a",
+		AgentSpec: AgentSpec{
+			Mode: "simulate_success",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+
+	node, err := store.GetNode("topic-1", "node-a")
+	if err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	if node.PriorityLabel != BusinessNodePriorityLabel || node.PriorityRank != BusinessNodePriorityRank {
+		t.Fatalf(
+			"stored priority = (%s,%d), want (%s,%d)",
+			node.PriorityLabel,
+			node.PriorityRank,
+			BusinessNodePriorityLabel,
+			BusinessNodePriorityRank,
+		)
+	}
+}
+
+func TestEngineEnqueueRejectsNonBusinessPriority(t *testing.T) {
+	store := openTestRuntimeStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	vos := &fakeVOSGateway{}
+	worker := &fakeWorkerGateway{}
+	engine, err := NewEngine(
+		store,
+		vos,
+		worker,
+		EngineConfig{
+			MaxDispatchPerTick: 1,
+			DefaultTimeoutMS:   120000,
+			AgingThreshold:     10 * time.Minute,
+		},
+		fixedNow(time.Date(2026, time.April, 14, 9, 0, 0, 0, time.UTC)),
+	)
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	_, err = engine.Enqueue(context.Background(), EnqueueRequest{
+		TopicID:  "topic-1",
+		NodeID:   "node-a",
+		NodeName: "node a",
+		AgentSpec: AgentSpec{
+			Mode: "simulate_success",
+		},
+		Priority: NodePriority{
+			Label: "normal",
+			Rank:  2,
+		},
+	})
+	if err == nil {
+		t.Fatalf("Enqueue() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "business node priority must be fixed") {
+		t.Fatalf("Enqueue() error = %v, want business priority validation", err)
 	}
 }
 

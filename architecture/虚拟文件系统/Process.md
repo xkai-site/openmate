@@ -315,3 +315,19 @@
 5. 回归结果：
    - `go test ./internal/vos/httpapi/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-17 VOS API 启动阶段 Pool 初始化
+
+1. `internal/openmate/runtime.Open` 新增启动初始化步骤：
+   - 在运行时装配完成后立即调用 `poolGateway.Sync(context.Background())`
+   - 启动时自动按 `model.json` 初始化/刷新 `pool` 配置到 SQLite
+2. 行为变化：
+   - `model.json` 缺失或非法时，`openmate-vos-api` 启动直接失败（fail-fast）
+   - 避免首个 chat 请求才暴露 pool 配置问题
+3. 测试更新：
+   - `internal/openmate/runtime/runtime_test.go` 新增缺失 `model.json` 失败用例
+   - `internal/vos/httpapi/server_test.go` 测试构造阶段补齐测试用 `model.json`
+4. 回归结果：
+   - `go test ./internal/openmate/runtime/...` 通过
+   - `go test ./internal/vos/httpapi/...` 通过
+   - `go test ./...` 通过

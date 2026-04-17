@@ -4,12 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
 type ProviderKind string
 
 const ProviderKindOpenAICompatible ProviderKind = "openai_compatible"
+const ProviderKindOpenAI ProviderKind = "openai"
+
+type APIMode string
+
+const (
+	APIModeResponses       APIMode = "responses"
+	APIModeChatCompletions APIMode = "chat_completions"
+)
 
 type PricingConfig struct {
 	InputPer1MUSD       *float64 `json:"input_per_1m_usd"`
@@ -21,6 +30,7 @@ type PricingConfig struct {
 type APIConfig struct {
 	APIID           string            `json:"api_id"`
 	Provider        ProviderKind      `json:"provider"`
+	APIMode         APIMode           `json:"api_mode"`
 	Model           string            `json:"model"`
 	BaseURL         string            `json:"base_url"`
 	APIKey          string            `json:"api_key"`
@@ -56,14 +66,17 @@ func LoadModelConfig(path string) (ModelConfig, error) {
 	if err := json.Unmarshal(content, &config); err != nil {
 		return ModelConfig{}, fmt.Errorf("invalid model config: %w", err)
 	}
+	defaultHints := parseAPIFieldPresenceHints(content)
 
 	if config.OfflineFailureThreshold <= 0 {
 		config.OfflineFailureThreshold = 3
 	}
 	for idx := range config.APIs {
-		if config.APIs[idx].Provider == "" {
-			config.APIs[idx].Provider = ProviderKindOpenAICompatible
+		presence := apiFieldPresence{}
+		if idx < len(defaultHints) {
+			presence = defaultHints[idx]
 		}
+		applyAPIConfigDefaults(&config.APIs[idx], idx, presence)
 		if err := validateAPIConfig(config.APIs[idx]); err != nil {
 			return ModelConfig{}, err
 		}
@@ -87,6 +100,12 @@ func validateAPIConfig(api APIConfig) error {
 	if api.APIID == "" {
 		return fmt.Errorf("api_id is required")
 	}
+	if normalizeProviderKind(api.Provider) == "" {
+		return fmt.Errorf("provider is required for api_id=%s", api.APIID)
+	}
+	if mode := normalizeAPIMode(api.APIMode); mode == "" {
+		return fmt.Errorf("api_mode is invalid for api_id=%s", api.APIID)
+	}
 	if api.Model == "" {
 		return fmt.Errorf("model is required for api_id=%s", api.APIID)
 	}
@@ -106,6 +125,88 @@ func validateAPIConfig(api APIConfig) error {
 		return err
 	}
 	return nil
+}
+
+type apiFieldPresence struct {
+	HasAPIID         bool
+	HasProvider      bool
+	HasAPIMode       bool
+	HasMaxConcurrent bool
+	HasEnabled       bool
+}
+
+func parseAPIFieldPresenceHints(content []byte) []apiFieldPresence {
+	var raw struct {
+		APIs []map[string]json.RawMessage `json:"apis"`
+	}
+	if err := json.Unmarshal(content, &raw); err != nil {
+		return nil
+	}
+	hints := make([]apiFieldPresence, 0, len(raw.APIs))
+	for _, api := range raw.APIs {
+		_, hasAPIID := api["api_id"]
+		_, hasProvider := api["provider"]
+		_, hasAPIMode := api["api_mode"]
+		_, hasMaxConcurrent := api["max_concurrent"]
+		_, hasEnabled := api["enabled"]
+		hints = append(hints, apiFieldPresence{
+			HasAPIID:         hasAPIID,
+			HasProvider:      hasProvider,
+			HasAPIMode:       hasAPIMode,
+			HasMaxConcurrent: hasMaxConcurrent,
+			HasEnabled:       hasEnabled,
+		})
+	}
+	return hints
+}
+
+func applyAPIConfigDefaults(api *APIConfig, index int, presence apiFieldPresence) {
+	if api == nil {
+		return
+	}
+	if !presence.HasAPIID && strings.TrimSpace(api.APIID) == "" {
+		api.APIID = fmt.Sprintf("api-%d", index+1)
+	}
+	api.Provider = normalizeProviderKind(api.Provider)
+	if !presence.HasAPIMode && strings.TrimSpace(string(api.APIMode)) == "" {
+		api.APIMode = APIModeResponses
+	} else {
+		api.APIMode = APIMode(strings.TrimSpace(string(api.APIMode)))
+	}
+	if !presence.HasMaxConcurrent && api.MaxConcurrent == 0 {
+		api.MaxConcurrent = 1
+	}
+	if !presence.HasEnabled {
+		api.Enabled = true
+	}
+	if api.Headers == nil {
+		api.Headers = map[string]string{}
+	}
+	if api.RequestDefaults == nil {
+		api.RequestDefaults = map[string]any{}
+	}
+}
+
+func normalizeProviderKind(provider ProviderKind) ProviderKind {
+	switch ProviderKind(strings.TrimSpace(string(provider))) {
+	case "", ProviderKindOpenAI, ProviderKindOpenAICompatible:
+		return ProviderKindOpenAICompatible
+	default:
+		return provider
+	}
+}
+
+func normalizeAPIMode(mode APIMode) APIMode {
+	switch APIMode(strings.TrimSpace(string(mode))) {
+	case "":
+		return APIModeResponses
+	case APIModeResponses:
+		return APIModeResponses
+	case APIModeChatCompletions:
+		return APIModeChatCompletions
+	default:
+		return ""
+	}
 }
 
 func validateRetryConfig(retry RetryConfig) error {

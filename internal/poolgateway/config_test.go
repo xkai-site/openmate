@@ -114,3 +114,145 @@ func TestLoadModelConfigRejectsReservedRequestDefaultsFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadModelConfigAppliesSingleAPIDefaultsAndProviderAlias(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "model.json")
+	content := []byte(`{
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "provider": "openai",
+      "model": "deepseek-chat",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "sk-test"
+    }
+  ]
+}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := LoadModelConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.APIs) != 1 {
+		t.Fatalf("unexpected api count: %d", len(config.APIs))
+	}
+	api := config.APIs[0]
+	if api.APIID != "api-1" {
+		t.Fatalf("unexpected api_id: %s", api.APIID)
+	}
+	if api.Provider != ProviderKindOpenAICompatible {
+		t.Fatalf("unexpected provider: %s", api.Provider)
+	}
+	if api.APIMode != APIModeResponses {
+		t.Fatalf("unexpected api_mode: %s", api.APIMode)
+	}
+	if api.MaxConcurrent != 1 {
+		t.Fatalf("unexpected max_concurrent: %d", api.MaxConcurrent)
+	}
+	if !api.Enabled {
+		t.Fatalf("expected enabled=true")
+	}
+}
+
+func TestLoadModelConfigRespectsExplicitEnabledFalse(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "model.json")
+	content := []byte(`{
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "api_id": "api-1",
+      "model": "gpt-4.1",
+      "base_url": "http://unused.local/v1",
+      "api_key": "sk-test",
+      "max_concurrent": 1,
+      "enabled": false
+    }
+  ]
+}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := LoadModelConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.APIs) != 1 {
+		t.Fatalf("unexpected api count: %d", len(config.APIs))
+	}
+	if config.APIs[0].Enabled {
+		t.Fatalf("expected enabled=false")
+	}
+}
+
+func TestLoadModelConfigAcceptsChatCompletionsMode(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "model.json")
+	content := []byte(`{
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "api_id": "api-1",
+      "api_mode": "chat_completions",
+      "model": "gpt-4.1",
+      "base_url": "http://unused.local/v1",
+      "api_key": "sk-test",
+      "max_concurrent": 1,
+      "enabled": true
+    }
+  ]
+}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := LoadModelConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.APIs) != 1 {
+		t.Fatalf("unexpected api count: %d", len(config.APIs))
+	}
+	if config.APIs[0].APIMode != APIModeChatCompletions {
+		t.Fatalf("unexpected api_mode: %s", config.APIs[0].APIMode)
+	}
+}
+
+func TestLoadModelConfigRejectsInvalidAPIMode(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "model.json")
+	content := []byte(`{
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "api_id": "api-1",
+      "api_mode": "unknown_mode",
+      "model": "gpt-4.1",
+      "base_url": "http://unused.local/v1",
+      "api_key": "sk-test",
+      "max_concurrent": 1,
+      "enabled": true
+    }
+  ]
+}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadModelConfig(configPath)
+	if err == nil {
+		t.Fatalf("expected config validation error")
+	}
+	if err.Error() != "api_mode is invalid for api_id=api-1" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

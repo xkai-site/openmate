@@ -416,7 +416,11 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
           return;
         }
-        console.warn('流式对话失败，自动降级为非流式:', streamErr);
+        const shouldFallback = streamErr instanceof TypeError;
+        if (!shouldFallback) {
+          throw streamErr;
+        }
+        console.warn('流式对话网络失败，自动降级为非流式:', streamErr);
         const fallback = await sendChatMessage({
 
           node_id: nodeId,
@@ -457,6 +461,11 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
       const updatedNode = await getNode(nodeId);
       setNodeData(updatedNode);
       onAIReply?.();
+    } catch (err) {
+      console.error('发送消息失败:', err);
+      antMessage.error(err instanceof Error ? `发送失败: ${err.message}` : '发送失败，请重试');
+      setHistory((prev) => prev.slice(0, -1));
+      setInputValue(text);
     } finally {
       if (streamAbortRef.current === controller) {
         streamAbortRef.current = null;

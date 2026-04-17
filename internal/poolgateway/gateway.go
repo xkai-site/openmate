@@ -73,6 +73,10 @@ func (gateway *Gateway) Invoke(ctx context.Context, request InvokeRequest) (Invo
 		logger.Error("reserve invocation failed", slog.Any("error", err))
 		return InvokeResponse{}, err
 	}
+	if err := validateInvokeRequestForMode(request, reservation.APIMode); err != nil {
+		logger.Error("validate invoke request for mode failed", slog.Any("error", err))
+		return gateway.finishInternalFailure(ctx, reservation, err)
+	}
 	logger = logger.With(
 		slog.String(observability.FieldInvocationID, reservation.InvocationID),
 		slog.String(observability.FieldAttemptID, reservation.AttemptID),
@@ -109,10 +113,13 @@ func (gateway *Gateway) invokeReserved(
 			slog.Int("attempt", attempt),
 			slog.String(observability.FieldAttemptID, currentReservation.AttemptID),
 		)
-		attemptLogger.Debug(
+		attemptLogger.Info(
 			"attempt started",
 			slog.String("provider", currentReservation.Provider),
 			slog.String("api_id", currentReservation.APIID),
+			slog.String("api_mode", string(currentReservation.APIMode)),
+			slog.String("model", currentReservation.Model),
+			slog.String("base_url", currentReservation.BaseURL),
 		)
 		provider, err := gateway.providerFactory(currentReservation.Provider)
 		if err != nil {
@@ -136,6 +143,9 @@ func (gateway *Gateway) invokeReserved(
 			attemptLogger.Warn(
 				"attempt failed",
 				slog.String("error_code", providerErr.GatewayError.Code),
+				slog.String("error_message", providerErr.GatewayError.Message),
+				slog.Any("error_details", providerErr.GatewayError.Details),
+				slog.Any("provider_status_code", providerErr.GatewayError.ProviderStatusCode),
 				slog.Bool("retryable", providerErr.GatewayError.Retryable),
 			)
 			if !policy.shouldRetry(attempt, providerErr.GatewayError) {

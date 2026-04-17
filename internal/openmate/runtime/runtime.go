@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -131,6 +132,13 @@ func Open(config Config) (*Runtime, error) {
 
 	poolGateway := poolgateway.NewGateway(poolStore, modelConfigFile)
 	poolGateway.SetLogger(logger.With(slog.String(observability.FieldComponent, "pool")))
+	if _, err := poolGateway.Sync(context.Background()); err != nil {
+		logger.Error("initialize pool from model config failed", slog.Any("error", err))
+		_ = poolStore.Close()
+		_ = scheduleStore.Close()
+		_ = sessionStore.Close()
+		return nil, err
+	}
 
 	logger.Info(
 		"runtime opened",

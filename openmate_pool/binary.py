@@ -36,6 +36,8 @@ def ensure_pool_binary(explicit_binary: str | Path | None = None) -> Path:
             cwd=repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             env=env,
         )

@@ -374,7 +374,10 @@ func (server *Server) enqueueChatNode(ctx context.Context, node domain.Node, ses
 				VOSSessionDB:    server.sessionDB,
 				UseSessionEvent: true,
 			},
-			Priority:       schedule.NodePriority{Label: "interactive", Rank: 0},
+			Priority: schedule.NodePriority{
+				Label: schedule.BusinessNodePriorityLabel,
+				Rank:  schedule.BusinessNodePriorityRank,
+			},
 			IdempotencyKey: "chat:" + sessionID,
 		})
 		if err != nil {
@@ -396,12 +399,15 @@ func (server *Server) enqueueChatNode(ctx context.Context, node domain.Node, ses
 	}
 
 	enqueueRequest := map[string]any{
-		"topic_id":        node.TopicID,
-		"node_id":         node.ID,
-		"node_name":       node.Name,
-		"session_id":      sessionID,
-		"agent_spec":      spec,
-		"priority":        map[string]any{"label": "interactive", "rank": 0},
+		"topic_id":   node.TopicID,
+		"node_id":    node.ID,
+		"node_name":  node.Name,
+		"session_id": sessionID,
+		"agent_spec": spec,
+		"priority": map[string]any{
+			"label": schedule.BusinessNodePriorityLabel,
+			"rank":  schedule.BusinessNodePriorityRank,
+		},
 		"idempotency_key": "chat:" + sessionID,
 	}
 

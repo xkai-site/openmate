@@ -51,6 +51,28 @@ class VosContextGatewayTests(unittest.TestCase):
                     with self.assertRaises(ContextGatewayError):
                         gateway.snapshot(node_id="node-1")
 
+    def test_snapshot_runs_subprocess_with_utf8_decode(self) -> None:
+        payload = _snapshot_payload(node_id="node-encoding")
+        with TemporaryDirectory() as tmp:
+            gateway = VosContextGateway(
+                workspace_root=tmp,
+                state_file=Path(tmp, ".vos_state.json"),
+                session_db_file=Path(tmp, ".vos_sessions.db"),
+                binary_path=Path(tmp, "vos.exe"),
+            )
+            with patch("openmate_agent.context_gateway.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
+                with patch("openmate_agent.context_gateway.subprocess.run") as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = json.dumps(payload, ensure_ascii=False)
+                    mock_run.return_value.stderr = ""
+
+                    gateway.snapshot(node_id="node-encoding")
+
+                    kwargs = mock_run.call_args.kwargs
+                    self.assertTrue(kwargs["text"])
+                    self.assertEqual(kwargs["encoding"], "utf-8")
+                    self.assertEqual(kwargs["errors"], "replace")
+
 
 class VosContextInjectorTests(unittest.TestCase):
     def test_inject_builds_single_context_payload(self) -> None:

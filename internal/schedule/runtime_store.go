@@ -194,6 +194,10 @@ func (store *RuntimeStore) UpsertEnqueueNode(request EnqueueRequest) (bool, erro
 
 	created := false
 	if err := store.withWriteTx("enqueue", func(tx *sql.Tx) error {
+		if err := ensurePriorityRankLabelMappingTx(tx, request.TopicID, request.NodeID, request.Priority); err != nil {
+			return err
+		}
+
 		var existingNodeID string
 		queryErr := tx.QueryRow(`SELECT node_id FROM node_queue WHERE topic_id = ? AND node_id = ?`, request.TopicID, request.NodeID).Scan(&existingNodeID)
 		created = errors.Is(queryErr, sql.ErrNoRows)
@@ -1098,4 +1102,40 @@ func isSQLiteBusy(err error) bool {
 	}
 	message := err.Error()
 	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy")
+}
+
+func ensurePriorityRankLabelMappingTx(tx *sql.Tx, topicID, nodeID string, priority NodePriority) error {
+	if tx == nil {
+		return ValidationError{Message: "transaction is required"}
+	}
+	var existingLabel string
+	err := tx.QueryRow(
+		`SELECT priority_label
+		   FROM node_queue
+		  WHERE topic_id = ?
+		    AND priority_rank = ?
+		    AND node_id <> ?
+		  LIMIT 1`,
+		topicID,
+		priority.Rank,
+		nodeID,
+	).Scan(&existingLabel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("query priority rank mapping: %w", err)
+	}
+	if existingLabel != priority.Label {
+		return ValidationError{
+			Message: fmt.Sprintf(
+				"priority rank %d already mapped to label %q in topic %s (incoming label=%q)",
+				priority.Rank,
+				existingLabel,
+				topicID,
+				priority.Label,
+			),
+		}
+	}
+	return nil
 }

@@ -5,6 +5,9 @@ import "time"
 const (
 	PriorityNodeName  = "__priority__"
 	PriorityNodeLabel = "priority"
+
+	BusinessNodePriorityLabel = "interactive"
+	BusinessNodePriorityRank  = 1
 )
 
 type AgentSpec struct {
