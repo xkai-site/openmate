@@ -188,3 +188,69 @@
 
 1. Removed unused service wrapper `Service.ListNodes(topicID)` and kept `ListNodesByFilter` as the single list entrypoint.
 2. Verified VOS module tests with repo-local `GOCACHE/GOMODCACHE` and full `go test ./...` passed.
+
+## 2026-04-17 VOS Web 前端与 HTTP JSON 适配（预览）
+
+1. 新增独立命令入口 `cmd/openmate-vos-web`，用于同时启动：
+   - 内嵌前端页面（`internal/vos/httpapi/web`）
+   - VOS JSON HTTP API（`internal/vos/httpapi`）
+2. 当前前端 MVP 能力：
+   - Topic 列表与创建
+   - Topic 维度 Node 列表与创建
+   - 基础状态提示与刷新
+3. 当前 HTTP API 已覆盖 Topic/Node 主链路：
+   - `GET/POST /api/topics`
+   - `GET/PATCH/DELETE /api/topics/{topic_id}`
+   - `GET /api/topics/{topic_id}/nodes`
+   - `POST /api/nodes`
+   - `GET/PATCH/DELETE /api/nodes/{node_id}`
+   - `GET /api/nodes/{node_id}/children`
+   - `POST /api/nodes/{node_id}/move`
+   - `GET /api/nodes/{node_id}/leaf`
+4. 错误语义保持与领域层一致：用户可见错误映射到 `400/404/409`，其余归 `500`。
+5. 本轮保持 `cmd/vos` 现有 CLI + JSON 语义不变，Web/API 为新增适配层，不替换既有调用链。
+6. 回归与冒烟结果：
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过
+   - 本地启动 `openmate-vos-web` 后，`GET /api/health` 返回 `{"status":"ok"}`，`GET /` 返回 `200`
+7. 修复 `openmate-vos-web --help` 重复输出 usage 的问题（保留单次输出）。
+
+## 2026-04-17 VOS 前后端分离改造（HTML+JS）
+
+1. 后端 API 与前端静态页面已拆分为两个独立进程：
+   - `cmd/openmate-vos-api`：仅提供 `/api/*` JSON 接口
+   - `cmd/openmate-vos-web`：仅提供 `frontend/vos` 静态页面
+2. `internal/vos/httpapi` 已改为 API-only：
+   - 移除内嵌静态资源与 `/`、`/assets/*` 路由
+   - 新增 API CORS 头与 `OPTIONS` 预检支持，便于分离前端跨域访问
+3. 前端迁移到独立目录 `frontend/vos`，保持原生 `HTML + CSS + JS`，并新增：
+   - `API Base URL` 可配置（本地保存到 `localStorage`）
+   - 前端主动请求 `{apiBaseUrl}/api/*`
+4. 已清理旧内嵌前端文件目录：`internal/vos/httpapi/web/*`，避免双份前端来源。
+5. 测试与冒烟：
+   - `go test ./...` 通过
+   - `go run ./cmd/openmate-vos-api --help` 正常
+   - `go run ./cmd/openmate-vos-web --help` 正常
+   - API(`18080`) + Frontend(`18081`) 双进程启动后：
+     - `GET /api/health` 返回 `{"status":"ok"}`
+     - `GET /` 返回 `200`
+
+## 2026-04-17 HTTP v1 适配收口（CLI 保持不变）
+
+1. VOS HTTP 适配层收口到 `/api/v1/*`，不再保留旧 `/api/*` 路由面向前端联调。
+2. `internal/vos/httpapi` 已按前端约定统一响应包裹：
+   - 成功/失败均返回 `{code, message, data}`。
+   - 现阶段未实现接口（`/chat*`、`/topic*`、`/planlist*`、`/stats*`、`/tree/generate`、`/nodes/{id}/decompose`）统一返回 `501` 结构化响应。
+3. 前端状态值与领域状态映射已在适配层处理：
+   - `pending/waiting/running/completed/failed` 与 `draft/ready/active/done/blocked` 双向转换。
+4. `internal/vos/httpapi/server_test.go` 已改造为 v1 断言：
+   - Topic/Node 生命周期走 `/api/v1/*`。
+   - 校验 envelope 结构、`501` 未实现接口、`/api/v1/*` CORS 预检。
+   - 校验根路径 API-only 行为与旧 `/api/topics` 不暴露。
+5. `frontend` 开发代理已对齐 API 进程端口：
+   - `frontend/vite.config.ts`、`frontend/vite.config.js` 的 `/api` 代理目标改为 `http://127.0.0.1:8080`。
+6. 回归结果：
+   - `go test ./internal/vos/httpapi/...` 通过。
+   - `go test ./...` 通过。
+   - `go run ./cmd/openmate-vos-api --help` 正常输出。
+7. 本次仅调整 HTTP 前后端适配层，不变更 `cmd/vos` CLI 既有交互链路。

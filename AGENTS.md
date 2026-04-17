@@ -1,5 +1,6 @@
 ## 开发
 
+- 使用`UTF-8`读取文件
 - 默认使用强类型实现，当前冻结技术栈以 `architecture/sharedInfo/模块契约.md` 为准：
   - `vos / pool / schedule` 使用 Go
   - `agent` 使用 Python + Pydantic
