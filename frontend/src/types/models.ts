@@ -252,6 +252,11 @@ export interface ChatRequest {
   save_session?: boolean;
 }
 
+export interface ChatStreamRequest extends Omit<ChatRequest, 'message'> {
+  invocation_id?: string;
+  message?: string;
+}
+
 export interface ChatResponse {
   node_id?: string | null;
   reply: string;
@@ -270,6 +275,10 @@ export interface ChatStreamBaseEvent {
   ts: string;
   node_id?: string | null;
   turn_id: string;
+}
+
+export interface ChatStreamInvocationEvent extends ChatStreamBaseEvent {
+  invocation_id: string;
 }
 
 export interface ChatStreamToolCallEvent extends ChatStreamBaseEvent {
@@ -291,6 +300,8 @@ export interface ChatStreamMethodCallEvent extends ChatStreamBaseEvent {
 }
 
 export interface ChatStreamSummaryEvent extends ChatStreamBaseEvent {
+  invocation_id?: string;
+  status?: 'success' | 'failure' | 'running' | string;
   node_id?: string;
   usage?: Record<string, number>;
   memory_written?: Record<string, unknown> | null;
@@ -304,5 +315,25 @@ export interface ChatStreamSummaryEvent extends ChatStreamBaseEvent {
 export interface ChatStreamFatalEvent extends ChatStreamBaseEvent {
   message: string;
   code?: number;
+}
+
+export interface ChatResultError {
+  code?: string;
+  message?: string;
+  retryable?: boolean;
+  provider_status_code?: number;
+  details?: Record<string, unknown>;
+}
+
+export interface ChatResultResponse {
+  invocation_id: string;
+  node_id: string;
+  status: 'success' | 'failure' | 'running' | string;
+  reply: string;
+  model?: string;
+  provider?: string;
+  usage?: Record<string, number>;
+  error?: ChatResultError;
+  finished_at?: string | null;
 }
 

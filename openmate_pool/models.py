@@ -69,8 +69,6 @@ class OpenAIResponsesRequest(BaseModel):
                 raise ValueError(
                     f"request.{field} is ChatCompletions-only and is not supported; use Responses API fields"
                 )
-        if self.stream is True:
-            raise ValueError("request.stream is not supported yet")
         return self
 
 
@@ -95,8 +93,6 @@ class OpenAIChatCompletionsRequest(BaseModel):
         extras = self.model_extra or {}
         if "model" in extras:
             raise ValueError("chat_request.model must not be set; model comes from model.json")
-        if self.stream is True:
-            raise ValueError("chat_request.stream is not supported yet")
         return self
 
 

@@ -3,6 +3,7 @@ package poolgateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -473,6 +474,164 @@ func TestOpenAICompatibleProviderUsesResponsesPayloadAndDefaults(t *testing.T) {
 	}
 	if result.Usage.ReasoningTokens == nil || *result.Usage.ReasoningTokens != 1 {
 		t.Fatalf("unexpected reasoning tokens: %+v", result.Usage)
+	}
+}
+
+func TestOpenAICompatibleProviderSupportsResponsesStream(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/responses" {
+			http.NotFound(writer, request)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if stream, ok := payload["stream"].(bool); !ok || !stream {
+			t.Fatalf("expected stream=true payload, got: %+v", payload["stream"])
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(
+			writer,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n"+
+				"data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\n\n"+
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream-1\",\"object\":\"response\",\"model\":\"gpt-4.1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello world\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := OpenAICompatibleProvider{HTTPClient: server.Client()}
+	result, err := provider.Invoke(context.Background(), InvocationReservation{
+		BaseURL: server.URL + "/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-4.1",
+	}, InvokeRequest{
+		Request: OpenAIResponsesRequest{
+			"input":  "hello",
+			"stream": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if result.OutputText == nil || *result.OutputText != "hello world" {
+		t.Fatalf("unexpected output: %+v", result.OutputText)
+	}
+	if result.Usage == nil || result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 5 {
+		t.Fatalf("unexpected usage: %+v", result.Usage)
+	}
+}
+
+func TestOpenAICompatibleProviderSupportsChatCompletionsStream(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/chat/completions" {
+			http.NotFound(writer, request)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if stream, ok := payload["stream"].(bool); !ok || !stream {
+			t.Fatalf("expected stream=true payload, got: %+v", payload["stream"])
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(
+			writer,
+			"data: {\"id\":\"chatcmpl-stream-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-stream-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello \"}}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-stream-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"}}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-stream-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := OpenAICompatibleProvider{HTTPClient: server.Client()}
+	result, err := provider.Invoke(context.Background(), InvocationReservation{
+		BaseURL: server.URL + "/v1",
+		APIKey:  "sk-test",
+		APIMode: APIModeChatCompletions,
+		Model:   "gpt-4.1",
+	}, InvokeRequest{
+		ChatRequest: OpenAIChatCompletionsRequest{
+			"messages": []any{
+				map[string]any{
+					"role":    "user",
+					"content": "hello",
+				},
+			},
+			"stream": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if result.OutputText == nil || *result.OutputText != "hello world" {
+		t.Fatalf("unexpected output: %+v", result.OutputText)
+	}
+	if result.Usage == nil || result.Usage.InputTokens == nil || *result.Usage.InputTokens != 2 {
+		t.Fatalf("unexpected usage: %+v", result.Usage)
+	}
+}
+
+func TestOpenAICompatibleProviderSupportsChatCompletionsToolStream(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/chat/completions" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(
+			writer,
+			"data: {\"id\":\"chatcmpl-stream-tool-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"\"}}]}}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-stream-tool-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"Beijing\\\"}\"}}]}}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-stream-tool-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := OpenAICompatibleProvider{HTTPClient: server.Client()}
+	result, err := provider.Invoke(context.Background(), InvocationReservation{
+		BaseURL: server.URL + "/v1",
+		APIKey:  "sk-test",
+		APIMode: APIModeChatCompletions,
+		Model:   "gpt-4.1",
+	}, InvokeRequest{
+		ChatRequest: OpenAIChatCompletionsRequest{
+			"messages": []any{
+				map[string]any{
+					"role":    "user",
+					"content": "weather",
+				},
+			},
+			"stream": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if result.OutputText != nil {
+		t.Fatalf("expected nil output_text for tool stream response: %+v", result.OutputText)
+	}
+	items, ok := result.Response["output"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected output items: %+v", result.Response["output"])
+	}
+	functionCall, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected function_call payload: %+v", items[0])
+	}
+	if functionCall["call_id"] != "call-1" || functionCall["name"] != "get_weather" {
+		t.Fatalf("unexpected function_call payload: %+v", functionCall)
+	}
+	if functionCall["arguments"] != "{\"city\":\"Beijing\"}" {
+		t.Fatalf("unexpected function_call arguments: %+v", functionCall["arguments"])
 	}
 }
 

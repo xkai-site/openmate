@@ -117,6 +117,43 @@ func TestValidateInvokeRequestAcceptsChatRequest(t *testing.T) {
 	}
 }
 
+func TestValidateInvokeRequestAcceptsResponsesStream(t *testing.T) {
+	t.Parallel()
+
+	err := validateInvokeRequest(InvokeRequest{
+		RequestID: "req-1",
+		NodeID:    "node-1",
+		Request: OpenAIResponsesRequest{
+			"input":  "hello",
+			"stream": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected responses stream request to pass validation: %v", err)
+	}
+}
+
+func TestValidateInvokeRequestAcceptsChatStream(t *testing.T) {
+	t.Parallel()
+
+	err := validateInvokeRequest(InvokeRequest{
+		RequestID: "req-1",
+		NodeID:    "node-1",
+		ChatRequest: OpenAIChatCompletionsRequest{
+			"messages": []any{
+				map[string]any{
+					"role":    "user",
+					"content": "hello",
+				},
+			},
+			"stream": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected chat stream request to pass validation: %v", err)
+	}
+}
+
 func TestValidateInvokeRequestForModeAllowsResponsesPayloadForChatMode(t *testing.T) {
 	t.Parallel()
 

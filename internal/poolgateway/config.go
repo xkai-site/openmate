@@ -229,9 +229,6 @@ func validateRequestDefaults(apiID string, defaults map[string]any) error {
 	if _, exists := defaults["input"]; exists {
 		return fmt.Errorf("request_defaults.input must not be set for api_id=%s", apiID)
 	}
-	if stream, ok := defaults["stream"].(bool); ok && stream {
-		return fmt.Errorf("request_defaults.stream is not supported for api_id=%s", apiID)
-	}
 	if value, ok := anyFloat64(defaults["temperature"]); ok && (value < 0 || value > 2) {
 		return fmt.Errorf("request_defaults.temperature must be between 0 and 2 for api_id=%s", apiID)
 	}

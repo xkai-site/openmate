@@ -4,11 +4,13 @@ import { SendOutlined, UserOutlined, RobotOutlined, CopyOutlined, ExperimentOutl
 import { message as antMessage } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { sendChatMessage, sendChatMessageStream } from '@/services/api/chat';
+import { getChatResult, sendChatMessage, sendChatMessageStream } from '@/services/api/chat';
 import { getNode } from '@/services/api/nodes';
 import type {
   ChatMessage,
+  ChatResultResponse,
   ChatStreamMethodCallEvent,
+  ChatStreamRequest,
   ChatStreamSummaryEvent,
   NodeResponse,
   StreamPhase,
@@ -24,6 +26,22 @@ export interface SessionPanelProps {
   themeMode?: ThemeMode;
   /** AI 每次回复完成后触发，用于通知外部刷新 Memory */
   onAIReply?: () => void;
+}
+
+function buildSummaryFromResult(result: ChatResultResponse): ChatStreamSummaryEvent {
+  return {
+    event_id: `result-${result.invocation_id}`,
+    ts: result.finished_at ?? new Date().toISOString(),
+    turn_id: result.invocation_id,
+    invocation_id: result.invocation_id,
+    node_id: result.node_id,
+    status: result.status,
+    usage: result.usage,
+    memory_written: null,
+    method_traces: null,
+    model: result.model,
+    provider: result.provider,
+  };
 }
 
 // ── ThinkingBubble ──────────────────────────────────────────────
@@ -281,6 +299,33 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const activeInvocationRef = useRef<string | null>(null);
+  const pendingInvocationStorageKey = `openmate.session.pending_invocation.${nodeId}`;
+
+  const savePendingInvocation = useCallback((invocationID: string) => {
+    const normalized = invocationID.trim();
+    if (!normalized) return;
+    activeInvocationRef.current = normalized;
+    const payload = {
+      invocation_id: normalized,
+      node_id: nodeId,
+      saved_at: new Date().toISOString(),
+    };
+    try {
+      sessionStorage.setItem(pendingInvocationStorageKey, JSON.stringify(payload));
+    } catch {
+      // ignore storage errors
+    }
+  }, [nodeId, pendingInvocationStorageKey]);
+
+  const clearPendingInvocation = useCallback(() => {
+    activeInvocationRef.current = null;
+    try {
+      sessionStorage.removeItem(pendingInvocationStorageKey);
+    } catch {
+      // ignore storage errors
+    }
+  }, [pendingInvocationStorageKey]);
 
 
 
@@ -319,6 +364,191 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     };
   }, [nodeId]);
 
+  useEffect(() => {
+    if (sessionLoading || isLoading) {
+      return;
+    }
+    let raw = '';
+    try {
+      raw = sessionStorage.getItem(pendingInvocationStorageKey) ?? '';
+    } catch {
+      raw = '';
+    }
+    if (!raw) {
+      return;
+    }
+    let pending: { invocation_id?: string; node_id?: string } = {};
+    try {
+      pending = JSON.parse(raw) as { invocation_id?: string; node_id?: string };
+    } catch {
+      clearPendingInvocation();
+      return;
+    }
+    const invocationID = String(pending.invocation_id ?? '').trim();
+    if (!invocationID) {
+      clearPendingInvocation();
+      return;
+    }
+    if (pending.node_id && pending.node_id !== nodeId) {
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    setIsLoading(true);
+    setLivePhase('reasoning');
+    setStreamingText('');
+    setThinkingText('');
+    setLiveMethodCalls([]);
+    setLiveToolCalls([]);
+
+    const restore = async () => {
+      let assistantReply = '';
+      let assistantThinking = '';
+      let summary: ChatStreamSummaryEvent | null = null;
+      try {
+        const result = await getChatResult(invocationID);
+        if (cancelled) return;
+        if (result.status === 'success') {
+          assistantReply = result.reply || '（无输出）';
+          summary = buildSummaryFromResult(result);
+          clearPendingInvocation();
+        } else if (result.status === 'failure') {
+          clearPendingInvocation();
+          antMessage.error(result.error?.message || '恢复会话失败');
+          return;
+        } else {
+          await sendChatMessageStream(
+            {
+              invocation_id: invocationID,
+            },
+            {
+              onInvocation: (event) => {
+                const id = String(event.invocation_id ?? '').trim();
+                if (id) {
+                  savePendingInvocation(id);
+                }
+              },
+              onPhase: (event) => {
+                if (event.phase) setLivePhase(event.phase as StreamPhase);
+              },
+              onMethodCall: (event) => {
+                setLiveMethodCalls((prev) => [...prev, event]);
+              },
+              onToolCall: (event) => {
+                setLiveToolCalls((prev) => {
+                  const existing = prev.findIndex(
+                    (item) => item.tool === event.tool && item.call === 'start',
+                  );
+                  if (existing >= 0 && (event.call === 'result' || event.call === 'error')) {
+                    const updated = [...prev];
+                    updated[existing] = {
+                      tool: event.tool,
+                      call: event.call,
+                      args: (event.args as Record<string, unknown> | undefined) ?? updated[existing].args,
+                      result: event.result as Record<string, unknown> | undefined,
+                      error: event.error,
+                    };
+                    return updated;
+                  }
+                  return [...prev, {
+                    tool: event.tool,
+                    call: event.call,
+                    args: event.args as Record<string, unknown> | undefined,
+                  }];
+                });
+              },
+              onAssistantThinkingDelta: (delta) => {
+                assistantThinking += delta;
+                setThinkingText((prev) => prev + delta);
+              },
+              onAssistantDelta: (delta) => {
+                assistantReply += delta;
+                setStreamingText((prev) => prev + delta);
+              },
+              onAssistantDone: (reply) => {
+                assistantReply = reply || assistantReply;
+                setStreamingText(assistantReply);
+              },
+              onSummary: (event) => {
+                summary = event;
+                clearPendingInvocation();
+              },
+              onFatal: () => {
+                clearPendingInvocation();
+              },
+            },
+            controller.signal,
+          );
+          if (!summary) {
+            const refreshed = await getChatResult(invocationID);
+            if (refreshed.status === 'success') {
+              summary = buildSummaryFromResult(refreshed);
+              if (!assistantReply && refreshed.reply) {
+                assistantReply = refreshed.reply;
+              }
+              clearPendingInvocation();
+            }
+          }
+        }
+
+        if (!cancelled && (assistantReply || summary)) {
+          const toolTracesFromSummary = (summary?.tool_traces ?? []) as ToolTrace[];
+          const content = assistantReply || '（无输出）';
+          setHistory((prev) => [
+            ...(prev.length > 0
+              && prev[prev.length - 1]?.role === 'assistant'
+              && prev[prev.length - 1]?.content === content
+              ? prev
+              : [
+                ...prev,
+                {
+                  role: 'assistant',
+                  content,
+                  thinking: assistantThinking || undefined,
+                  timestamp: new Date().toISOString(),
+                  usage: summary?.usage,
+                  method_traces: summary?.method_traces ?? undefined,
+                  tool_traces: toolTracesFromSummary.length > 0 ? toolTracesFromSummary : undefined,
+                },
+              ]),
+          ]);
+          const updatedNode = await getNode(nodeId);
+          if (!cancelled) {
+            setNodeData(updatedNode);
+            onAIReply?.();
+          }
+        }
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === 'AbortError')) {
+          clearPendingInvocation();
+        }
+      } finally {
+        if (!cancelled) {
+          if (streamAbortRef.current === controller) {
+            streamAbortRef.current = null;
+          }
+          setIsLoading(false);
+          setLivePhase(null);
+          setStreamingText('');
+          setThinkingText('');
+          setLiveMethodCalls([]);
+          setLiveToolCalls([]);
+        }
+      }
+    };
+
+    void restore();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+    };
+  }, [clearPendingInvocation, isLoading, nodeId, onAIReply, pendingInvocationStorageKey, savePendingInvocation, sessionLoading]);
+
 
 
   useEffect(() => {
@@ -329,6 +559,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
   const handleSend = useCallback(async () => {
     const text = inputValue.trim();
     if (!text || isLoading) return;
+    clearPendingInvocation();
 
     const userMsg: ChatMessage = {
       role: 'user',
@@ -352,17 +583,24 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     let assistantReply = '';
     let assistantThinking = '';
     let summary: ChatStreamSummaryEvent | null = null;
+    let hasSummary = false;
+    const streamPayload: ChatStreamRequest = {
+      node_id: nodeId,
+      message: text,
+      history,
+    };
 
     try {
 
       try {
         await sendChatMessageStream(
+          streamPayload,
           {
-            node_id: nodeId,
-            message: text,
-            history,
-          },
-          {
+            onInvocation: (payload) => {
+              const invocationID = String(payload.invocation_id ?? '').trim();
+              if (!invocationID) return;
+              savePendingInvocation(invocationID);
+            },
             onPhase: (payload) => {
               if (payload.phase) setLivePhase(payload.phase as StreamPhase);
             },
@@ -407,6 +645,11 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
             },
             onSummary: (payload) => {
               summary = payload;
+              hasSummary = true;
+              clearPendingInvocation();
+            },
+            onFatal: () => {
+              clearPendingInvocation();
             },
           },
           controller.signal,
@@ -416,29 +659,114 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
           return;
         }
-        const shouldFallback = streamErr instanceof TypeError;
-        if (!shouldFallback) {
-          throw streamErr;
+        const activeInvocationID = (activeInvocationRef.current ?? '').trim();
+        if (activeInvocationID) {
+          const result = await getChatResult(activeInvocationID);
+          if (result.status === 'success') {
+            assistantReply = result.reply || assistantReply;
+            if (!hasSummary) {
+              summary = buildSummaryFromResult(result);
+            }
+            clearPendingInvocation();
+          } else if (result.status === 'running') {
+            await sendChatMessageStream(
+              {
+                invocation_id: activeInvocationID,
+              },
+              {
+                onInvocation: (payload) => {
+                  const invocationID = String(payload.invocation_id ?? '').trim();
+                  if (!invocationID) return;
+                  savePendingInvocation(invocationID);
+                },
+                onPhase: (payload) => {
+                  if (payload.phase) setLivePhase(payload.phase as StreamPhase);
+                },
+                onMethodCall: (payload) => {
+                  setLiveMethodCalls((prev) => [...prev, payload]);
+                },
+                onToolCall: (payload) => {
+                  setLiveToolCalls((prev) => {
+                    const existing = prev.findIndex(
+                      (item) => item.tool === payload.tool && item.call === 'start',
+                    );
+                    if (existing >= 0 && (payload.call === 'result' || payload.call === 'error')) {
+                      const updated = [...prev];
+                      updated[existing] = {
+                        tool: payload.tool,
+                        call: payload.call,
+                        args: (payload.args as Record<string, unknown> | undefined) ?? updated[existing].args,
+                        result: payload.result as Record<string, unknown> | undefined,
+                        error: payload.error,
+                      };
+                      return updated;
+                    }
+                    return [...prev, {
+                      tool: payload.tool,
+                      call: payload.call,
+                      args: payload.args as Record<string, unknown> | undefined,
+                    }];
+                  });
+                },
+                onAssistantThinkingDelta: (delta) => {
+                  assistantThinking += delta;
+                  setThinkingText((prev) => prev + delta);
+                },
+                onAssistantDelta: (delta) => {
+                  assistantReply += delta;
+                  setStreamingText((prev) => prev + delta);
+                },
+                onAssistantDone: (reply) => {
+                  assistantReply = reply || assistantReply;
+                  setStreamingText(assistantReply);
+                },
+                onSummary: (payload) => {
+                  summary = payload;
+                  hasSummary = true;
+                  clearPendingInvocation();
+                },
+                onFatal: () => {
+                  clearPendingInvocation();
+                },
+              },
+              controller.signal,
+            );
+            if (!hasSummary) {
+              const refreshed = await getChatResult(activeInvocationID);
+              if (refreshed.status === 'success') {
+                summary = buildSummaryFromResult(refreshed);
+                assistantReply = refreshed.reply || assistantReply;
+                clearPendingInvocation();
+              }
+            }
+          } else {
+            clearPendingInvocation();
+            throw new Error(result.error?.message || '流式对话失败');
+          }
+        } else {
+          const shouldFallback = streamErr instanceof TypeError;
+          if (!shouldFallback) {
+            throw streamErr;
+          }
+          const fallback = await sendChatMessage({
+            node_id: nodeId,
+            message: text,
+            history,
+          });
+          assistantReply = fallback.reply;
+          summary = {
+            event_id: 'fallback',
+            ts: new Date().toISOString(),
+            turn_id: 'fallback',
+            node_id: nodeId,
+            usage: fallback.usage,
+            memory_written: fallback.memory_written ?? null,
+            method_traces: fallback.method_traces ?? null,
+            model: fallback.model,
+            provider: fallback.provider,
+            status: 'success',
+          };
         }
-        console.warn('流式对话网络失败，自动降级为非流式:', streamErr);
-        const fallback = await sendChatMessage({
-
-          node_id: nodeId,
-          message: text,
-          history,
-        });
-        assistantReply = fallback.reply;
-        summary = {
-          event_id: 'fallback',
-          ts: new Date().toISOString(),
-          turn_id: 'fallback',
-          node_id: nodeId,
-          usage: fallback.usage,
-          memory_written: fallback.memory_written ?? null,
-          method_traces: fallback.method_traces ?? null,
-          model: fallback.model,
-          provider: fallback.provider,
-        };
       }
 
       // 汇总 tool_traces
@@ -479,7 +807,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
       setTimeout(() => inputRef.current?.focus(), 20);
     }
 
-  }, [inputValue, isLoading, nodeId, history, onAIReply]);
+  }, [clearPendingInvocation, history, inputValue, isLoading, nodeId, onAIReply, savePendingInvocation]);
 
 
 

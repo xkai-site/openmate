@@ -115,6 +115,43 @@ func TestLoadModelConfigRejectsReservedRequestDefaultsFields(t *testing.T) {
 	}
 }
 
+func TestLoadModelConfigAcceptsRequestDefaultsStream(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "model.json")
+	content := []byte(`{
+  "offline_failure_threshold": 3,
+  "apis": [
+    {
+      "api_id": "api-1",
+      "model": "gpt-4.1",
+      "base_url": "http://unused.local/v1",
+      "api_key": "sk-test",
+      "max_concurrent": 1,
+      "enabled": true,
+      "request_defaults": {
+        "stream": true
+      }
+    }
+  ]
+}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := LoadModelConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.APIs) != 1 {
+		t.Fatalf("unexpected api count: %d", len(config.APIs))
+	}
+	stream, ok := config.APIs[0].RequestDefaults["stream"].(bool)
+	if !ok || !stream {
+		t.Fatalf("expected request_defaults.stream=true, got: %+v", config.APIs[0].RequestDefaults["stream"])
+	}
+}
+
 func TestLoadModelConfigAppliesSingleAPIDefaultsAndProviderAlias(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()

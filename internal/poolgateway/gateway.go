@@ -95,6 +95,14 @@ func (gateway *Gateway) Invoke(ctx context.Context, request InvokeRequest) (Invo
 	return response, nil
 }
 
+func (gateway *Gateway) Record(ctx context.Context, invocationID string) (InvocationRecord, error) {
+	config, err := LoadModelConfig(gateway.modelConfigPath)
+	if err != nil {
+		return InvocationRecord{}, err
+	}
+	return gateway.store.Record(ctx, config, invocationID)
+}
+
 func (gateway *Gateway) invokeReserved(
 	ctx context.Context,
 	config ModelConfig,
@@ -148,6 +156,9 @@ func (gateway *Gateway) invokeReserved(
 				slog.Any("provider_status_code", providerErr.GatewayError.ProviderStatusCode),
 				slog.Bool("retryable", providerErr.GatewayError.Retryable),
 			)
+			if request.StreamSink != nil {
+				return gateway.finishInvocationFailure(ctx, currentReservation.InvocationID, providerErr.GatewayError, finishedAt)
+			}
 			if !policy.shouldRetry(attempt, providerErr.GatewayError) {
 				return gateway.finishInvocationFailure(ctx, currentReservation.InvocationID, providerErr.GatewayError, finishedAt)
 			}

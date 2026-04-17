@@ -2,14 +2,19 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"vos/internal/poolgateway"
 )
 
 type apiEnvelope struct {
@@ -350,4 +355,226 @@ func TestServerV1Health(t *testing.T) {
 	if payload["status"] != "ok" {
 		t.Fatalf("health status = %v, want ok", payload["status"])
 	}
+}
+
+type testProvider struct {
+	invoke func(ctx context.Context, reservation poolgateway.InvocationReservation, request poolgateway.InvokeRequest) (poolgateway.ProviderInvokeResult, error)
+}
+
+func (provider testProvider) Invoke(
+	ctx context.Context,
+	reservation poolgateway.InvocationReservation,
+	request poolgateway.InvokeRequest,
+) (poolgateway.ProviderInvokeResult, error) {
+	if provider.invoke == nil {
+		return poolgateway.ProviderInvokeResult{}, fmt.Errorf("test provider invoke is nil")
+	}
+	return provider.invoke(ctx, reservation, request)
+}
+
+func TestServerV1ChatResultRequiresInvocationID(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	response := mustRequestEnvelope(t, testServer.Client(), http.MethodGet, testServer.URL+"/api/v1/chat/result", nil, http.StatusBadRequest)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServerV1ChatResultReturnsNotFound(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	response := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/chat/result?invocation_id=inv-missing",
+		nil,
+		http.StatusNotFound,
+	)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestServerV1ChatResultReturnsInvocationRecord(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	server.runtime.PoolGateway.SetProviderFactory(func(provider string) (poolgateway.ProviderClient, error) {
+		return testProvider{
+			invoke: func(ctx context.Context, reservation poolgateway.InvocationReservation, request poolgateway.InvokeRequest) (poolgateway.ProviderInvokeResult, error) {
+				reply := "hello from test"
+				return poolgateway.ProviderInvokeResult{
+					Response: map[string]any{
+						"object": "response",
+						"status": "completed",
+						"output": []any{
+							map[string]any{
+								"type":   "message",
+								"role":   "assistant",
+								"status": "completed",
+								"content": []any{
+									map[string]any{
+										"type": "output_text",
+										"text": reply,
+									},
+								},
+							},
+						},
+						"usage": map[string]any{
+							"input_tokens":  1,
+							"output_tokens": 2,
+							"total_tokens":  3,
+						},
+					},
+					OutputText: &reply,
+					Usage: &poolgateway.UsageMetrics{
+						InputTokens:  intPtr(1),
+						OutputTokens: intPtr(2),
+						TotalTokens:  intPtr(3),
+					},
+				}, nil
+			},
+		}, nil
+	})
+
+	invokeResponse, err := server.runtime.PoolGateway.Invoke(context.Background(), poolgateway.InvokeRequest{
+		RequestID: "req-test-chat-result",
+		NodeID:    "node-test-chat-result",
+		Request: poolgateway.OpenAIResponsesRequest{
+			"input": []any{
+				map[string]any{
+					"role":    "user",
+					"content": "hi",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke error = %v", err)
+	}
+
+	envelope := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/chat/result?invocation_id="+invokeResponse.InvocationID,
+		nil,
+		http.StatusOK,
+	)
+	payload := map[string]any{}
+	mustDecodeEnvelopeData(t, envelope, &payload)
+	if payload["invocation_id"] != invokeResponse.InvocationID {
+		t.Fatalf("invocation_id = %v, want %s", payload["invocation_id"], invokeResponse.InvocationID)
+	}
+	if payload["status"] != "success" {
+		t.Fatalf("status = %v, want success", payload["status"])
+	}
+	if payload["reply"] != "hello from test" {
+		t.Fatalf("reply = %v, want hello from test", payload["reply"])
+	}
+}
+
+func TestServerV1ChatStreamAttachNotRunning(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	requestBody := bytes.NewBufferString(`{"invocation_id":"inv-missing"}`)
+	request, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/v1/chat/stream", requestBody)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := testServer.Client().Do(request)
+	if err != nil {
+		t.Fatalf("client.Do() error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestServerV1ChatStreamAttachExistingInvocation(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	run := newChatRun("inv-tail", "node-tail", "session-tail")
+	server.setChatRun(run)
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		run.publish(chatRunEvent{
+			Type: "assistant_delta",
+			Payload: map[string]any{
+				"delta": "hello",
+			},
+		})
+		run.publish(chatRunEvent{
+			Type: "summary",
+			Payload: map[string]any{
+				"invocation_id": "inv-tail",
+				"status":        "success",
+			},
+		})
+		run.close()
+		server.removeChatRun("inv-tail")
+	}()
+
+	requestBody := bytes.NewBufferString(`{"invocation_id":"inv-tail"}`)
+	request, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/v1/chat/stream", requestBody)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := testServer.Client().Do(request)
+	if err != nil {
+		t.Fatalf("client.Do() error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("io.ReadAll() error = %v", err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "event: invocation") {
+		t.Fatalf("stream should include invocation event, got: %s", text)
+	}
+	if !strings.Contains(text, "\"invocation_id\":\"inv-tail\"") {
+		t.Fatalf("stream should include invocation_id, got: %s", text)
+	}
+	if !strings.Contains(text, "event: assistant_delta") {
+		t.Fatalf("stream should include assistant_delta event, got: %s", text)
+	}
+	if !strings.Contains(text, "event: summary") {
+		t.Fatalf("stream should include summary event, got: %s", text)
+	}
+}
+
+func intPtr(value int) *int {
+	result := value
+	return &result
 }

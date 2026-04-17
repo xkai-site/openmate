@@ -123,14 +123,23 @@ class PoolGatewayTestCase(unittest.TestCase):
                 }
             )
 
-    def test_chat_request_rejects_stream(self) -> None:
-        with self.assertRaises(ValidationError):
-            OpenAIChatCompletionsRequest.model_validate(
-                {
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": True,
-                }
-            )
+    def test_chat_request_accepts_stream(self) -> None:
+        request = OpenAIChatCompletionsRequest.model_validate(
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            }
+        )
+        self.assertTrue(request.stream)
+
+    def test_request_accepts_stream(self) -> None:
+        request = OpenAIResponsesRequest.model_validate(
+            {
+                "input": "hello",
+                "stream": True,
+            }
+        )
+        self.assertTrue(request.stream)
 
     def test_invoke_payload_omits_none_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,5 +1,24 @@
 # Agent池内部开发过程（收敛版）
 
+## 2026-04-17 Chat 流式追尾与结果查询闭环（vos/httpapi + frontend）
+
+1. `vos/httpapi`：
+   - `/api/v1/chat/stream` 已支持 `invocation_id` 追尾订阅运行中流。
+   - `/api/v1/chat/result` 支持按 `invocation_id` 查询最终状态、文本、usage、模型、错误。
+   - SSE 事件补齐 `invocation`（含 `invocation_id`）与 `summary.status`；失败态 `fatal` 增加 `invocation_id/status`。
+2. 前端 `Home` 与 `SessionPanel`：
+   - 增加 `invocation_id` 事件消费与 `sessionStorage` 挂起态保存。
+   - 网络中断时优先走 `/chat/result` 查询；若仍 `running` 则自动用 `invocation_id` 追尾流，而非直接退回非流式。
+   - 页面刷新后若检测到挂起 `invocation_id`，会先查结果；运行中则自动恢复追尾。
+3. 测试补充：
+   - 新增 `server_test.go` 覆盖 `/chat/result` 参数校验、不存在、成功查询。
+   - 新增 `/chat/stream` 追尾场景：不存在 invocation 返回 404，存在运行返回 invocation/delta/summary 事件。
+4. 回归结果：
+   - `go test ./internal/poolgateway/... ./internal/vos/httpapi/...` 通过
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（63 项）
+   - `frontend npm run build` 当前失败，原因为前端既有严格类型错误（`ApiResponse<T>` 与业务返回类型映射不一致，含 `nodes/topic/tree/planlist/stats/chat` 等文件），非本轮新增单点错误。
+
 ## 2026-04-17 Chat/Responses 切换兼容与日志增强
 
 1. 针对“仅切 `model.json` 不改前端”诉求，`api_mode=chat_completions` 时已支持继续接收 `request`（Responses 形态）并在池内自动转换为 Chat 请求。
@@ -215,3 +234,22 @@
    - `internal/poolgateway/providers_test.go` 校验 `/responses` 外发 payload 的 `input` 为消息数组而非字符串。
 4. 回归结果：
    - `go test ./internal/poolgateway/...` 通过
+
+## 2026-04-17 Stream Enablement for Responses and Chat
+
+1. Removed stream rejections in both Go and Python request validation paths:
+   - `request.stream` and `chat_request.stream` are now allowed.
+   - `request_defaults.stream=true` is now accepted in `model.json`.
+2. Added provider-side streaming parsing support:
+   - `responses` mode now parses SSE frames and reconstructs a final Responses payload.
+   - `chat_completions` mode now parses SSE chunk deltas (content and tool_calls), then normalizes to the existing unified Responses-style output.
+3. Preserved compatibility constraints:
+   - `metadata`, `truncation`, and `user` are still stripped before provider request dispatch in Responses path.
+   - Frontend request shape stays unchanged.
+4. Added regression tests:
+   - Go: stream validation acceptance, config stream defaults acceptance, Responses stream parsing, Chat stream parsing, Chat tool-call stream parsing.
+   - Python: stream field acceptance for both request models.
+5. Validation results:
+   - `go test ./internal/poolgateway/...` passed
+   - `go test ./...` passed
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` passed (63 tests)

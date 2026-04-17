@@ -4,11 +4,13 @@ import { Button, App } from 'antd';
 import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { sendChatMessage, sendChatMessageStream } from '@/services/api/chat';
+import { getChatResult, sendChatMessage, sendChatMessageStream } from '@/services/api/chat';
 import { decomposeNode } from '@/services/api/tree';
 import type {
   ChatStreamMethodCallEvent,
   ChatStreamSummaryEvent,
+  ChatStreamRequest,
+  ChatResultResponse,
   SessionMessage,
   MethodTrace,
   StreamPhase,
@@ -27,6 +29,22 @@ const FEATURE_TAGS = [
   { icon: <ExperimentOutlined />, label: 'Think', color: '#bf5af2' },
   { icon: <ThunderboltOutlined />, label: 'Fast', color: '#34c759' },
 ];
+
+function buildSummaryFromResult(result: ChatResultResponse): ChatStreamSummaryEvent {
+  return {
+    event_id: `result-${result.invocation_id}`,
+    ts: result.finished_at ?? new Date().toISOString(),
+    turn_id: result.invocation_id,
+    invocation_id: result.invocation_id,
+    node_id: result.node_id,
+    status: result.status,
+    usage: result.usage,
+    memory_written: null,
+    method_traces: null,
+    model: result.model,
+    provider: result.provider,
+  };
+}
 
 export default function HomePage() {
   const [messages, setMessages] = useState<ChatBubble[]>([
@@ -47,9 +65,11 @@ export default function HomePage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const activeInvocationRef = useRef<string | null>(null);
 
   const navigate = useNavigate();
   const { message } = App.useApp();
+  const pendingInvocationStorageKey = 'openmate.home.pending_invocation';
 
   // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -89,10 +109,170 @@ export default function HomePage() {
     };
   }, [input]);
 
+  const savePendingInvocation = useCallback((invocationID: string, pendingNodeID?: string | null) => {
+    const normalized = invocationID.trim();
+    if (!normalized) return;
+    activeInvocationRef.current = normalized;
+    const payload = {
+      invocation_id: normalized,
+      node_id: pendingNodeID ?? nodeId ?? null,
+      saved_at: new Date().toISOString(),
+    };
+    try {
+      sessionStorage.setItem(pendingInvocationStorageKey, JSON.stringify(payload));
+    } catch {
+      // ignore storage errors
+    }
+  }, [nodeId, pendingInvocationStorageKey]);
+
+  const clearPendingInvocation = useCallback(() => {
+    activeInvocationRef.current = null;
+    try {
+      sessionStorage.removeItem(pendingInvocationStorageKey);
+    } catch {
+      // ignore storage errors
+    }
+  }, [pendingInvocationStorageKey]);
+
+  useEffect(() => {
+    let raw = '';
+    try {
+      raw = sessionStorage.getItem(pendingInvocationStorageKey) ?? '';
+    } catch {
+      raw = '';
+    }
+    if (!raw || isSending) {
+      return;
+    }
+
+    let payload: { invocation_id?: string; node_id?: string | null } = {};
+    try {
+      payload = JSON.parse(raw) as { invocation_id?: string; node_id?: string | null };
+    } catch {
+      clearPendingInvocation();
+      return;
+    }
+
+    const pendingInvocationID = String(payload.invocation_id ?? '').trim();
+    if (!pendingInvocationID) {
+      clearPendingInvocation();
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    setIsSending(true);
+    setLivePhase('reasoning');
+    setStreamingText('');
+    setLiveMethodCalls([]);
+
+    const restore = async () => {
+      let assistantReply = '';
+      let summary: ChatStreamSummaryEvent | null = null;
+      try {
+        const result = await getChatResult(pendingInvocationID);
+        if (cancelled) return;
+        if (result.node_id && !nodeId) {
+          setNodeId(result.node_id);
+        }
+        if (result.status === 'success') {
+          assistantReply = result.reply || '（无输出）';
+          summary = buildSummaryFromResult(result);
+          clearPendingInvocation();
+        } else if (result.status === 'failure') {
+          clearPendingInvocation();
+          message.error(result.error?.message || '恢复会话失败');
+          return;
+        } else {
+          await sendChatMessageStream(
+            {
+              invocation_id: pendingInvocationID,
+            },
+            {
+              onInvocation: (event) => {
+                const invocationID = String(event.invocation_id ?? '').trim();
+                if (!invocationID) return;
+                savePendingInvocation(invocationID, payload.node_id ?? null);
+              },
+              onPhase: (event) => {
+                if (event.phase) setLivePhase(event.phase);
+              },
+              onMethodCall: (event) => {
+                setLiveMethodCalls((prev) => [...prev, event]);
+              },
+              onAssistantDelta: (delta) => {
+                assistantReply += delta;
+                setStreamingText((prev) => prev + delta);
+              },
+              onAssistantDone: (reply) => {
+                assistantReply = reply || assistantReply;
+                setStreamingText(assistantReply);
+              },
+              onSummary: (event) => {
+                summary = event;
+                clearPendingInvocation();
+                setProjectPanelKey((k) => k + 1);
+              },
+              onFatal: () => {
+                clearPendingInvocation();
+              },
+            },
+            controller.signal,
+          );
+          if (!summary) {
+            const refreshed = await getChatResult(pendingInvocationID);
+            if (refreshed.status === 'success') {
+              summary = buildSummaryFromResult(refreshed);
+              if (!assistantReply && refreshed.reply) {
+                assistantReply = refreshed.reply;
+              }
+            }
+          }
+        }
+
+        if (!cancelled && (assistantReply || summary)) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: assistantReply || '（无输出）',
+              method_traces: summary?.method_traces ?? undefined,
+            },
+          ]);
+        }
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === 'AbortError')) {
+          clearPendingInvocation();
+        }
+      } finally {
+        if (!cancelled) {
+          if (streamAbortRef.current === controller) {
+            streamAbortRef.current = null;
+          }
+          setIsSending(false);
+          setLivePhase(null);
+          setStreamingText('');
+          setLiveMethodCalls([]);
+        }
+      }
+    };
+
+    void restore();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+    };
+  }, [clearPendingInvocation, isSending, message, nodeId, pendingInvocationStorageKey, savePendingInvocation]);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || isSending) return;
 
+    clearPendingInvocation();
     setInput('');
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
     setIsSending(true);
@@ -111,16 +291,23 @@ export default function HomePage() {
 
       let assistantReply = '';
       let summary: ChatStreamSummaryEvent | null = null;
+      let hasSummary = false;
+      const streamPayload: ChatStreamRequest = {
+        node_id: nodeId ?? undefined,
+        message: text,
+        history,
+        save_session: true,
+      };
 
       try {
         await sendChatMessageStream(
+          streamPayload,
           {
-            node_id: nodeId ?? undefined,
-            message: text,
-            history,
-            save_session: true,
-          },
-          {
+            onInvocation: (payload) => {
+              const invocationID = String(payload.invocation_id ?? '').trim();
+              if (!invocationID) return;
+              savePendingInvocation(invocationID, nodeId);
+            },
             onPhase: (payload) => {
               if (payload.phase) setLivePhase(payload.phase);
             },
@@ -137,10 +324,15 @@ export default function HomePage() {
             },
             onSummary: (payload) => {
               summary = payload;
+              hasSummary = true;
+              clearPendingInvocation();
               if (payload.node_id && !nodeId) {
                 setNodeId(payload.node_id);
               }
               setProjectPanelKey((k) => k + 1);
+            },
+            onFatal: () => {
+              clearPendingInvocation();
             },
           },
           controller.signal,
@@ -149,34 +341,104 @@ export default function HomePage() {
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
           return;
         }
-        const shouldFallback = streamErr instanceof TypeError;
-        if (!shouldFallback) {
-          throw streamErr;
+        const activeInvocationID = (activeInvocationRef.current ?? '').trim();
+        if (activeInvocationID) {
+          const result = await getChatResult(activeInvocationID);
+          if (result.status === 'success') {
+            assistantReply = result.reply || assistantReply;
+            if (!hasSummary) {
+              summary = buildSummaryFromResult(result);
+            }
+            clearPendingInvocation();
+            if (result.node_id && !nodeId) {
+              setNodeId(result.node_id);
+            }
+            setProjectPanelKey((k) => k + 1);
+          } else if (result.status === 'running') {
+            await sendChatMessageStream(
+              {
+                invocation_id: activeInvocationID,
+              },
+              {
+                onInvocation: (payload) => {
+                  const invocationID = String(payload.invocation_id ?? '').trim();
+                  if (!invocationID) return;
+                  savePendingInvocation(invocationID, nodeId);
+                },
+                onPhase: (payload) => {
+                  if (payload.phase) setLivePhase(payload.phase);
+                },
+                onMethodCall: (payload) => {
+                  setLiveMethodCalls((prev) => [...prev, payload]);
+                },
+                onAssistantDelta: (delta) => {
+                  assistantReply += delta;
+                  setStreamingText((prev) => prev + delta);
+                },
+                onAssistantDone: (reply) => {
+                  assistantReply = reply || assistantReply;
+                  setStreamingText(assistantReply);
+                },
+                onSummary: (payload) => {
+                  summary = payload;
+                  hasSummary = true;
+                  clearPendingInvocation();
+                  if (payload.node_id && !nodeId) {
+                    setNodeId(payload.node_id);
+                  }
+                  setProjectPanelKey((k) => k + 1);
+                },
+                onFatal: () => {
+                  clearPendingInvocation();
+                },
+              },
+              controller.signal,
+            );
+            if (!hasSummary) {
+              const refreshed = await getChatResult(activeInvocationID);
+              if (refreshed.status === 'success') {
+                summary = buildSummaryFromResult(refreshed);
+                assistantReply = refreshed.reply || assistantReply;
+                clearPendingInvocation();
+                if (refreshed.node_id && !nodeId) {
+                  setNodeId(refreshed.node_id);
+                }
+                setProjectPanelKey((k) => k + 1);
+              }
+            }
+          } else {
+            clearPendingInvocation();
+            throw new Error(result.error?.message || '流式对话失败');
+          }
+        } else {
+          const shouldFallback = streamErr instanceof TypeError;
+          if (!shouldFallback) {
+            throw streamErr;
+          }
+          const fallback = await sendChatMessage({
+            node_id: nodeId,
+            message: text,
+            history,
+            save_session: true,
+          });
+          assistantReply = fallback.reply;
+          summary = {
+            event_id: 'fallback',
+            ts: new Date().toISOString(),
+            turn_id: 'fallback',
+            node_id: fallback.node_id ?? nodeId ?? undefined,
+            usage: fallback.usage,
+            memory_written: fallback.memory_written ?? null,
+            method_traces: fallback.method_traces ?? null,
+            model: fallback.model,
+            provider: fallback.provider,
+            status: 'success',
+          };
+          if (fallback.node_id && !nodeId) {
+            setNodeId(fallback.node_id);
+          }
+          setProjectPanelKey((k) => k + 1);
         }
-        console.warn('流式对话网络失败，自动降级为非流式:', streamErr);
-
-        const fallback = await sendChatMessage({
-          node_id: nodeId,
-          message: text,
-          history,
-          save_session: true,
-        });
-        assistantReply = fallback.reply;
-        summary = {
-          event_id: 'fallback',
-          ts: new Date().toISOString(),
-          turn_id: 'fallback',
-          node_id: fallback.node_id ?? nodeId ?? undefined,
-          usage: fallback.usage,
-          memory_written: fallback.memory_written ?? null,
-          method_traces: fallback.method_traces ?? null,
-          model: fallback.model,
-          provider: fallback.provider,
-        };
-        if (fallback.node_id && !nodeId) {
-          setNodeId(fallback.node_id);
-        }
-        setProjectPanelKey((k) => k + 1);
       }
 
       setMessages((prev) => [
@@ -199,7 +461,7 @@ export default function HomePage() {
       setStreamingText('');
       setLiveMethodCalls([]);
     }
-  }, [input, isSending, messages, nodeId, message]);
+  }, [clearPendingInvocation, input, isSending, messages, nodeId, message, savePendingInvocation]);
 
   const handleDecompose = useCallback(async () => {
     if (isDecomposing) return;

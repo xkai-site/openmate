@@ -27,6 +27,13 @@ type OpenAIChatCompletionsRequest map[string]any
 
 type OpenAIResponsesResponse map[string]any
 
+type StreamEvent struct {
+	Type    string         `json:"type"`
+	Payload map[string]any `json:"payload"`
+}
+
+type StreamSink func(event StreamEvent)
+
 type InvokeRequest struct {
 	RequestID   string                       `json:"request_id"`
 	NodeID      string                       `json:"node_id"`
@@ -34,6 +41,7 @@ type InvokeRequest struct {
 	ChatRequest OpenAIChatCompletionsRequest `json:"chat_request,omitempty"`
 	TimeoutMS   *int                         `json:"timeout_ms"`
 	RoutePolicy RoutePolicy                  `json:"route_policy"`
+	StreamSink  StreamSink                   `json:"-"`
 }
 
 type UsageMetrics struct {

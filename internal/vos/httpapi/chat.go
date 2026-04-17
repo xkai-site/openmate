@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"vos/internal/openmate/observability"
+	"vos/internal/poolgateway"
 	"vos/internal/schedule"
 	"vos/internal/vos/domain"
 	"vos/internal/vos/service"
@@ -25,6 +27,7 @@ const (
 )
 
 type v1ChatRequest struct {
+	InvocationID *string          `json:"invocation_id"`
 	NodeID       *string          `json:"node_id"`
 	Message      string           `json:"message"`
 	History      []map[string]any `json:"history"`
@@ -49,6 +52,112 @@ type v1ToolTrace struct {
 	Result map[string]any
 	Error  string
 	Call   string
+}
+
+type v1ChatResultResponse struct {
+	InvocationID string         `json:"invocation_id"`
+	NodeID       string         `json:"node_id"`
+	Status       string         `json:"status"`
+	Reply        string         `json:"reply"`
+	Model        string         `json:"model"`
+	Provider     string         `json:"provider"`
+	Usage        map[string]any `json:"usage"`
+	Error        map[string]any `json:"error"`
+	FinishedAt   *string        `json:"finished_at"`
+}
+
+type chatRunEvent struct {
+	Type    string
+	Payload map[string]any
+}
+
+type chatRun struct {
+	InvocationID string
+	NodeID       string
+	SessionID    string
+
+	mu          sync.Mutex
+	subscribers map[int]chan chatRunEvent
+	nextID      int
+	closed      bool
+}
+
+func newChatRun(invocationID, nodeID, sessionID string) *chatRun {
+	return &chatRun{
+		InvocationID: invocationID,
+		NodeID:       nodeID,
+		SessionID:    sessionID,
+		subscribers:  map[int]chan chatRunEvent{},
+	}
+}
+
+func (run *chatRun) subscribe() (int, <-chan chatRunEvent, bool) {
+	if run == nil {
+		return 0, nil, false
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.closed {
+		return 0, nil, false
+	}
+	run.nextID++
+	subID := run.nextID
+	channel := make(chan chatRunEvent, 256)
+	run.subscribers[subID] = channel
+	return subID, channel, true
+}
+
+func (run *chatRun) unsubscribe(subID int) {
+	if run == nil {
+		return
+	}
+	run.mu.Lock()
+	channel, exists := run.subscribers[subID]
+	if exists {
+		delete(run.subscribers, subID)
+	}
+	run.mu.Unlock()
+	if exists {
+		close(channel)
+	}
+}
+
+func (run *chatRun) publish(event chatRunEvent) {
+	if run == nil {
+		return
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.closed {
+		return
+	}
+	for _, subscriber := range run.subscribers {
+		select {
+		case subscriber <- event:
+		default:
+		}
+	}
+}
+
+func (run *chatRun) close() {
+	if run == nil {
+		return
+	}
+	run.mu.Lock()
+	if run.closed {
+		run.mu.Unlock()
+		return
+	}
+	run.closed = true
+	subscribers := make([]chan chatRunEvent, 0, len(run.subscribers))
+	for key, subscriber := range run.subscribers {
+		delete(run.subscribers, key)
+		subscribers = append(subscribers, subscriber)
+	}
+	run.mu.Unlock()
+	for _, subscriber := range subscribers {
+		close(subscriber)
+	}
 }
 
 type chatTurnState struct {
@@ -113,6 +222,8 @@ func (server *Server) handleV1ChatEntry(writer http.ResponseWriter, request *htt
 		server.handleV1Chat(writer, request)
 	case "/stream":
 		server.handleV1ChatStream(writer, request)
+	case "/result":
+		server.handleV1ChatResult(writer, request)
 	default:
 		server.writeV1Error(writer, http.StatusNotFound, "not found")
 	}
@@ -198,99 +309,409 @@ func (server *Server) handleV1ChatStream(writer http.ResponseWriter, request *ht
 	)
 	request = request.WithContext(observability.WithLogger(request.Context(), logger))
 
-	chatRequest, nodeID, sessionID, err := server.prepareChatTurn(request)
+	chatRequest, err := server.decodeChatRequest(request)
 	if err != nil {
-		logger.Error("prepare chat stream turn failed", slog.Any("error", err))
+		logger.Error("decode chat stream request failed", slog.Any("error", err))
 		server.writeV1ServiceError(writer, err)
 		return
 	}
+
+	invocationID := ""
+	if chatRequest.InvocationID != nil {
+		invocationID = strings.TrimSpace(*chatRequest.InvocationID)
+	}
+
+	var run *chatRun
+	shouldStartRun := false
+	if invocationID != "" {
+		run = server.getChatRun(invocationID)
+		if run == nil {
+			server.writeV1Error(writer, http.StatusNotFound, "chat invocation is not running")
+			return
+		}
+	} else {
+		if strings.TrimSpace(chatRequest.Message) == "" {
+			server.writeV1Error(writer, http.StatusBadRequest, "message is required")
+			return
+		}
+		nodeID, sessionID, err := server.prepareChatSession(chatRequest)
+		if err != nil {
+			logger.Error("prepare chat stream session failed", slog.Any("error", err))
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		invocationID = domain.NewID()
+		run = newChatRun(invocationID, nodeID, sessionID)
+		server.setChatRun(run)
+		shouldStartRun = true
+	}
+
 	logger = logger.With(
-		slog.String(observability.FieldNodeID, nodeID),
-		slog.String(observability.FieldSessionID, sessionID),
+		slog.String(observability.FieldInvocationID, run.InvocationID),
+		slog.String(observability.FieldNodeID, run.NodeID),
+		slog.String(observability.FieldSessionID, run.SessionID),
 	)
 	request = request.WithContext(observability.WithLogger(request.Context(), logger))
-	_ = chatRequest
+	logger = logger.With(
+		slog.String(observability.FieldNodeID, run.NodeID),
+		slog.String(observability.FieldSessionID, run.SessionID),
+	)
+	request = request.WithContext(observability.WithLogger(request.Context(), logger))
+
+	subID, channel, ok := run.subscribe()
+	if !ok {
+		server.writeV1Error(writer, http.StatusNotFound, "chat invocation is not running")
+		return
+	}
+	defer run.unsubscribe(subID)
 
 	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
 	writer.WriteHeader(http.StatusOK)
 
-	emitter := newSSEEmitter(writer, flusher, nodeID, sessionID)
+	emitter := newSSEEmitter(writer, flusher, run.NodeID, run.SessionID)
 	emitter.phase("reading_node")
-	emitter.phase("waiting_schedule")
+	emitter.phase("reasoning")
+	emitter.emit("invocation", map[string]any{
+		"invocation_id": run.InvocationID,
+	})
 
-	state := chatTurnState{
-		NodeID:    nodeID,
-		SessionID: sessionID,
+	if shouldStartRun {
+		server.startChatRun(logger, run, chatRequest)
 	}
-	if err := server.waitChatTurn(request.Context(), &state, emitter); err != nil {
-		logger.Error("wait chat stream turn failed", slog.Any("error", err))
-		emitter.fatal(err)
+
+	for {
+		select {
+		case <-request.Context().Done():
+			logger.Info("chat stream client disconnected")
+			return
+		case event, open := <-channel:
+			if !open {
+				logger.Info("chat stream run closed")
+				return
+			}
+			if event.Type == "fatal" {
+				fatalPayload := cloneMapOrEmpty(event.Payload)
+				message := readOptionalString(fatalPayload, "message")
+				if strings.TrimSpace(message) == "" {
+					fatalPayload["message"] = "chat stream failed"
+				}
+				emitter.emit("fatal", fatalPayload)
+				return
+			}
+			emitter.emit(event.Type, cloneMapOrEmpty(event.Payload))
+		}
+	}
+}
+
+func (server *Server) handleV1ChatResult(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet)
 		return
 	}
+	invocationID := strings.TrimSpace(request.URL.Query().Get("invocation_id"))
+	if invocationID == "" {
+		server.writeV1Error(writer, http.StatusBadRequest, "invocation_id is required")
+		return
+	}
+	if server.runtime == nil || server.runtime.PoolGateway == nil {
+		server.writeV1Error(writer, http.StatusInternalServerError, "pool runtime is not configured")
+		return
+	}
+	record, err := server.runtime.PoolGateway.Record(request.Context(), invocationID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "invocation not found") {
+			server.writeV1Error(writer, http.StatusNotFound, "invocation not found")
+			return
+		}
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+	var finishedAt *string
+	if record.Timing.FinishedAt != nil {
+		value := record.Timing.FinishedAt.UTC().Format(time.RFC3339Nano)
+		finishedAt = &value
+	}
+	reply := ""
+	if record.OutputText != nil {
+		reply = strings.TrimSpace(*record.OutputText)
+	}
+	response := v1ChatResultResponse{
+		InvocationID: record.InvocationID,
+		NodeID:       record.Request.NodeID,
+		Status:       string(record.Status),
+		Reply:        reply,
+		Usage:        usageToMap(record.Usage),
+		Error:        gatewayErrorToMap(record.Error),
+		FinishedAt:   finishedAt,
+	}
+	if record.Route != nil {
+		response.Model = record.Route.Model
+		response.Provider = record.Route.Provider
+	}
+	server.writeV1Success(writer, response)
+}
 
-	reply := state.Reply
-	if strings.TrimSpace(reply) == "" {
-		reply = state.AssistantBuffer.String()
+func (server *Server) setChatRun(run *chatRun) {
+	if server == nil || run == nil {
+		return
 	}
-	if strings.TrimSpace(reply) != "" {
-		emitter.assistantDone(reply)
+	server.chatRunsMu.Lock()
+	server.chatRuns[run.InvocationID] = run
+	server.chatRunsMu.Unlock()
+}
+
+func (server *Server) getChatRun(invocationID string) *chatRun {
+	if server == nil {
+		return nil
 	}
-	emitter.phase("finalizing")
-	emitter.summary(state)
-	logger.Info("chat stream turn completed")
+	server.chatRunsMu.Lock()
+	defer server.chatRunsMu.Unlock()
+	return server.chatRuns[invocationID]
+}
+
+func (server *Server) removeChatRun(invocationID string) {
+	if server == nil {
+		return
+	}
+	server.chatRunsMu.Lock()
+	delete(server.chatRuns, invocationID)
+	server.chatRunsMu.Unlock()
+}
+
+func (server *Server) startChatRun(
+	logger *slog.Logger,
+	run *chatRun,
+	chatRequest v1ChatRequest,
+) {
+	if server == nil || run == nil || server.runtime == nil || server.runtime.PoolGateway == nil {
+		return
+	}
+	operationLogger := observability.NormalizeLogger(logger).With(
+		slog.String(observability.FieldOperation, "chat.stream.invoke"),
+		slog.String(observability.FieldInvocationID, run.InvocationID),
+		slog.String(observability.FieldNodeID, run.NodeID),
+		slog.String(observability.FieldSessionID, run.SessionID),
+	)
+	go func() {
+		defer func() {
+			run.close()
+			server.removeChatRun(run.InvocationID)
+		}()
+
+		requestID := fmt.Sprintf("chat-stream-%s", run.InvocationID)
+		input := buildChatResponsesInput(chatRequest.History, chatRequest.Message)
+		requestPayload := poolgateway.OpenAIResponsesRequest{
+			"input":  input,
+			"stream": true,
+		}
+		if chatRequest.SystemPrompt != nil {
+			if prompt := strings.TrimSpace(*chatRequest.SystemPrompt); prompt != "" {
+				requestPayload["instructions"] = prompt
+			}
+		}
+		poolRequest := poolgateway.InvokeRequest{
+			RequestID: requestID,
+			NodeID:    run.NodeID,
+			Request:   requestPayload,
+			StreamSink: func(event poolgateway.StreamEvent) {
+				run.publish(chatRunEvent{
+					Type:    event.Type,
+					Payload: cloneMapOrEmpty(event.Payload),
+				})
+			},
+		}
+
+		invokeCtx, cancel := context.WithTimeout(context.Background(), defaultChatTurnTimeout)
+		defer cancel()
+		response, err := server.runtime.PoolGateway.Invoke(invokeCtx, poolRequest)
+		if err != nil {
+			operationLogger.Error("stream invoke failed", slog.Any("error", err))
+			_, _ = server.service.AppendSessionEvent(service.AppendSessionEventInput{
+				SessionID: run.SessionID,
+				ItemType:  domain.SessionItemTypeMessage,
+				Role:      sessionRolePtr(domain.SessionRoleSystem),
+				PayloadJSON: map[string]any{
+					"role": domain.SessionRoleSystem,
+					"error": map[string]any{
+						"code":      "CHAT_STREAM_FAILED",
+						"message":   err.Error(),
+						"retryable": false,
+					},
+				},
+				NextStatus: sessionStatusPtr(domain.SessionStatusFailed),
+			})
+			run.publish(chatRunEvent{
+				Type: "fatal",
+				Payload: map[string]any{
+					"invocation_id": run.InvocationID,
+					"status":        "failure",
+					"message":       err.Error(),
+				},
+			})
+			return
+		}
+
+		reply := ""
+		if response.OutputText != nil {
+			reply = strings.TrimSpace(*response.OutputText)
+		}
+		if reply != "" {
+			run.publish(chatRunEvent{
+				Type: "assistant_done",
+				Payload: map[string]any{
+					"reply": reply,
+				},
+			})
+		}
+		usage := usageToMap(response.Usage)
+		payload := map[string]any{
+			"role":        domain.SessionRoleAssistant,
+			"output_text": reply,
+			"usage":       usage,
+			"content":     normalizeOutputContent(response.Response),
+		}
+		if response.Route != nil {
+			payload["model"] = response.Route.Model
+			payload["provider"] = response.Route.Provider
+		}
+		_, _ = server.service.AppendSessionEvent(service.AppendSessionEventInput{
+			SessionID:   run.SessionID,
+			ItemType:    domain.SessionItemTypeMessage,
+			Role:        sessionRolePtr(domain.SessionRoleAssistant),
+			PayloadJSON: payload,
+			NextStatus:  sessionStatusPtr(domain.SessionStatusCompleted),
+		})
+		summary := map[string]any{
+			"invocation_id": run.InvocationID,
+			"status":        "success",
+			"usage":         usage,
+		}
+		if response.Route != nil {
+			summary["model"] = response.Route.Model
+			summary["provider"] = response.Route.Provider
+		}
+		run.publish(chatRunEvent{
+			Type:    "summary",
+			Payload: summary,
+		})
+	}()
+}
+
+func buildChatResponsesInput(history []map[string]any, message string) []any {
+	items := make([]any, 0, len(history)+1)
+	for _, entry := range history {
+		role := strings.TrimSpace(readOptionalString(entry, "role"))
+		content := strings.TrimSpace(readOptionalString(entry, "content"))
+		if role == "" || content == "" {
+			continue
+		}
+		if role != "user" && role != "assistant" && role != "system" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"role":    role,
+			"content": content,
+		})
+	}
+	items = append(items, map[string]any{
+		"role":    "user",
+		"content": strings.TrimSpace(message),
+	})
+	return items
+}
+
+func usageToMap(usage *poolgateway.UsageMetrics) map[string]any {
+	if usage == nil {
+		return map[string]any{}
+	}
+	payload := map[string]any{}
+	if usage.InputTokens != nil {
+		payload["input_tokens"] = *usage.InputTokens
+	}
+	if usage.OutputTokens != nil {
+		payload["output_tokens"] = *usage.OutputTokens
+	}
+	if usage.TotalTokens != nil {
+		payload["total_tokens"] = *usage.TotalTokens
+	}
+	if usage.CachedInputTokens != nil {
+		payload["cached_input_tokens"] = *usage.CachedInputTokens
+	}
+	if usage.ReasoningTokens != nil {
+		payload["reasoning_tokens"] = *usage.ReasoningTokens
+	}
+	if usage.LatencyMS != nil {
+		payload["latency_ms"] = *usage.LatencyMS
+	}
+	if usage.CostUSD != nil {
+		payload["cost_usd"] = *usage.CostUSD
+	}
+	return payload
+}
+
+func gatewayErrorToMap(gatewayError *poolgateway.GatewayError) map[string]any {
+	if gatewayError == nil {
+		return map[string]any{}
+	}
+	payload := map[string]any{
+		"code":      gatewayError.Code,
+		"message":   gatewayError.Message,
+		"retryable": gatewayError.Retryable,
+	}
+	if gatewayError.ProviderStatusCode != nil {
+		payload["provider_status_code"] = *gatewayError.ProviderStatusCode
+	}
+	if len(gatewayError.Details) > 0 {
+		payload["details"] = cloneMapOrEmpty(gatewayError.Details)
+	}
+	return payload
+}
+
+func normalizeOutputContent(response map[string]any) []any {
+	if response == nil {
+		return []any{}
+	}
+	outputRaw, ok := response["output"].([]any)
+	if !ok || len(outputRaw) == 0 {
+		return []any{}
+	}
+	output := make([]any, 0, len(outputRaw))
+	for _, item := range outputRaw {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		output = append(output, cloneMapOrEmpty(itemMap))
+	}
+	return output
 }
 
 func (server *Server) prepareChatTurn(request *http.Request) (v1ChatRequest, string, string, error) {
 	logger := observability.LoggerFromContext(request.Context(), server.logger).With(
 		slog.String(observability.FieldOperation, "chat.prepare"),
 	)
-	var chatRequest v1ChatRequest
-	if err := decodeJSON(request.Body, &chatRequest); err != nil {
-		logger.Warn("decode chat request failed", slog.Any("error", err))
-		return v1ChatRequest{}, "", "", domain.ValidationError{Message: err.Error()}
-	}
-	if strings.TrimSpace(chatRequest.Message) == "" {
-		logger.Warn("chat message is empty")
-		return v1ChatRequest{}, "", "", domain.ValidationError{Message: "message is required"}
-	}
-
-	node, err := server.resolveChatNode(chatRequest)
+	chatRequest, err := server.decodeChatRequest(request)
 	if err != nil {
-		logger.Error("resolve chat node failed", slog.Any("error", err))
+		logger.Warn("decode chat request failed", slog.Any("error", err))
 		return v1ChatRequest{}, "", "", err
 	}
-	nodeID := node.ID
+	nodeID, sessionID, err := server.prepareChatSession(chatRequest)
+	if err != nil {
+		logger.Error("prepare chat session failed", slog.Any("error", err))
+		return v1ChatRequest{}, "", "", err
+	}
+	node, err := server.service.GetNode(nodeID)
+	if err != nil {
+		logger.Error("reload chat node failed", slog.Any("error", err))
+		return v1ChatRequest{}, "", "", err
+	}
 	logger = logger.With(
 		slog.String(observability.FieldTopicID, node.TopicID),
 		slog.String(observability.FieldNodeID, nodeID),
+		slog.String(observability.FieldSessionID, sessionID),
 	)
-	sessionRecord, err := server.service.CreateSession(service.CreateSessionInput{
-		NodeID: nodeID,
-		Status: domain.SessionStatusActive,
-	})
-	if err != nil {
-		logger.Error("create session failed", slog.Any("error", err))
-		return v1ChatRequest{}, "", "", err
-	}
-	sessionID := sessionRecord.ID
-	logger = logger.With(slog.String(observability.FieldSessionID, sessionID))
-
-	_, err = server.service.AppendSessionEvent(service.AppendSessionEventInput{
-		SessionID: sessionID,
-		ItemType:  domain.SessionItemTypeMessage,
-		Role:      sessionRolePtr(domain.SessionRoleUser),
-		PayloadJSON: map[string]any{
-			"role":    domain.SessionRoleUser,
-			"content": strings.TrimSpace(chatRequest.Message),
-		},
-		NextStatus: sessionStatusPtr(domain.SessionStatusActive),
-	})
-	if err != nil {
-		logger.Error("append user message event failed", slog.Any("error", err))
-		return v1ChatRequest{}, "", "", err
-	}
 
 	if err := server.enqueueChatNode(request.Context(), *node, sessionID); err != nil {
 		logger.Error("enqueue chat node failed", slog.Any("error", err))
@@ -313,6 +734,55 @@ func (server *Server) prepareChatTurn(request *http.Request) (v1ChatRequest, str
 	logger.Info("chat turn enqueued")
 
 	return chatRequest, nodeID, sessionID, nil
+}
+
+func (server *Server) decodeChatRequest(request *http.Request) (v1ChatRequest, error) {
+	var chatRequest v1ChatRequest
+	if err := decodeJSON(request.Body, &chatRequest); err != nil {
+		return v1ChatRequest{}, domain.ValidationError{Message: err.Error()}
+	}
+	return chatRequest, nil
+}
+
+func (server *Server) prepareChatSession(chatRequest v1ChatRequest) (string, string, error) {
+	logger := observability.NormalizeLogger(server.logger).With(
+		slog.String(observability.FieldOperation, "chat.prepare_session"),
+	)
+	if strings.TrimSpace(chatRequest.Message) == "" {
+		return "", "", domain.ValidationError{Message: "message is required"}
+	}
+	node, err := server.resolveChatNode(chatRequest)
+	if err != nil {
+		return "", "", err
+	}
+	nodeID := node.ID
+	logger = logger.With(
+		slog.String(observability.FieldTopicID, node.TopicID),
+		slog.String(observability.FieldNodeID, nodeID),
+	)
+	sessionRecord, err := server.service.CreateSession(service.CreateSessionInput{
+		NodeID: nodeID,
+		Status: domain.SessionStatusActive,
+	})
+	if err != nil {
+		logger.Error("create session failed", slog.Any("error", err))
+		return "", "", err
+	}
+	sessionID := sessionRecord.ID
+	if _, err := server.service.AppendSessionEvent(service.AppendSessionEventInput{
+		SessionID: sessionID,
+		ItemType:  domain.SessionItemTypeMessage,
+		Role:      sessionRolePtr(domain.SessionRoleUser),
+		PayloadJSON: map[string]any{
+			"role":    domain.SessionRoleUser,
+			"content": strings.TrimSpace(chatRequest.Message),
+		},
+		NextStatus: sessionStatusPtr(domain.SessionStatusActive),
+	}); err != nil {
+		logger.Error("append user message event failed", slog.Any("error", err))
+		return "", "", err
+	}
+	return nodeID, sessionID, nil
 }
 
 func (server *Server) resolveChatNode(request v1ChatRequest) (*domain.Node, error) {

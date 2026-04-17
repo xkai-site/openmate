@@ -337,6 +337,26 @@ func (store *Store) ListRecords(
 	return records, err
 }
 
+func (store *Store) Record(
+	ctx context.Context,
+	config ModelConfig,
+	invocationID string,
+) (InvocationRecord, error) {
+	var record InvocationRecord
+	err := store.withImmediateTx(ctx, func(conn *sql.Conn) error {
+		if err := store.syncConfig(ctx, conn, config); err != nil {
+			return err
+		}
+		value, err := store.loadInvocationRecordTx(ctx, conn, invocationID)
+		if err != nil {
+			return err
+		}
+		record = value
+		return nil
+	})
+	return record, err
+}
+
 func (store *Store) initDB(ctx context.Context) error {
 	conn, err := store.db.Conn(ctx)
 	if err != nil {

@@ -75,18 +75,12 @@ func validateResponsesInvokeRequest(request OpenAIResponsesRequest) error {
 			return fmt.Errorf("request.%s is ChatCompletions-only and is not supported; use Responses API fields", field)
 		}
 	}
-	if stream, ok := request["stream"].(bool); ok && stream {
-		return errors.New("request.stream is not supported yet")
-	}
 	return nil
 }
 
 func validateChatCompletionsInvokeRequest(request OpenAIChatCompletionsRequest) error {
 	if _, exists := request["model"]; exists {
 		return errors.New("chat_request.model must not be set; model comes from model.json")
-	}
-	if stream, ok := request["stream"].(bool); ok && stream {
-		return errors.New("chat_request.stream is not supported yet")
 	}
 	if !hasNonEmptyMessages(request["messages"]) {
 		return errors.New("chat_request.messages is required")

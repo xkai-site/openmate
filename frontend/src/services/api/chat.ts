@@ -2,15 +2,19 @@ import { API_BASE_URL, api } from '@/services/api';
 import type {
   ApiResponse,
   ChatRequest,
+  ChatResultResponse,
   ChatResponse,
   ChatStreamFatalEvent,
+  ChatStreamInvocationEvent,
   ChatStreamMethodCallEvent,
+  ChatStreamRequest,
   ChatStreamToolCallEvent,
   ChatStreamSummaryEvent,
   StreamPhase,
 } from '@/types/models';
 
 export interface ChatStreamHandlers {
+  onInvocation?: (payload: ChatStreamInvocationEvent) => void;
   onPhase?: (payload: { phase: StreamPhase; [k: string]: unknown }) => void;
   onMethodCall?: (payload: ChatStreamMethodCallEvent) => void;
   onToolCall?: (payload: ChatStreamToolCallEvent) => void;
@@ -26,6 +30,13 @@ export interface ChatStreamHandlers {
  */
 export async function sendChatMessage(payload: ChatRequest): Promise<ChatResponse> {
   const response = await api.post<ApiResponse<ChatResponse>>('/chat', payload);
+  return response.data;
+}
+
+export async function getChatResult(invocationID: string): Promise<ChatResultResponse> {
+  const response = await api.get<ApiResponse<ChatResultResponse>>('/chat/result', {
+    params: { invocation_id: invocationID },
+  });
   return response.data;
 }
 
@@ -71,6 +82,9 @@ function parseSSEChunk(
     }
 
     switch (eventType) {
+      case 'invocation':
+        handlers.onInvocation?.(payload as unknown as ChatStreamInvocationEvent);
+        break;
       case 'phase':
         handlers.onPhase?.(payload as { phase: StreamPhase; [k: string]: unknown });
         break;
@@ -104,7 +118,7 @@ function parseSSEChunk(
 }
 
 export async function sendChatMessageStream(
-  payload: ChatRequest,
+  payload: ChatStreamRequest,
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -117,7 +131,21 @@ export async function sendChatMessageStream(
 
 
   if (!response.ok) {
-    throw new Error(`流式请求失败: ${response.status}`);
+    let detail = '';
+    try {
+      const rawText = await response.text();
+      if (rawText.trim()) {
+        const parsed = JSON.parse(rawText) as ApiResponse<unknown>;
+        if (parsed?.message) {
+          detail = `: ${parsed.message}`;
+        } else {
+          detail = `: ${rawText}`;
+        }
+      }
+    } catch {
+      // ignore parse errors and fallback to status only
+    }
+    throw new Error(`流式请求失败: ${response.status}${detail}`);
   }
 
   if (!response.body) {

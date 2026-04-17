@@ -54,6 +54,8 @@ type Server struct {
 	scheduleCmd          []string
 	scheduleTickInterval time.Duration
 	scheduleMu           sync.Mutex
+	chatRunsMu           sync.Mutex
+	chatRuns             map[string]*chatRun
 	logger               *slog.Logger
 }
 
@@ -166,6 +168,7 @@ func NewServer(config Config) (*Server, error) {
 		scheduleMode:         scheduleMode,
 		scheduleCmd:          scheduleCmd,
 		scheduleTickInterval: tickInterval,
+		chatRuns:             map[string]*chatRun{},
 		logger:               logger,
 	}
 	server.registerRoutes()

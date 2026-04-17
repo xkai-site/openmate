@@ -1,6 +1,7 @@
 package poolgateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,11 +50,7 @@ func (provider OpenAICompatibleProvider) invokeResponses(
 	delete(payload, "truncation")
 	delete(payload, "user")
 	payload["input"] = normalizeResponsesInput(payload["input"])
-	if stream, ok := payload["stream"].(bool); ok && stream {
-		return ProviderInvokeResult{}, &ProviderInvocationError{
-			GatewayError: gatewayUnsupportedRequest("request.stream"),
-		}
-	}
+	streamEnabled := payloadStreamEnabled(payload)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -89,25 +88,40 @@ func (provider OpenAICompatibleProvider) invokeResponses(
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		return ProviderInvokeResult{}, err
-	}
 	if response.StatusCode >= 400 {
+		responseBody, err := io.ReadAll(response.Body)
+		if err != nil {
+			return ProviderInvokeResult{}, err
+		}
 		return ProviderInvokeResult{}, &ProviderInvocationError{
 			GatewayError: classifyHTTPError(response.StatusCode, responseBody, httpRequest.URL.Path),
 		}
 	}
 
 	var payloadJSON map[string]any
-	if err := json.Unmarshal(responseBody, &payloadJSON); err != nil {
-		return ProviderInvokeResult{}, &ProviderInvocationError{
-			GatewayError: GatewayError{
-				Code:      "provider_invalid_json",
-				Message:   fmt.Sprintf("provider returned invalid json: %v", err),
-				Retryable: false,
-				Details:   map[string]any{},
-			},
+	if streamEnabled {
+		parsedPayload, gatewayError, err := parseResponsesPayloadFromHTTPStream(response.Body, request.StreamSink)
+		if gatewayError != nil {
+			return ProviderInvokeResult{}, &ProviderInvocationError{GatewayError: *gatewayError}
+		}
+		if err != nil {
+			return ProviderInvokeResult{}, err
+		}
+		payloadJSON = parsedPayload
+	} else {
+		responseBody, err := io.ReadAll(response.Body)
+		if err != nil {
+			return ProviderInvokeResult{}, err
+		}
+		if err := json.Unmarshal(responseBody, &payloadJSON); err != nil {
+			return ProviderInvokeResult{}, &ProviderInvocationError{
+				GatewayError: GatewayError{
+					Code:      "provider_invalid_json",
+					Message:   fmt.Sprintf("provider returned invalid json: %v", err),
+					Retryable: false,
+					Details:   map[string]any{},
+				},
+			}
 		}
 	}
 
@@ -131,6 +145,7 @@ func (provider OpenAICompatibleProvider) invokeChatCompletions(
 	if gatewayError != nil {
 		return ProviderInvokeResult{}, &ProviderInvocationError{GatewayError: *gatewayError}
 	}
+	streamEnabled := payloadStreamEnabled(chatPayload)
 
 	body, err := json.Marshal(chatPayload)
 	if err != nil {
@@ -168,25 +183,40 @@ func (provider OpenAICompatibleProvider) invokeChatCompletions(
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		return ProviderInvokeResult{}, err
-	}
 	if response.StatusCode >= 400 {
+		responseBody, err := io.ReadAll(response.Body)
+		if err != nil {
+			return ProviderInvokeResult{}, err
+		}
 		return ProviderInvokeResult{}, &ProviderInvocationError{
 			GatewayError: classifyHTTPError(response.StatusCode, responseBody, httpRequest.URL.Path),
 		}
 	}
 
 	var payloadJSON map[string]any
-	if err := json.Unmarshal(responseBody, &payloadJSON); err != nil {
-		return ProviderInvokeResult{}, &ProviderInvocationError{
-			GatewayError: GatewayError{
-				Code:      "provider_invalid_json",
-				Message:   fmt.Sprintf("provider returned invalid json: %v", err),
-				Retryable: false,
-				Details:   map[string]any{},
-			},
+	if streamEnabled {
+		parsedPayload, gatewayError, err := parseChatCompletionsPayloadFromHTTPStream(response.Body, request.StreamSink)
+		if gatewayError != nil {
+			return ProviderInvokeResult{}, &ProviderInvocationError{GatewayError: *gatewayError}
+		}
+		if err != nil {
+			return ProviderInvokeResult{}, err
+		}
+		payloadJSON = parsedPayload
+	} else {
+		responseBody, err := io.ReadAll(response.Body)
+		if err != nil {
+			return ProviderInvokeResult{}, err
+		}
+		if err := json.Unmarshal(responseBody, &payloadJSON); err != nil {
+			return ProviderInvokeResult{}, &ProviderInvocationError{
+				GatewayError: GatewayError{
+					Code:      "provider_invalid_json",
+					Message:   fmt.Sprintf("provider returned invalid json: %v", err),
+					Retryable: false,
+					Details:   map[string]any{},
+				},
+			}
 		}
 	}
 
@@ -242,16 +272,6 @@ func buildChatCompletionsPayload(chatPayload map[string]any) (map[string]any, *G
 			},
 		}
 	}
-	if stream, ok := chatPayload["stream"].(bool); ok && stream {
-		return nil, &GatewayError{
-			Code:      "gateway_unsupported_request",
-			Message:   "chat_request.stream is not supported yet",
-			Retryable: false,
-			Details: map[string]any{
-				"field": "chat_request.stream",
-			},
-		}
-	}
 	for key := range chatPayload {
 		if !isSupportedChatCompletionsField(key) {
 			return nil, &GatewayError{
@@ -286,6 +306,9 @@ func buildChatCompletionsPayload(chatPayload map[string]any) (map[string]any, *G
 	}
 	if maxTokens, exists := chatPayload["max_tokens"]; exists && maxTokens != nil {
 		payload["max_tokens"] = maxTokens
+	}
+	if stream, exists := chatPayload["stream"]; exists && stream != nil {
+		payload["stream"] = stream
 	}
 	if store, exists := chatPayload["store"]; exists && store != nil {
 		payload["store"] = store
@@ -335,6 +358,9 @@ func buildChatCompletionsPayloadFromResponsesRequest(responsesPayload map[string
 	}
 	if maxOutputTokens, exists := responsesPayload["max_output_tokens"]; exists && maxOutputTokens != nil {
 		payload["max_tokens"] = maxOutputTokens
+	}
+	if stream, exists := responsesPayload["stream"]; exists && stream != nil {
+		payload["stream"] = stream
 	}
 	if store, exists := responsesPayload["store"]; exists && store != nil {
 		payload["store"] = store
@@ -640,6 +666,413 @@ func normalizeChatToolCalls(raw any) []any {
 		})
 	}
 	return items
+}
+
+type chatStreamToolCallAccumulator struct {
+	ID        string
+	Name      string
+	Arguments strings.Builder
+}
+
+func payloadStreamEnabled(payload map[string]any) bool {
+	stream, ok := payload["stream"].(bool)
+	return ok && stream
+}
+
+func parseResponsesPayloadFromHTTPStream(reader io.Reader, sink StreamSink) (map[string]any, *GatewayError, error) {
+	var finalResponse map[string]any
+	var deltaBuilder strings.Builder
+	outputItems := map[int]map[string]any{}
+	frames := 0
+	err := forEachSSEDataFrame(reader, func(frame string) (bool, *GatewayError) {
+		trimmed := strings.TrimSpace(frame)
+		if trimmed == "" || trimmed == "[DONE]" {
+			return true, nil
+		}
+		frames++
+		event, gatewayError := parseJSONPayload([]byte(frame))
+		if gatewayError != nil {
+			return false, gatewayError
+		}
+		if gatewayError := classifyProviderPayload(event); gatewayError != nil {
+			return false, gatewayError
+		}
+		eventType := anyString(event["type"])
+		if eventType == "response.output_text.delta" {
+			if delta := anyString(event["delta"]); delta != "" {
+				deltaBuilder.WriteString(delta)
+				emitStreamEvent(sink, "assistant_delta", map[string]any{
+					"delta": delta,
+				})
+			}
+		}
+		if responseRaw, ok := event["response"].(map[string]any); ok && len(responseRaw) > 0 {
+			finalResponse = cloneMap(responseRaw)
+		}
+		itemRaw, hasItem := event["item"].(map[string]any)
+		if hasItem {
+			outputIndex, ok := anyInt(event["output_index"])
+			if !ok {
+				outputIndex = len(outputItems)
+			}
+			outputItems[outputIndex] = cloneMap(itemRaw)
+		}
+		return true, nil
+	})
+	if err != nil {
+		if gatewayError, ok := asGatewayError(err); ok {
+			return nil, gatewayError, nil
+		}
+		return nil, nil, err
+	}
+
+	if frames == 0 {
+		return nil, providerInvalidJSONGatewayErrorf("provider returned empty stream payload"), nil
+	}
+	if finalResponse != nil {
+		if extractOutputText(finalResponse) == nil && deltaBuilder.Len() > 0 {
+			finalResponse["output"] = []any{
+				map[string]any{
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []any{
+						map[string]any{
+							"type": "output_text",
+							"text": deltaBuilder.String(),
+						},
+					},
+				},
+			}
+		}
+		return finalResponse, nil, nil
+	}
+
+	if len(outputItems) > 0 {
+		ordered := make([]int, 0, len(outputItems))
+		for index := range outputItems {
+			ordered = append(ordered, index)
+		}
+		sort.Ints(ordered)
+		output := make([]any, 0, len(ordered))
+		for _, index := range ordered {
+			output = append(output, outputItems[index])
+		}
+		return map[string]any{
+			"object": "response",
+			"status": "completed",
+			"output": output,
+			"usage":  map[string]any{},
+		}, nil, nil
+	}
+
+	if deltaBuilder.Len() > 0 {
+		return map[string]any{
+			"object": "response",
+			"status": "completed",
+			"output": []any{
+				map[string]any{
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []any{
+						map[string]any{
+							"type": "output_text",
+							"text": deltaBuilder.String(),
+						},
+					},
+				},
+			},
+			"usage": map[string]any{},
+		}, nil, nil
+	}
+
+	return nil, providerInvalidJSONGatewayErrorf("provider returned empty stream payload"), nil
+}
+
+func parseChatCompletionsPayloadFromHTTPStream(reader io.Reader, sink StreamSink) (map[string]any, *GatewayError, error) {
+	var responseID string
+	var model string
+	var usage map[string]any
+	var contentBuilder strings.Builder
+	toolCalls := map[int]*chatStreamToolCallAccumulator{}
+	frames := 0
+	err := forEachSSEDataFrame(reader, func(frame string) (bool, *GatewayError) {
+		trimmed := strings.TrimSpace(frame)
+		if trimmed == "" || trimmed == "[DONE]" {
+			return true, nil
+		}
+		frames++
+		chunk, gatewayError := parseJSONPayload([]byte(frame))
+		if gatewayError != nil {
+			return false, gatewayError
+		}
+		if gatewayError := classifyChatCompletionsPayload(chunk); gatewayError != nil {
+			return false, gatewayError
+		}
+		if id := anyString(chunk["id"]); id != "" {
+			responseID = id
+		}
+		if chunkModel := anyString(chunk["model"]); chunkModel != "" {
+			model = chunkModel
+		}
+		if chunkUsage, ok := chunk["usage"].(map[string]any); ok && len(chunkUsage) > 0 {
+			usage = cloneMap(chunkUsage)
+		}
+		choices, ok := chunk["choices"].([]any)
+		if !ok || len(choices) == 0 {
+			return true, nil
+		}
+		for _, choiceRaw := range choices {
+			choice, ok := choiceRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			delta, ok := choice["delta"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if content := anyString(delta["content"]); content != "" {
+				contentBuilder.WriteString(content)
+				emitStreamEvent(sink, "assistant_delta", map[string]any{
+					"delta": content,
+				})
+			}
+			mergeChatStreamToolCalls(toolCalls, delta["tool_calls"])
+		}
+		return true, nil
+	})
+	if err != nil {
+		if gatewayError, ok := asGatewayError(err); ok {
+			return nil, gatewayError, nil
+		}
+		return nil, nil, err
+	}
+
+	streamToolCalls := buildChatStreamToolCalls(toolCalls)
+	if frames == 0 {
+		return nil, providerInvalidJSONGatewayErrorf("provider returned empty stream payload"), nil
+	}
+	if contentBuilder.Len() == 0 && len(streamToolCalls) == 0 {
+		return nil, providerInvalidJSONGatewayErrorf("provider returned empty stream payload"), nil
+	}
+	if responseID == "" {
+		responseID = "chatcmpl-stream"
+	}
+	if model == "" {
+		model = "chat-stream"
+	}
+
+	message := map[string]any{
+		"role":    "assistant",
+		"content": contentBuilder.String(),
+	}
+	if len(streamToolCalls) > 0 {
+		message["tool_calls"] = streamToolCalls
+	}
+	payload := map[string]any{
+		"id":     responseID,
+		"object": "chat.completion",
+		"model":  model,
+		"choices": []any{
+			map[string]any{
+				"index":   0,
+				"message": message,
+			},
+		},
+	}
+	if usage != nil {
+		payload["usage"] = usage
+	}
+	return payload, nil, nil
+}
+
+func forEachSSEDataFrame(
+	reader io.Reader,
+	handler func(frame string) (bool, *GatewayError),
+) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	dataLines := make([]string, 0)
+	flush := func() (bool, *GatewayError) {
+		if len(dataLines) == 0 {
+			return true, nil
+		}
+		frame := strings.Join(dataLines, "\n")
+		dataLines = dataLines[:0]
+		return handler(frame)
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if strings.HasPrefix(line, "\uFEFF") {
+			line = strings.TrimPrefix(line, "\uFEFF")
+		}
+		if line == "" {
+			cont, gatewayError := flush()
+			if gatewayError != nil {
+				return gatewayErrorAsError(*gatewayError)
+			}
+			if !cont {
+				return nil
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data:")
+		if strings.HasPrefix(data, " ") {
+			data = strings.TrimPrefix(data, " ")
+		}
+		dataLines = append(dataLines, data)
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	cont, gatewayError := flush()
+	if gatewayError != nil {
+		return gatewayErrorAsError(*gatewayError)
+	}
+	if !cont {
+		return nil
+	}
+	return nil
+}
+
+func emitStreamEvent(sink StreamSink, eventType string, payload map[string]any) {
+	if sink == nil {
+		return
+	}
+	sink(StreamEvent{
+		Type:    eventType,
+		Payload: cloneMap(payload),
+	})
+}
+
+type gatewayErrorWrapper struct {
+	gatewayError GatewayError
+}
+
+func (wrapper gatewayErrorWrapper) Error() string {
+	return wrapper.gatewayError.Message
+}
+
+func gatewayErrorAsError(gatewayError GatewayError) error {
+	return gatewayErrorWrapper{gatewayError: gatewayError}
+}
+
+func asGatewayError(err error) (*GatewayError, bool) {
+	var wrapped gatewayErrorWrapper
+	if errors.As(err, &wrapped) {
+		value := wrapped.gatewayError
+		return &value, true
+	}
+	return nil, false
+}
+
+func parseJSONPayload(rawBody []byte) (map[string]any, *GatewayError) {
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return nil, providerInvalidJSONGatewayErrorf("provider returned invalid json: %v", err)
+	}
+	return payload, nil
+}
+
+func providerInvalidJSONGatewayErrorf(format string, args ...any) *GatewayError {
+	return &GatewayError{
+		Code:      "provider_invalid_json",
+		Message:   fmt.Sprintf(format, args...),
+		Retryable: false,
+		Details:   map[string]any{},
+	}
+}
+
+func mergeChatStreamToolCalls(
+	accumulators map[int]*chatStreamToolCallAccumulator,
+	rawToolCalls any,
+) {
+	toolCalls, ok := rawToolCalls.([]any)
+	if !ok || len(toolCalls) == 0 {
+		return
+	}
+	for _, toolCallRaw := range toolCalls {
+		toolCall, ok := toolCallRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		index, ok := anyInt(toolCall["index"])
+		if !ok {
+			index = len(accumulators)
+			for {
+				if _, exists := accumulators[index]; !exists {
+					break
+				}
+				index++
+			}
+		}
+		accumulator, exists := accumulators[index]
+		if !exists {
+			accumulator = &chatStreamToolCallAccumulator{}
+			accumulators[index] = accumulator
+		}
+		if id := anyString(toolCall["id"]); id != "" {
+			accumulator.ID = id
+		}
+		functionRaw, ok := toolCall["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name := anyString(functionRaw["name"]); name != "" {
+			accumulator.Name = name
+		}
+		if arguments := anyString(functionRaw["arguments"]); arguments != "" {
+			accumulator.Arguments.WriteString(arguments)
+		}
+	}
+}
+
+func buildChatStreamToolCalls(accumulators map[int]*chatStreamToolCallAccumulator) []any {
+	if len(accumulators) == 0 {
+		return []any{}
+	}
+	ordered := make([]int, 0, len(accumulators))
+	for index := range accumulators {
+		ordered = append(ordered, index)
+	}
+	sort.Ints(ordered)
+
+	toolCalls := make([]any, 0, len(ordered))
+	for _, index := range ordered {
+		accumulator := accumulators[index]
+		if accumulator == nil {
+			continue
+		}
+		name := strings.TrimSpace(accumulator.Name)
+		if name == "" {
+			continue
+		}
+		callID := strings.TrimSpace(accumulator.ID)
+		if callID == "" {
+			callID = "call-" + strconv.Itoa(index+1)
+		}
+		arguments := accumulator.Arguments.String()
+		if strings.TrimSpace(arguments) == "" {
+			arguments = "{}"
+		}
+		toolCalls = append(toolCalls, map[string]any{
+			"id":   callID,
+			"type": "function",
+			"function": map[string]any{
+				"name":      name,
+				"arguments": arguments,
+			},
+		})
+	}
+	return toolCalls
 }
 
 func GetProviderClient(provider string) (ProviderClient, error) {
