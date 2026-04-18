@@ -2,11 +2,17 @@
   "name": "aitq-frontend",
   "private": true,
   "version": "0.0.1",
+  "description": "OpenMate frontend and Electron desktop shell",
+  "author": "OpenMate Team",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:start": "electron electron/main.cjs",
+    "electron:dev": "node scripts/electron-dev.mjs",
+    "electron:build": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.68.0",
@@ -31,6 +37,25 @@
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
-    "vite": "^6.1.1"
+    "vite": "^6.1.1",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.openmate.desktop",
+    "productName": "OpenMate",
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "directories": {
+      "buildResources": "public"
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "dir"
+      ]
+    }
   }
 }

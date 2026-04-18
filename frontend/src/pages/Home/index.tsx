@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, App } from 'antd';
-import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream } from '@/services/api/chat';
 import { decomposeNode } from '@/services/api/tree';
+import { getLocalWorkspace, isLocalFileBridgeAvailable, selectLocalWorkspace } from '@/services/localFile';
 import type {
   ChatStreamMethodCallEvent,
   ChatStreamSummaryEvent,
@@ -61,6 +62,8 @@ export default function HomePage() {
   const [streamingText, setStreamingText] = useState('');
   const [liveMethodCalls, setLiveMethodCalls] = useState<ChatStreamMethodCallEvent[]>([]);
   const [projectPanelKey, setProjectPanelKey] = useState(0);
+  const [localWorkspaceRoot, setLocalWorkspaceRoot] = useState<string | null>(null);
+  const [selectingWorkspace, setSelectingWorkspace] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -70,6 +73,30 @@ export default function HomePage() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const pendingInvocationStorageKey = 'openmate.home.pending_invocation';
+  const localBridgeAvailable = isLocalFileBridgeAvailable();
+
+  useEffect(() => {
+    if (!localBridgeAvailable) {
+      return;
+    }
+    let cancelled = false;
+    const loadWorkspace = async () => {
+      try {
+        const workspace = await getLocalWorkspace();
+        if (!cancelled) {
+          setLocalWorkspaceRoot(workspace.root);
+        }
+      } catch {
+        if (!cancelled) {
+          setLocalWorkspaceRoot(null);
+        }
+      }
+    };
+    void loadWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, [localBridgeAvailable]);
 
   // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -489,6 +516,23 @@ export default function HomePage() {
     }
   }, [isDecomposing, nodeId, message, navigate]);
 
+  const handleSelectWorkspace = useCallback(async () => {
+    if (!localBridgeAvailable || selectingWorkspace) {
+      return;
+    }
+    setSelectingWorkspace(true);
+    try {
+      const result = await selectLocalWorkspace();
+      setLocalWorkspaceRoot(result.root);
+      message.success(`已连接本地工作区: ${result.root}`);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : '连接本地工作区失败';
+      message.error(text);
+    } finally {
+      setSelectingWorkspace(false);
+    }
+  }, [localBridgeAvailable, message, selectingWorkspace]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -513,17 +557,30 @@ export default function HomePage() {
           <div className="home-logo">
             <span className="home-logo-text">AITree</span>
           </div>
-          {hasConversation && (
-            <Button
-              type="primary"
-              icon={isDecomposing ? <LoadingOutlined /> : <BranchesOutlined />}
-              onClick={handleDecompose}
-              disabled={isDecomposing || isSending}
-              className="home-decompose-btn"
-            >
-              生成任务树
-            </Button>
-          )}
+          <div className="home-header-actions">
+            {localBridgeAvailable && (
+              <Button
+                icon={<FolderOpenOutlined />}
+                loading={selectingWorkspace}
+                onClick={() => void handleSelectWorkspace()}
+                className="home-local-btn"
+                title={localWorkspaceRoot ?? '未连接本地工作区'}
+              >
+                {localWorkspaceRoot ? '已连接本地工作区' : '连接本地工作区'}
+              </Button>
+            )}
+            {hasConversation && (
+              <Button
+                type="primary"
+                icon={isDecomposing ? <LoadingOutlined /> : <BranchesOutlined />}
+                onClick={handleDecompose}
+                disabled={isDecomposing || isSending}
+                className="home-decompose-btn"
+              >
+                生成任务树
+              </Button>
+            )}
+          </div>
         </header>
 
         {/* 居中内容容器 */}
@@ -752,6 +809,7 @@ export default function HomePage() {
           .home-tag,
           .home-hint-tag,
           .home-decompose-btn,
+          .home-local-btn,
           .home-send-btn,
           .home-input-wrap,
           .home-logo-icon,
@@ -807,6 +865,12 @@ export default function HomePage() {
           flex-shrink: 0;
           position: relative;
           z-index: 1;
+        }
+
+        .home-header-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
         }
 
         .home-logo {
@@ -872,6 +936,21 @@ export default function HomePage() {
         .home-decompose-btn:focus-visible {
           outline: 2px solid var(--home-accent);
           outline-offset: 2px;
+        }
+
+        .home-local-btn {
+          border-radius: var(--home-radius-full) !important;
+          border: 1px solid var(--home-border) !important;
+          color: var(--home-text-primary) !important;
+          background: var(--home-bg-primary) !important;
+          height: auto !important;
+          padding: 8px 16px !important;
+          transition: transform 0.15s ease, background-color 0.15s ease !important;
+        }
+
+        .home-local-btn:hover {
+          transform: translateY(-1px);
+          background: var(--home-bg-secondary) !important;
         }
 
         /* Content area */

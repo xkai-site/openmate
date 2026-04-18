@@ -1,4 +1,4 @@
-import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios';
 import { message } from 'antd';
 
 interface BusinessPayload<T = unknown> {
@@ -63,20 +63,30 @@ const logger = {
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
-export const api = axios.create({
+const axiosInstance = axios.create({
   baseURL: API_BASE_URL,
   timeout: 60000,
 });
 
+type ApiClient = {
+  get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>;
+  post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>;
+  put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>;
+  patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>;
+  delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>;
+};
+
+export const api = axiosInstance as unknown as ApiClient;
+
 
 // 请求拦截器：记录请求开始时间
-api.interceptors.request.use((config: TimedRequestConfig) => {
+axiosInstance.interceptors.request.use((config: TimedRequestConfig) => {
   config._startTime = Date.now();
   logger.request(config);
   return config;
 });
 
-api.interceptors.response.use(
+axiosInstance.interceptors.response.use(
   (resp) => {
     const config = resp.config as TimedRequestConfig;
     const duration = config._startTime ? Date.now() - config._startTime : 0;

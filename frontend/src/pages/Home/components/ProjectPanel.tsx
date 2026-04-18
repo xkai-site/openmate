@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Spin, Dropdown, Modal, message } from 'antd';
+import type { MenuProps } from 'antd';
 import { FolderOutlined, ReloadOutlined, MoreOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { listRootNodes } from '@/services/api/tree';
 import { updateNode, deleteNode } from '@/services/api/nodes';
@@ -133,7 +134,7 @@ function ProjectItem({ project, onClick, onDeleted, onRenamed, onStatusChanged }
     }
   }, [project.id, project.status, onStatusChanged]);
 
-  const menuItems = [
+  const menuItems: NonNullable<MenuProps['items']> = [
     {
       key: 'rename',
       icon: <EditOutlined />,
@@ -166,7 +167,7 @@ function ProjectItem({ project, onClick, onDeleted, onRenamed, onStatusChanged }
             e.domEvent.stopPropagation();
             void handleStatusChange(option.key);
           },
-        })),
+        })) as NonNullable<MenuProps['items']>,
     },
     {
       key: 'delete',
