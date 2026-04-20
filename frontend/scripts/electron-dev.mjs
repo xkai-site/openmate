@@ -1,10 +1,32 @@
 import { spawn } from "node:child_process";
 
 const isWindows = process.platform === "win32";
-const npmCommand = isWindows ? "npm.cmd" : "npm";
+const npmCommand = "npm";
 const devUrl = process.env.OPENMATE_ELECTRON_DEV_URL || "http://127.0.0.1:5173";
 
+function quoteArg(arg) {
+  if (!isWindows) {
+    return arg;
+  }
+  if (arg === "") {
+    return '""';
+  }
+  if (!/[ \t"]/u.test(arg)) {
+    return arg;
+  }
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
 function run(command, args, options = {}) {
+  if (isWindows) {
+    const cmd = process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe";
+    const commandLine = [command, ...args].map(quoteArg).join(" ");
+    return spawn(cmd, ["/d", "/s", "/c", commandLine], {
+      stdio: "inherit",
+      shell: false,
+      ...options,
+    });
+  }
   return spawn(command, args, {
     stdio: "inherit",
     shell: false,
