@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .context_gateway import VosContextGateway
-from .context_models import ContextSnapshotRecord
+from .context_reader import ContextSnapshotRecord, VosContextReader
 from .interfaces import ContextInjector
 from .models import ContextBundle
 
 
 class VosContextInjector(ContextInjector):
-    def __init__(self, gateway: VosContextGateway) -> None:
-        self._gateway = gateway
+    def __init__(self, reader: VosContextReader) -> None:
+        self._reader = reader
 
     def inject(self, node_id: str) -> ContextBundle:
-        snapshot = self._gateway.snapshot(node_id=node_id)
+        snapshot = self._reader.snapshot(node_id=node_id)
         payload = self._render_payload(snapshot)
         return ContextBundle(node_id=node_id, payload=payload)
 

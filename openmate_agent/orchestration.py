@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from typing import Any, Callable, Protocol
@@ -7,7 +7,7 @@ from uuid import uuid4
 from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
 from pydantic import BaseModel, Field
 
-from .interfaces import LlmGateway, SessionEventGateway
+from .interfaces import LlmGateway, SessionEventWriter
 from .models import AgentInput, Build, ToolResult
 from .session_models import AppendSessionEventInput, SessionItemType, SessionRole, SessionStatus
 
@@ -30,7 +30,7 @@ class ExecutionRunner(Protocol):
         agent_input: AgentInput,
         tools_payload: list[dict[str, object]],
         gateway: LlmGateway,
-        session_gateway: SessionEventGateway | None,
+        session_writer: SessionEventWriter | None,
         tool_executor: ToolExecutor,
     ) -> str: ...
 
@@ -45,7 +45,7 @@ class ResponsesExecutionRunner:
         agent_input: AgentInput,
         tools_payload: list[dict[str, object]],
         gateway: LlmGateway,
-        session_gateway: SessionEventGateway | None,
+        session_writer: SessionEventWriter | None,
         tool_executor: ToolExecutor,
     ) -> str:
         previous_response_id: str | None = None
@@ -55,8 +55,8 @@ class ResponsesExecutionRunner:
         last_call_id: str | None = None
 
         try:
-            if session_gateway is not None:
-                session_id = session_gateway.ensure_session(node_id=build.node_id, session_id=session_id)
+            if session_writer is not None:
+                session_id = session_writer.ensure_session(node_id=build.node_id, session_id=session_id)
                 session_started = True
 
             while True:
@@ -85,14 +85,14 @@ class ResponsesExecutionRunner:
                     output_text = response.output_text or self._extract_output_text(output_items)
                     if output_text is None:
                         raise RuntimeError(f"gateway returned empty output for node={build.node_id}")
-                    if session_started and session_gateway and session_id:
+                    if session_started and session_writer and session_id:
                         self._append_assistant_deltas(
-                            session_gateway=session_gateway,
+                            session_writer=session_writer,
                             session_id=session_id,
                             output_text=output_text,
                             response_id=previous_response_id,
                         )
-                        session_gateway.append_event(
+                        session_writer.append_event(
                             AppendSessionEventInput(
                                 session_id=session_id,
                                 item_type=SessionItemType.MESSAGE,
@@ -114,8 +114,8 @@ class ResponsesExecutionRunner:
                 for function_call in function_calls:
                     # Execute each tool call serially and feed outputs back to the model.
                     last_call_id = function_call.call_id
-                    if session_started and session_gateway and session_id:
-                        session_gateway.append_event(
+                    if session_started and session_writer and session_id:
+                        session_writer.append_event(
                             AppendSessionEventInput(
                                 session_id=session_id,
                                 item_type=SessionItemType.FUNCTION_CALL,
@@ -134,8 +134,8 @@ class ResponsesExecutionRunner:
                     tool_result = tool_executor(build.node_id, function_call.name, function_call.arguments)
                     tool_output_payload = self._build_tool_output_payload(tool_result)
 
-                    if session_started and session_gateway and session_id:
-                        session_gateway.append_event(
+                    if session_started and session_writer and session_id:
+                        session_writer.append_event(
                             AppendSessionEventInput(
                                 session_id=session_id,
                                 item_type=SessionItemType.FUNCTION_CALL_OUTPUT,
@@ -161,10 +161,10 @@ class ResponsesExecutionRunner:
 
                 current_input = tool_outputs
         except Exception as exc:
-            if session_started and session_gateway and session_id:
+            if session_started and session_writer and session_id:
                 try:
                     if last_call_id:
-                        session_gateway.append_event(
+                        session_writer.append_event(
                             AppendSessionEventInput(
                                 session_id=session_id,
                                 item_type=SessionItemType.FUNCTION_CALL_OUTPUT,
@@ -184,7 +184,7 @@ class ResponsesExecutionRunner:
                             )
                         )
                     else:
-                        session_gateway.append_event(
+                        session_writer.append_event(
                             AppendSessionEventInput(
                                 session_id=session_id,
                                 item_type=SessionItemType.MESSAGE,
@@ -314,13 +314,13 @@ class ResponsesExecutionRunner:
     @staticmethod
     def _append_assistant_deltas(
         *,
-        session_gateway: SessionEventGateway,
+        session_writer: SessionEventWriter,
         session_id: str,
         output_text: str,
         response_id: str | None,
     ) -> None:
         for chunk in ResponsesExecutionRunner._split_output_deltas(output_text):
-            session_gateway.append_event(
+            session_writer.append_event(
                 AppendSessionEventInput(
                     session_id=session_id,
                     item_type=SessionItemType.ASSISTANT_DELTA,
@@ -367,7 +367,7 @@ class LangGraphExecutionRunner:
         agent_input: AgentInput,
         tools_payload: list[dict[str, object]],
         gateway: LlmGateway,
-        session_gateway: SessionEventGateway | None,
+        session_writer: SessionEventWriter | None,
         tool_executor: ToolExecutor,
     ) -> str:
         return self._fallback.run(
@@ -375,7 +375,7 @@ class LangGraphExecutionRunner:
             agent_input=agent_input,
             tools_payload=tools_payload,
             gateway=gateway,
-            session_gateway=session_gateway,
+            session_writer=session_writer,
             tool_executor=tool_executor,
         )
 
@@ -386,12 +386,12 @@ class ExecutionOrchestrator:
         *,
         gateway: LlmGateway,
         tool_executor: ToolExecutor,
-        session_gateway: SessionEventGateway | None = None,
+        session_writer: SessionEventWriter | None = None,
         runner: ExecutionRunner | None = None,
     ) -> None:
         self._gateway = gateway
         self._tool_executor = tool_executor
-        self._session_gateway = session_gateway
+        self._session_writer = session_writer
         self._runner = runner or ResponsesExecutionRunner()
 
     def execute(
@@ -406,6 +406,7 @@ class ExecutionOrchestrator:
             agent_input=agent_input,
             tools_payload=tools_payload,
             gateway=self._gateway,
-            session_gateway=self._session_gateway,
+            session_writer=self._session_writer,
             tool_executor=self._tool_executor,
         )
+

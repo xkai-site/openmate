@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 from uuid import uuid4
@@ -97,10 +97,10 @@ class OrchestrationInjectionTests(unittest.TestCase):
                 agent_input: AgentInput,
                 tools_payload: list[dict[str, object]],
                 gateway: object,
-                session_gateway: object,
+                session_writer: object,
                 tool_executor: object,
             ) -> str:
-                _ = (agent_input, gateway, session_gateway, tool_executor)
+                _ = (agent_input, gateway, session_writer, tool_executor)
                 self.called = True
                 self.called_build = build
                 self.called_tools = tools_payload
@@ -134,10 +134,10 @@ class OrchestrationInjectionTests(unittest.TestCase):
                 agent_input: AgentInput,
                 tools_payload: list[dict[str, object]],
                 gateway: object,
-                session_gateway: object,
+                session_writer: object,
                 tool_executor: object,
             ) -> str:
-                _ = (build, agent_input, tools_payload, gateway, session_gateway, tool_executor)
+                _ = (build, agent_input, tools_payload, gateway, session_writer, tool_executor)
                 self.called = True
                 return "fallback-ok"
 
@@ -148,7 +148,7 @@ class OrchestrationInjectionTests(unittest.TestCase):
             agent_input=_minimal_agent_input("node-lg"),
             tools_payload=[],
             gateway=_FakeGateway(),
-            session_gateway=None,
+            session_writer=None,
             tool_executor=lambda node_id, tool_name, payload: ToolResult(tool_name=tool_name),
         )
         self.assertEqual(result, "fallback-ok")
@@ -219,3 +219,4 @@ class _FakeGateway:
 
 if __name__ == "__main__":
     unittest.main()
+

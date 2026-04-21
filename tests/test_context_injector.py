@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import unittest
@@ -6,25 +6,24 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from openmate_agent.context_gateway import ContextGatewayError, VosContextGateway
+from openmate_agent.context_reader import ContextReaderError, ContextSnapshotRecord, VosContextReader
 from openmate_agent.context_injector import VosContextInjector
-from openmate_agent.context_models import ContextSnapshotRecord
 from openmate_agent.models import ContextBundle
 from openmate_agent.service import AgentCapabilityService
 
 
-class VosContextGatewayTests(unittest.TestCase):
+class VosContextReaderTests(unittest.TestCase):
     def test_snapshot_parses_context_payload(self) -> None:
         payload = _snapshot_payload(node_id="node-1")
         with TemporaryDirectory() as tmp:
-            gateway = VosContextGateway(
+            gateway = VosContextReader(
                 workspace_root=tmp,
                 state_file=Path(tmp, ".vos_state.json"),
                 session_db_file=Path(tmp, ".vos_sessions.db"),
                 binary_path=Path(tmp, "vos.exe"),
             )
-            with patch("openmate_agent.context_gateway.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
-                with patch("openmate_agent.context_gateway.subprocess.run") as mock_run:
+            with patch("openmate_agent.context_reader.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
+                with patch("openmate_agent.context_reader.subprocess.run") as mock_run:
                     mock_run.return_value.returncode = 0
                     mock_run.return_value.stdout = json.dumps(payload)
                     mock_run.return_value.stderr = ""
@@ -37,31 +36,31 @@ class VosContextGatewayTests(unittest.TestCase):
 
     def test_snapshot_raises_when_stdout_empty(self) -> None:
         with TemporaryDirectory() as tmp:
-            gateway = VosContextGateway(
+            gateway = VosContextReader(
                 workspace_root=tmp,
                 state_file=Path(tmp, ".vos_state.json"),
                 session_db_file=Path(tmp, ".vos_sessions.db"),
                 binary_path=Path(tmp, "vos.exe"),
             )
-            with patch("openmate_agent.context_gateway.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
-                with patch("openmate_agent.context_gateway.subprocess.run") as mock_run:
+            with patch("openmate_agent.context_reader.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
+                with patch("openmate_agent.context_reader.subprocess.run") as mock_run:
                     mock_run.return_value.returncode = 0
                     mock_run.return_value.stdout = ""
                     mock_run.return_value.stderr = ""
-                    with self.assertRaises(ContextGatewayError):
+                    with self.assertRaises(ContextReaderError):
                         gateway.snapshot(node_id="node-1")
 
     def test_snapshot_runs_subprocess_with_utf8_decode(self) -> None:
         payload = _snapshot_payload(node_id="node-encoding")
         with TemporaryDirectory() as tmp:
-            gateway = VosContextGateway(
+            gateway = VosContextReader(
                 workspace_root=tmp,
                 state_file=Path(tmp, ".vos_state.json"),
                 session_db_file=Path(tmp, ".vos_sessions.db"),
                 binary_path=Path(tmp, "vos.exe"),
             )
-            with patch("openmate_agent.context_gateway.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
-                with patch("openmate_agent.context_gateway.subprocess.run") as mock_run:
+            with patch("openmate_agent.context_reader.ensure_vos_binary", return_value=Path(tmp, "vos.exe")):
+                with patch("openmate_agent.context_reader.subprocess.run") as mock_run:
                     mock_run.return_value.returncode = 0
                     mock_run.return_value.stdout = json.dumps(payload, ensure_ascii=False)
                     mock_run.return_value.stderr = ""
@@ -78,13 +77,13 @@ class VosContextInjectorTests(unittest.TestCase):
     def test_inject_builds_single_context_payload(self) -> None:
         snapshot = ContextSnapshotRecord.model_validate(_snapshot_payload(node_id="node-2"))
 
-        class Gateway:
+        class Reader:
             def snapshot(self, node_id: str) -> ContextSnapshotRecord:
                 self.called_node_id = node_id
                 return snapshot
 
-        gateway = Gateway()
-        injector = VosContextInjector(gateway=gateway)  # type: ignore[arg-type]
+        reader = Reader()
+        injector = VosContextInjector(reader=reader)  # type: ignore[arg-type]
         bundle = injector.inject("node-2")
 
         self.assertIsInstance(bundle, ContextBundle)
@@ -164,3 +163,4 @@ def _snapshot_payload(node_id: str) -> dict[str, object]:
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -3,22 +3,42 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from openmate_shared.runtime_paths import (
     default_runtime_db_path,
     default_vos_state_path,
     resolve_workspace_root,
 )
+from pydantic import BaseModel, ConfigDict, Field
 
-from .context_models import ContextSnapshotRecord
+from .session_models import SessionEventRecord, SessionRecord
 from .vos_binary import ensure_vos_binary
 
 
-class ContextGatewayError(RuntimeError):
+class ContextReaderError(RuntimeError):
     pass
 
 
-class VosContextGateway:
+class ContextSessionHistoryRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session: SessionRecord
+    events: list[SessionEventRecord] = Field(default_factory=list)
+
+
+class ContextSnapshotRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=1)
+    user_memory: dict[str, Any] | None = None
+    topic_memory: dict[str, Any] | None = None
+    node_memory: dict[str, Any] | None = None
+    global_index: Any | None = None
+    session_history: list[ContextSessionHistoryRecord] = Field(default_factory=list)
+
+
+class VosContextReader:
     def __init__(
         self,
         *,
@@ -67,7 +87,7 @@ class VosContextGateway:
         stderr = result.stderr.strip()
         if result.returncode == 0:
             if not stdout:
-                raise ContextGatewayError("vos CLI returned empty stdout")
+                raise ContextReaderError("vos CLI returned empty stdout")
             return stdout
         message = stderr or stdout or "vos CLI failed"
         try:
@@ -76,4 +96,4 @@ class VosContextGateway:
                 message = parsed["error"]
         except json.JSONDecodeError:
             pass
-        raise ContextGatewayError(message)
+        raise ContextReaderError(message)

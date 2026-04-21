@@ -19,11 +19,11 @@ from .session_models import (
 from .vos_binary import ensure_vos_binary
 
 
-class SessionGatewayError(RuntimeError):
+class SessionWriterError(RuntimeError):
     pass
 
 
-class VosSessionGateway:
+class VosSessionWriter:
     def __init__(
         self,
         *,
@@ -45,7 +45,7 @@ class VosSessionGateway:
             existing = self._try_get_session(resolved_session_id)
             if existing is not None:
                 if existing.node_id != node_id:
-                    raise SessionGatewayError(
+                    raise SessionWriterError(
                         f"session {resolved_session_id} belongs to node {existing.node_id}, expected {node_id}"
                     )
                 return existing.id
@@ -108,9 +108,9 @@ class VosSessionGateway:
         stderr = result.stderr.strip()
         if result.returncode == 0:
             if not stdout:
-                raise SessionGatewayError("vos CLI returned empty stdout")
+                raise SessionWriterError("vos CLI returned empty stdout")
             return stdout
-        raise SessionGatewayError(stderr or stdout or "vos CLI failed")
+        raise SessionWriterError(stderr or stdout or "vos CLI failed")
 
     def _try_get_session(self, session_id: str) -> SessionRecord | None:
         try:
@@ -122,7 +122,7 @@ class VosSessionGateway:
                     session_id,
                 ]
             )
-        except SessionGatewayError as exc:
+        except SessionWriterError as exc:
             if _is_session_not_found_error(str(exc)):
                 return None
             raise

@@ -495,3 +495,58 @@
    - `tests/test_pipeline_orchestration.py`
 4. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。
+
+## 2026-04-21 AgentCapabilityService 兼容壳清理（删除无效别名）
+
+1. 审计结论：`execute/run_decompose/run_priority` 在仓库内已无调用，属于纯兼容壳，不再产生业务价值。
+2. 已在 `openmate_agent/service.py` 删除以下无效兼容方法：
+   - `execute(self, build: Build) -> str`
+   - `run_decompose(self, request: DecomposeRequest) -> DecomposeResponse`
+   - `run_priority(self, request: PriorityRequest) -> PriorityResponse`
+3. 当前对外主方法保持为：
+   - `execute_agent`
+   - `decompose_agent`
+   - `priority_agent`
+4. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。
+
+## 2026-04-21 Agent 文件收敛 P0（schema/model 薄层内联）
+
+1. 已完成 `tool_schema.py -> agent_services.py` 内联合并：
+   - 将工具参数 schema 与 OpenAI function payload 组装逻辑迁入 `openmate_agent/agent_services.py`。
+   - `ExecutionAgentService` 改为调用模块内私有函数 `_build_openai_tools(...)`。
+2. 已完成 `context_models.py -> context_gateway.py` 内联合并：
+   - 将 `ContextSessionHistoryRecord`、`ContextSnapshotRecord` 模型迁入 `openmate_agent/context_gateway.py`。
+   - `openmate_agent/context_injector.py` 与 `tests/test_context_injector.py` 改为从 `context_gateway` 导入 `ContextSnapshotRecord`。
+3. 已删除已并入文件：
+   - `openmate_agent/tool_schema.py`
+   - `openmate_agent/context_models.py`
+4. 行为边界保持不变：
+   - 执行链路与工具 schema 输出语义不变。
+   - VOS context snapshot 解析与注入 payload 语义不变。
+5. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_service tests.test_pipeline_orchestration -v` 通过（31 项）。
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。
+
+## 2026-04-21 Gateway 命名收敛（Reader/Writer）
+
+1. 数据适配层命名已从 `Gateway` 收敛为 `Reader/Writer`：
+   - `openmate_agent/context_gateway.py` -> `openmate_agent/context_reader.py`
+   - `openmate_agent/session_gateway.py` -> `openmate_agent/session_writer.py`
+   - `VosContextGateway` -> `VosContextReader`
+   - `VosSessionGateway` -> `VosSessionWriter`
+   - `ContextGatewayError` -> `ContextReaderError`
+   - `SessionGatewayError` -> `SessionWriterError`
+2. 协议层命名同步收敛：
+   - `SessionEventGateway` -> `SessionEventWriter`（`openmate_agent/interfaces.py`）
+3. 执行编排与服务装配同步更新：
+   - `openmate_agent/orchestration.py` 统一使用 `session_writer`
+   - `openmate_agent/service.py` 构造参数与装配改为 `session_writer`
+4. 相关测试已同步：
+   - `tests/test_context_injector.py`
+   - `tests/test_session_gateway.py`（测试内容已切至 Writer 命名）
+   - `tests/test_service.py`
+   - `tests/test_pipeline_orchestration.py`
+5. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_session_gateway tests.test_service tests.test_pipeline_orchestration -v` 通过（35 项）。
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。

@@ -10,14 +10,14 @@ from openmate_shared.runtime_paths import (
 )
 
 from .agent_services import DecomposeAgentService, ExecutionAgentService, PriorityAgentService
-from .context_gateway import VosContextGateway
+from .context_reader import VosContextReader
 from .context_injector import VosContextInjector
 from .defaults import DefaultAssembler, DefaultContextInjector, DefaultSkillInjector, DefaultToolInjector
-from .interfaces import Assembler, ContextInjector, LlmGateway, SessionEventGateway, SkillInjector, ToolInjector
+from .interfaces import Assembler, ContextInjector, LlmGateway, SessionEventWriter, SkillInjector, ToolInjector
 from .models import Build, DecomposeRequest, DecomposeResponse, PriorityRequest, PriorityResponse, ToolResult
 from .orchestration import ExecutionOrchestrator, ExecutionRunner
 from .pipeline import BuildPipeline
-from .session_gateway import VosSessionGateway
+from .session_writer import VosSessionWriter
 from .tool_runtime import ToolRuntimeExecutor
 from .tooling import PermissionGateway, ToolRegistry
 
@@ -39,7 +39,7 @@ class AgentCapabilityService:
         pool_db_path: str | Path | None = None,
         pool_model_config_path: str | Path | None = None,
         pool_binary_path: str | Path | None = None,
-        session_gateway: SessionEventGateway | None = None,
+        session_writer: SessionEventWriter | None = None,
         vos_state_file: str | Path | None = None,
         vos_session_db_file: str | Path | None = None,
         vos_binary_path: str | Path | None = None,
@@ -74,8 +74,8 @@ class AgentCapabilityService:
             binary_path=pool_binary_path,
             workspace_root=self._workspace_root,
         )
-        self._session_gateway = self._resolve_session_gateway(
-            session_gateway=session_gateway,
+        self._session_writer = self._resolve_session_writer(
+            session_writer=session_writer,
             vos_state_file=vos_state_file,
             vos_session_db_file=vos_session_db_file,
             vos_binary_path=vos_binary_path,
@@ -88,7 +88,7 @@ class AgentCapabilityService:
         self._execution_orchestrator = execution_orchestrator or ExecutionOrchestrator(
             gateway=self._gateway,
             tool_executor=self._tool_runtime.execute_model_tool,
-            session_gateway=self._session_gateway,
+            session_writer=self._session_writer,
             runner=execution_runner,
         )
         self._execution_agent = execution_agent or ExecutionAgentService(
@@ -109,16 +109,6 @@ class AgentCapabilityService:
 
     def priority_agent(self, request: PriorityRequest) -> PriorityResponse:
         return self._priority_agent.run(request)
-
-    # Backward-compatible aliases. Keep old names until all callers migrate.
-    def execute(self, build: Build) -> str:
-        return self.execute_agent(build)
-
-    def run_decompose(self, request: DecomposeRequest) -> DecomposeResponse:
-        return self.decompose_agent(request)
-
-    def run_priority(self, request: PriorityRequest) -> PriorityResponse:
-        return self.priority_agent(request)
 
     def priority(self, node_ids: list[str], hint: str | None = None) -> bool:
         return self._priority_agent.legacy_gate(node_ids=node_ids, hint=hint)
@@ -151,7 +141,7 @@ class AgentCapabilityService:
             return context_injector
         if any(value is not None for value in [vos_state_file, vos_session_db_file, vos_binary_path]):
             return VosContextInjector(
-                VosContextGateway(
+                VosContextReader(
                     workspace_root=self._workspace_root,
                     state_file=vos_state_file,
                     session_db_file=vos_session_db_file,
@@ -160,18 +150,18 @@ class AgentCapabilityService:
             )
         return DefaultContextInjector()
 
-    def _resolve_session_gateway(
+    def _resolve_session_writer(
         self,
         *,
-        session_gateway: SessionEventGateway | None,
+        session_writer: SessionEventWriter | None,
         vos_state_file: str | Path | None,
         vos_session_db_file: str | Path | None,
         vos_binary_path: str | Path | None,
-    ) -> SessionEventGateway | None:
-        if session_gateway is not None:
-            return session_gateway
+    ) -> SessionEventWriter | None:
+        if session_writer is not None:
+            return session_writer
         if any(value is not None for value in [vos_state_file, vos_session_db_file, vos_binary_path]):
-            return VosSessionGateway(
+            return VosSessionWriter(
                 workspace_root=self._workspace_root,
                 state_file=vos_state_file,
                 session_db_file=vos_session_db_file,

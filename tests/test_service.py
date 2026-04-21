@@ -1,4 +1,4 @@
-import json
+﻿import json
 import shutil
 import sys
 import threading
@@ -35,16 +35,16 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertIn("executed node=node-2", result)
 
     def test_execute_agent_without_tool_call_still_writes_session_event(self) -> None:
-        session_gateway = _SpySessionGateway()
-        service = AgentCapabilityService(gateway=_FakeGateway(), session_gateway=session_gateway)
+        session_writer = _SpySessionWriter()
+        service = AgentCapabilityService(gateway=_FakeGateway(), session_writer=session_writer)
         result = service.execute_agent(service.build("node-no-tool", session_id="session-no-tool"))
 
         self.assertEqual(result, "executed node=node-no-tool")
-        self.assertEqual(session_gateway.ensure_calls, [("node-no-tool", "session-no-tool")])
-        self.assertGreaterEqual(len(session_gateway.events), 2)
-        delta_events = [event for event in session_gateway.events if event.item_type == "assistant_delta"]
+        self.assertEqual(session_writer.ensure_calls, [("node-no-tool", "session-no-tool")])
+        self.assertGreaterEqual(len(session_writer.events), 2)
+        delta_events = [event for event in session_writer.events if event.item_type == "assistant_delta"]
         self.assertGreaterEqual(len(delta_events), 1)
-        event = session_gateway.events[-1]
+        event = session_writer.events[-1]
         self.assertEqual(event.item_type, "message")
         self.assertEqual(event.role.value, "assistant")
         self.assertEqual(event.next_status.value, "completed")
@@ -53,17 +53,17 @@ class AgentCapabilityServiceTests(unittest.TestCase):
 
     def test_execute_agent_runs_responses_tool_loop_and_writes_session_events(self) -> None:
         gateway = _ToolLoopGateway()
-        session_gateway = _SpySessionGateway()
+        session_writer = _SpySessionWriter()
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(
                 gateway=gateway,
-                session_gateway=session_gateway,
+                session_writer=session_writer,
                 workspace_root=tmp,
             )
             result = service.execute_agent(service.build("node-tool-loop", session_id="session-1"))
 
         self.assertEqual(result, "tool-loop-finished")
-        self.assertEqual(session_gateway.ensure_calls, [("node-tool-loop", "session-1")])
+        self.assertEqual(session_writer.ensure_calls, [("node-tool-loop", "session-1")])
         self.assertEqual(len(gateway.requests), 2)
         first = gateway.requests[0]
         self.assertIsNotNone(first.request.tools)
@@ -78,31 +78,31 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(second.request.input[0]["type"], "function_call_output")
         self.assertEqual(second.request.input[0]["call_id"], "call-1")
 
-        self.assertGreaterEqual(len(session_gateway.events), 4)
-        self.assertEqual(session_gateway.events[0].item_type, "function_call")
-        self.assertEqual(session_gateway.events[0].next_status.value, "waiting")
-        self.assertEqual(session_gateway.events[1].item_type, "function_call_output")
-        self.assertEqual(session_gateway.events[1].next_status.value, "active")
-        self.assertIn("assistant_delta", [event.item_type for event in session_gateway.events])
-        self.assertEqual(session_gateway.events[-1].item_type, "message")
-        self.assertEqual(session_gateway.events[-1].next_status.value, "completed")
+        self.assertGreaterEqual(len(session_writer.events), 4)
+        self.assertEqual(session_writer.events[0].item_type, "function_call")
+        self.assertEqual(session_writer.events[0].next_status.value, "waiting")
+        self.assertEqual(session_writer.events[1].item_type, "function_call_output")
+        self.assertEqual(session_writer.events[1].next_status.value, "active")
+        self.assertIn("assistant_delta", [event.item_type for event in session_writer.events])
+        self.assertEqual(session_writer.events[-1].item_type, "message")
+        self.assertEqual(session_writer.events[-1].next_status.value, "completed")
 
     def test_execute_agent_marks_failed_status_when_gateway_raises_after_tool_call(self) -> None:
         gateway = _ToolLoopThenFailGateway()
-        session_gateway = _SpySessionGateway()
+        session_writer = _SpySessionWriter()
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(
                 gateway=gateway,
-                session_gateway=session_gateway,
+                session_writer=session_writer,
                 workspace_root=tmp,
             )
             with self.assertRaises(RuntimeError):
                 service.execute_agent(service.build("node-tool-loop-fail", session_id="session-2"))
 
-        self.assertEqual(len(session_gateway.events), 3)
-        self.assertEqual(session_gateway.events[-1].item_type, "function_call_output")
-        self.assertEqual(session_gateway.events[-1].next_status.value, "failed")
-        self.assertEqual(session_gateway.events[-1].payload_json.get("ok"), False)
+        self.assertEqual(len(session_writer.events), 3)
+        self.assertEqual(session_writer.events[-1].item_type, "function_call_output")
+        self.assertEqual(session_writer.events[-1].next_status.value, "failed")
+        self.assertEqual(session_writer.events[-1].payload_json.get("ok"), False)
 
     def test_execute_agent_can_use_go_cli_gateway(self) -> None:
         server, thread = _start_gateway_server()
@@ -529,7 +529,7 @@ def _start_gateway_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
     return server, thread
 
 
-class _SpySessionGateway:
+class _SpySessionWriter:
     def __init__(self) -> None:
         self.ensure_calls: list[tuple[str, str | None]] = []
         self.events: list[AppendSessionEventInput] = []
@@ -708,3 +708,4 @@ def _extract_input_text(value: object) -> str:
 
 if __name__ == "__main__":
     unittest.main()
+
