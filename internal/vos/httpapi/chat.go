@@ -29,6 +29,7 @@ const (
 type v1ChatRequest struct {
 	InvocationID *string          `json:"invocation_id"`
 	NodeID       *string          `json:"node_id"`
+	TopicID      *string          `json:"topic_id"`
 	Message      string           `json:"message"`
 	History      []map[string]any `json:"history"`
 	SystemPrompt *string          `json:"system_prompt"`
@@ -793,23 +794,34 @@ func (server *Server) resolveChatNode(request v1ChatRequest) (*domain.Node, erro
 		}
 	}
 
-	topicName := buildAutoTopicName(request.Message)
-	rootName := "Conversation"
-	topic, rootNode, err := server.service.CreateTopic(service.CreateTopicInput{
-		Name:         topicName,
-		RootNodeName: &rootName,
-	})
+	var topicID string
+	if request.TopicID != nil {
+		topicID = strings.TrimSpace(*request.TopicID)
+	}
+	if topicID == "" {
+		defaultTopic, _, err := server.service.EnsureDefaultTopic()
+		if err != nil {
+			return nil, err
+		}
+		topicID = defaultTopic.ID
+	}
+
+	topic, err := server.service.GetTopic(topicID)
 	if err != nil {
 		return nil, err
 	}
-	_ = topic
-	return rootNode, nil
+	nodeName := buildAutoNodeName(request.Message)
+	return server.service.CreateNode(service.CreateNodeInput{
+		TopicID: topic.ID,
+		Name:    nodeName,
+		Status:  domain.NodeStatusReady,
+	})
 }
 
-func buildAutoTopicName(message string) string {
+func buildAutoNodeName(message string) string {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
-		return "Chat Topic"
+		return "Conversation"
 	}
 	runes := []rune(trimmed)
 	if len(runes) > 24 {

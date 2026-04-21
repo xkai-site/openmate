@@ -54,6 +54,96 @@ func TestCreateTopicCreatesRootNode(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultTopicIsIdempotent(t *testing.T) {
+	svc := newTestService(t)
+
+	firstTopic, firstRoot, err := svc.EnsureDefaultTopic()
+	if err != nil {
+		t.Fatalf("EnsureDefaultTopic(first) error = %v", err)
+	}
+	secondTopic, secondRoot, err := svc.EnsureDefaultTopic()
+	if err != nil {
+		t.Fatalf("EnsureDefaultTopic(second) error = %v", err)
+	}
+
+	if firstTopic.ID != service.DefaultTopicID {
+		t.Fatalf("default topic id = %q, want %q", firstTopic.ID, service.DefaultTopicID)
+	}
+	if secondTopic.ID != firstTopic.ID {
+		t.Fatalf("second topic id = %q, want %q", secondTopic.ID, firstTopic.ID)
+	}
+	if secondRoot.ID != firstRoot.ID {
+		t.Fatalf("second root id = %q, want %q", secondRoot.ID, firstRoot.ID)
+	}
+}
+
+func TestCreateNodeWithoutTopicUsesDefaultTopic(t *testing.T) {
+	svc := newTestService(t)
+
+	node, err := svc.CreateNode(service.CreateNodeInput{
+		Name: "Quick Chat",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	defaultTopic, err := svc.GetTopic(service.DefaultTopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(default) error = %v", err)
+	}
+	if node.TopicID != defaultTopic.ID {
+		t.Fatalf("node topic id = %q, want %q", node.TopicID, defaultTopic.ID)
+	}
+	if node.ParentID == nil || *node.ParentID != defaultTopic.RootNodeID {
+		t.Fatalf("node parent id = %v, want %s", node.ParentID, defaultTopic.RootNodeID)
+	}
+}
+
+func TestListDisplayRootNodesIncludesDefaultEntriesAndTopicRoots(t *testing.T) {
+	svc := newTestService(t)
+
+	defaultNode, err := svc.CreateNode(service.CreateNodeInput{Name: "Temp A"})
+	if err != nil {
+		t.Fatalf("CreateNode(default) error = %v", err)
+	}
+	_, topicRoot, err := svc.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-project",
+		Name:    "Project Topic",
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic(project) error = %v", err)
+	}
+	if _, err := svc.CreateNode(service.CreateNodeInput{Name: "Temp B"}); err != nil {
+		t.Fatalf("CreateNode(default second) error = %v", err)
+	}
+	defaultTopic, err := svc.GetTopic(service.DefaultTopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(default) error = %v", err)
+	}
+
+	roots, err := svc.ListDisplayRootNodes()
+	if err != nil {
+		t.Fatalf("ListDisplayRootNodes() error = %v", err)
+	}
+	if len(roots) != 3 {
+		t.Fatalf("roots len = %d, want 3", len(roots))
+	}
+
+	foundIDs := map[string]bool{}
+	for _, node := range roots {
+		foundIDs[node.ID] = true
+		if node.ID == defaultTopic.RootNodeID {
+			t.Fatalf("display roots should not include default structural root: %s", node.ID)
+		}
+	}
+	if !foundIDs[defaultNode.ID] {
+		t.Fatalf("display roots missing default entry: %s", defaultNode.ID)
+	}
+	if !foundIDs[topicRoot.ID] {
+		t.Fatalf("display roots missing topic root: %s", topicRoot.ID)
+	}
+}
+
 func TestUpdateAndDeleteTopic(t *testing.T) {
 	svc := newTestService(t)
 

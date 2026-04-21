@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -411,63 +410,25 @@ func (server *Server) handleV1Nodes(writer http.ResponseWriter, request *http.Re
 	parentID := normalizeOptionalString(payload.ParentID)
 	trimmedName := strings.TrimSpace(payload.Name)
 
-	if topicID == nil && parentID == nil {
-		topicName := trimmedName
-		if topicName == "" {
-			topicName = "Untitled Topic"
-		}
-		topic, rootNode, err := server.service.CreateTopic(service.CreateTopicInput{
-			Name:        topicName,
-			Description: normalizeOptionalString(payload.Description),
-			Metadata:    payload.Metadata,
-			Tags:        payload.Tags,
-		})
-		if err != nil {
-			server.writeV1ServiceError(writer, err)
-			return
-		}
-		if payload.Status != nil && strings.TrimSpace(*payload.Status) != "" {
-			status, err := parseV1NodeStatus(*payload.Status)
-			if err != nil {
-				server.writeV1ServiceError(writer, err)
-				return
-			}
-			if status != domain.NodeStatusReady {
-				_, err = server.service.UpdateNode(service.UpdateNodeInput{
-					NodeID: rootNode.ID,
-					Status: &status,
-				})
-				if err != nil {
-					server.writeV1ServiceError(writer, err)
-					return
-				}
-				rootNode, err = server.service.GetNode(rootNode.ID)
-				if err != nil {
-					server.writeV1ServiceError(writer, err)
-					return
-				}
-			}
-		}
-		nodeView, err := server.buildV1NodeView(rootNode, nodeIncludeSet{})
-		if err != nil {
-			server.writeV1ServiceError(writer, err)
-			return
-		}
-		nodeView["topic_id"] = topic.ID
-		server.writeV1Success(writer, nodeView)
-		return
-	}
-
 	resolvedTopicID := ""
 	if topicID != nil {
 		resolvedTopicID = *topicID
 	} else {
-		parent, err := server.service.GetNode(*parentID)
-		if err != nil {
-			server.writeV1ServiceError(writer, err)
-			return
+		if parentID != nil {
+			parent, err := server.service.GetNode(*parentID)
+			if err != nil {
+				server.writeV1ServiceError(writer, err)
+				return
+			}
+			resolvedTopicID = parent.TopicID
+		} else {
+			topic, _, err := server.service.EnsureDefaultTopic()
+			if err != nil {
+				server.writeV1ServiceError(writer, err)
+				return
+			}
+			resolvedTopicID = topic.ID
 		}
-		resolvedTopicID = parent.TopicID
 	}
 
 	if trimmedName == "" {
@@ -761,25 +722,7 @@ func (server *Server) handleV1Unimplemented(writer http.ResponseWriter, request 
 }
 
 func (server *Server) collectRootNodes() ([]*domain.Node, error) {
-	topics, err := server.service.ListTopics()
-	if err != nil {
-		return nil, err
-	}
-	roots := make([]*domain.Node, 0, len(topics))
-	for _, topic := range topics {
-		rootNode, err := server.service.GetNode(topic.RootNodeID)
-		if err != nil {
-			return nil, err
-		}
-		roots = append(roots, rootNode)
-	}
-	sort.Slice(roots, func(i, j int) bool {
-		if roots[i].UpdatedAt.Equal(roots[j].UpdatedAt) {
-			return roots[i].CreatedAt.After(roots[j].CreatedAt)
-		}
-		return roots[i].UpdatedAt.After(roots[j].UpdatedAt)
-	})
-	return roots, nil
+	return server.service.ListDisplayRootNodes()
 }
 
 func (server *Server) buildV1TreeNode(nodeID string) (*v1TreeNodeResponse, error) {

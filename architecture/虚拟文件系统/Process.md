@@ -331,3 +331,42 @@
    - `go test ./internal/openmate/runtime/...` 通过
    - `go test ./internal/vos/httpapi/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-21 默认 Topic 收敛（default-topic）
+
+1. 在 VOS 服务层新增默认 Topic 收敛能力：
+   - 固定默认 Topic ID：`default-topic`
+   - 新增 `Service.EnsureDefaultTopic()`，确保默认 Topic 与 root node 幂等存在。
+2. `Service.CreateNode()` 行为增强：
+   - `topic_id` 为空时不再直接报错。
+   - 若给了 `parent_id`，自动从父节点推导 `topic_id`。
+   - 若未给 `parent_id`，自动落到 `default-topic`。
+3. HTTP Chat 路径收敛：
+   - `v1 chat` 请求新增可选 `topic_id`。
+   - 无 `node_id` 时不再自动创建新 Topic；改为在目标 Topic（显式传入或 `default-topic`）下创建会话 Node。
+4. HTTP Node 创建收敛：
+   - `POST /api/v1/nodes` 在 `topic_id` 与 `parent_id` 都缺省时，默认落到 `default-topic`，不再隐式创建新 Topic。
+5. CLI 对齐：
+   - `vos node create` 的 `--topic-id` 从必选语义调整为可选说明，默认落 `default-topic`。
+6. 新增/更新测试：
+   - `internal/vos/service/service_test.go`
+   - `internal/vos/httpapi/server_test.go`
+   - `internal/vos/cli/cli_test.go`
+7. 回归结果：
+   - `go test ./internal/vos/service ./internal/vos/httpapi ./internal/vos/cli` 通过
+   - `go test ./...` 通过
+   - `.\\.venv\\Scripts\\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（63 项）
+
+## 2026-04-21 /tree/roots 展示语义收敛
+
+1. `/api/v1/tree/roots` 已从“按 Topic 遍历 root_node_id”调整为“展示根节点列表”：
+   - 普通 Topic：返回结构 root（`parent_id=nil` 且 `topic_id!=default-topic`）
+   - `default-topic`：返回其结构 root 的一级子节点（用于首页历史会话展示）
+2. 新增服务层方法 `Service.ListDisplayRootNodes()`，一次 `state store load` 完成筛选与排序，避免原 `ListTopics + GetNode*N` 的重复读取开销。
+3. `default-topic` 的结构 root 不再出现在 `/tree/roots` 返回中，避免首页仅出现单一 default 条目。
+4. 新增测试覆盖：
+   - `internal/vos/service/service_test.go::TestListDisplayRootNodesIncludesDefaultEntriesAndTopicRoots`
+   - `internal/vos/httpapi/server_test.go::TestServerV1TreeRootsReturnsDisplayRoots`
+5. 回归结果：
+   - `go test ./internal/vos/service ./internal/vos/httpapi` 通过
+   - `go test ./...` 通过

@@ -118,6 +118,35 @@ func TestTopicAndNodeFlow(t *testing.T) {
 	}
 }
 
+func TestNodeCreateDefaultsToDefaultTopic(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	base := []string{"--state-file", stateFile}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(append(base, "node", "create", "--name", "Quick Node"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("node create code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+
+	createdNode := domain.Node{}
+	if err := json.Unmarshal(stdout.Bytes(), &createdNode); err != nil {
+		t.Fatalf("json.Unmarshal(node create) error = %v", err)
+	}
+	if createdNode.TopicID != service.DefaultTopicID {
+		t.Fatalf("node topic_id = %q, want %q", createdNode.TopicID, service.DefaultTopicID)
+	}
+
+	svc := service.New(store.NewJSONStateStore(stateFile))
+	defaultTopic, err := svc.GetTopic(service.DefaultTopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(default) error = %v", err)
+	}
+	if createdNode.ParentID == nil || *createdNode.ParentID != defaultTopic.RootNodeID {
+		t.Fatalf("node parent_id = %v, want %s", createdNode.ParentID, defaultTopic.RootNodeID)
+	}
+}
+
 func TestTopicDeleteCommandRemovesTopicTree(t *testing.T) {
 	stateFile := t.TempDir() + "/vos_state.json"
 	base := []string{"--state-file", stateFile}

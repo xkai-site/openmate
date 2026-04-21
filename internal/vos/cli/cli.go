@@ -329,7 +329,7 @@ func runNodeCreate(svc *service.Service, args []string, stdout, stderr io.Writer
 	fs := flag.NewFlagSet("vos node create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		topicID     = fs.String("topic-id", "", "Topic ID")
+		topicID     = fs.String("topic-id", "", "Optional topic ID, defaults to default-topic")
 		nodeID      = fs.String("node-id", "", "Optional node ID")
 		parentID    = fs.String("parent-id", "", "Parent node ID, default topic root")
 		name        = fs.String("name", "", "Node name")
@@ -341,7 +341,7 @@ func runNodeCreate(svc *service.Service, args []string, stdout, stderr io.Writer
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage:")
-		fmt.Fprintln(fs.Output(), "  vos node create --topic-id ID --name NAME [flags]")
+		fmt.Fprintln(fs.Output(), "  vos node create --name NAME [flags]")
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
 	}
