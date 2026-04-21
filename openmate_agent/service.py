@@ -101,14 +101,24 @@ class AgentCapabilityService:
     def build(self, node_id: str, session_id: str | None = None) -> Build:
         return Build(node_id=node_id, session_id=session_id)
 
-    def execute(self, build: Build) -> str:
+    def execute_agent(self, build: Build) -> str:
         return self._execution_agent.run(build)
 
-    def run_decompose(self, request: DecomposeRequest) -> DecomposeResponse:
+    def decompose_agent(self, request: DecomposeRequest) -> DecomposeResponse:
         return self._decompose_agent.run(request)
 
-    def run_priority(self, request: PriorityRequest) -> PriorityResponse:
+    def priority_agent(self, request: PriorityRequest) -> PriorityResponse:
         return self._priority_agent.run(request)
+
+    # Backward-compatible aliases. Keep old names until all callers migrate.
+    def execute(self, build: Build) -> str:
+        return self.execute_agent(build)
+
+    def run_decompose(self, request: DecomposeRequest) -> DecomposeResponse:
+        return self.decompose_agent(request)
+
+    def run_priority(self, request: PriorityRequest) -> PriorityResponse:
+        return self.priority_agent(request)
 
     def priority(self, node_ids: list[str], hint: str | None = None) -> bool:
         return self._priority_agent.legacy_gate(node_ids=node_ids, hint=hint)
@@ -168,4 +178,3 @@ class AgentCapabilityService:
                 binary_path=vos_binary_path,
             )
         return None
-

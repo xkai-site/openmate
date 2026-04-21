@@ -464,3 +464,34 @@
    - 新增/更新 `tests/test_cli.py`（decompose/priority CLI）。
    - 新增/更新 `tests/test_service.py`（run_decompose/run_priority）。
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。
+
+## 2026-04-21 master 初始化（agent 开发前）
+
+1. 已确认当前工作分支为 `master`，并按本轮要求保持不切分支。
+2. 已读取并对齐以下文档：
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/Agent能力/Agent能力.md`
+3. 已核对 Agent 代码目录与本地 Python 环境入口：
+   - `openmate_agent/` 模块结构可读
+   - `.venv\Scripts\python.exe` 可用（`Python 3.12.2`）
+4. 按当前协作指令，本次仅做初始化，不执行测试。
+
+## 2026-04-21 AgentCapabilityService 命名收敛（方法名清晰化）
+
+1. `openmate_agent/service.py` 对外主方法命名已收敛为：
+   - `execute_agent(build: Build) -> str`
+   - `decompose_agent(request: DecomposeRequest) -> DecomposeResponse`
+   - `priority_agent(request: PriorityRequest) -> PriorityResponse`
+2. 为避免一次性破坏现有调用方，旧方法名保留为兼容别名：
+   - `execute(...)` -> `execute_agent(...)`
+   - `run_decompose(...)` -> `decompose_agent(...)`
+   - `run_priority(...)` -> `priority_agent(...)`
+3. 调用方已同步迁移到新命名：
+   - `openmate_agent/worker.py`
+   - `openmate_agent/cli.py`
+   - `tests/test_service.py`
+   - `tests/test_pipeline_orchestration.py`
+4. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。

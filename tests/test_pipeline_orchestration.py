@@ -156,7 +156,7 @@ class OrchestrationInjectionTests(unittest.TestCase):
 
 
 class ServicePluggabilityTests(unittest.TestCase):
-    def test_service_execute_uses_injected_pipeline_and_orchestrator(self) -> None:
+    def test_service_execute_agent_uses_injected_pipeline_and_orchestrator(self) -> None:
         class StubPipeline:
             def __init__(self) -> None:
                 self.called_with: list[str] = []
@@ -187,7 +187,7 @@ class ServicePluggabilityTests(unittest.TestCase):
             execution_orchestrator=orchestrator,
         )
 
-        result = service.execute(service.build("node-plug"))
+        result = service.execute_agent(service.build("node-plug"))
 
         self.assertEqual(result, "orchestrated:node-plug")
         self.assertEqual(pipeline.called_with, ["node-plug"])

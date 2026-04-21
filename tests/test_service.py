@@ -29,15 +29,15 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         build = self.service.build("node-1")
         self.assertEqual(build.node_id, "node-1")
 
-    def test_execute_returns_raw_content(self) -> None:
+    def test_execute_agent_returns_raw_content(self) -> None:
         build = self.service.build("node-2")
-        result = self.service.execute(build)
+        result = self.service.execute_agent(build)
         self.assertIn("executed node=node-2", result)
 
-    def test_execute_without_tool_call_still_writes_session_event(self) -> None:
+    def test_execute_agent_without_tool_call_still_writes_session_event(self) -> None:
         session_gateway = _SpySessionGateway()
         service = AgentCapabilityService(gateway=_FakeGateway(), session_gateway=session_gateway)
-        result = service.execute(service.build("node-no-tool", session_id="session-no-tool"))
+        result = service.execute_agent(service.build("node-no-tool", session_id="session-no-tool"))
 
         self.assertEqual(result, "executed node=node-no-tool")
         self.assertEqual(session_gateway.ensure_calls, [("node-no-tool", "session-no-tool")])
@@ -51,7 +51,7 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(event.call_id, None)
         self.assertEqual(event.payload_json.get("output_text"), "executed node=node-no-tool")
 
-    def test_execute_runs_responses_tool_loop_and_writes_session_events(self) -> None:
+    def test_execute_agent_runs_responses_tool_loop_and_writes_session_events(self) -> None:
         gateway = _ToolLoopGateway()
         session_gateway = _SpySessionGateway()
         with TemporaryDirectory() as tmp:
@@ -60,7 +60,7 @@ class AgentCapabilityServiceTests(unittest.TestCase):
                 session_gateway=session_gateway,
                 workspace_root=tmp,
             )
-            result = service.execute(service.build("node-tool-loop", session_id="session-1"))
+            result = service.execute_agent(service.build("node-tool-loop", session_id="session-1"))
 
         self.assertEqual(result, "tool-loop-finished")
         self.assertEqual(session_gateway.ensure_calls, [("node-tool-loop", "session-1")])
@@ -87,7 +87,7 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(session_gateway.events[-1].item_type, "message")
         self.assertEqual(session_gateway.events[-1].next_status.value, "completed")
 
-    def test_execute_marks_failed_status_when_gateway_raises_after_tool_call(self) -> None:
+    def test_execute_agent_marks_failed_status_when_gateway_raises_after_tool_call(self) -> None:
         gateway = _ToolLoopThenFailGateway()
         session_gateway = _SpySessionGateway()
         with TemporaryDirectory() as tmp:
@@ -97,14 +97,14 @@ class AgentCapabilityServiceTests(unittest.TestCase):
                 workspace_root=tmp,
             )
             with self.assertRaises(RuntimeError):
-                service.execute(service.build("node-tool-loop-fail", session_id="session-2"))
+                service.execute_agent(service.build("node-tool-loop-fail", session_id="session-2"))
 
         self.assertEqual(len(session_gateway.events), 3)
         self.assertEqual(session_gateway.events[-1].item_type, "function_call_output")
         self.assertEqual(session_gateway.events[-1].next_status.value, "failed")
         self.assertEqual(session_gateway.events[-1].payload_json.get("ok"), False)
 
-    def test_execute_can_use_go_cli_gateway(self) -> None:
+    def test_execute_agent_can_use_go_cli_gateway(self) -> None:
         server, thread = _start_gateway_server()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -132,7 +132,7 @@ class AgentCapabilityServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = AgentCapabilityService(workspace_root=tmp)
-            result = service.execute(service.build("node-real"))
+            result = service.execute_agent(service.build("node-real"))
             self.assertIn("echo:node=node-real", result)
 
     def test_priority_returns_true_for_non_empty_input(self) -> None:
@@ -143,8 +143,8 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         result = self.service.priority([])
         self.assertFalse(result)
 
-    def test_run_decompose_returns_tasks(self) -> None:
-        response = self.service.run_decompose(
+    def test_decompose_agent_returns_tasks(self) -> None:
+        response = self.service.decompose_agent(
             DecomposeRequest(
                 request_id="req-decompose-service-1",
                 topic_id="topic-1",
@@ -157,8 +157,8 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(response.status, "succeeded")
         self.assertEqual(len(response.tasks), 2)
 
-    def test_run_priority_returns_plan(self) -> None:
-        response = self.service.run_priority(
+    def test_priority_agent_returns_plan(self) -> None:
+        response = self.service.priority_agent(
             PriorityRequest(
                 request_id="req-priority-service-1",
                 topic_id="topic-1",

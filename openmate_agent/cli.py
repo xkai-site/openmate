@@ -278,7 +278,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:
             print(json.dumps({"status": "failed", "error": f"invalid decompose request json: {exc}"}))
             return 2
-        response = service.run_decompose(request)
+        response = service.decompose_agent(request)
         print(response.model_dump_json(indent=2))
         return 0 if response.status == "succeeded" else 1
 
@@ -305,7 +305,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:
             print(json.dumps({"status": "failed", "error": f"invalid priority request json: {exc}"}))
             return 2
-        response = service.run_priority(request)
+        response = service.priority_agent(request)
         print(response.model_dump_json(indent=2))
         return 0 if response.status == "succeeded" else 1
 

@@ -119,7 +119,7 @@ def execute_worker_request(request: WorkerExecuteRequest) -> WorkerExecuteRespon
             vos_session_db_file=request.agent_spec.vos_session_db if request.agent_spec.use_session_event else None,
             vos_binary_path=request.agent_spec.vos_binary if request.agent_spec.use_session_event else None,
         )
-        output = service.execute(service.build(node_id=request.node_id, session_id=request.session_id))
+        output = service.execute_agent(service.build(node_id=request.node_id, session_id=request.session_id))
         return WorkerExecuteResponse(
             request_id=request.request_id,
             topic_id=request.topic_id,
