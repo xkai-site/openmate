@@ -3,12 +3,12 @@ package runtime
 import (
 	"context"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"vos/internal/openmate/observability"
+	openmatepaths "vos/internal/openmate/paths"
 	"vos/internal/poolgateway"
 	"vos/internal/schedule"
 	vosservice "vos/internal/vos/service"
@@ -201,7 +201,7 @@ func normalizeWorkerCommand(command []string, workspaceRoot string) []string {
 	if len(result) > 0 {
 		return result
 	}
-	return splitCommand(defaultWorkerCommand(workspaceRoot))
+	return splitCommand(openmatepaths.DefaultWorkerCommand(workspaceRoot))
 }
 
 func splitCommand(raw string) []string {
@@ -214,12 +214,4 @@ func splitCommand(raw string) []string {
 		result = append(result, field)
 	}
 	return result
-}
-
-func defaultWorkerCommand(workspaceRoot string) string {
-	venvPython := filepath.Join(filepath.Clean(workspaceRoot), filepath.FromSlash(".venv/Scripts/python.exe"))
-	if _, err := os.Stat(venvPython); err == nil {
-		return venvPython + " -m openmate_agent.cli worker run"
-	}
-	return "python -m openmate_agent.cli worker run"
 }

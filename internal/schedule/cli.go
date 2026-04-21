@@ -14,19 +14,20 @@ import (
 	"time"
 
 	"vos/internal/openmate/observability"
+	openmatepaths "vos/internal/openmate/paths"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	root := flag.NewFlagSet("openmate-schedule", flag.ContinueOnError)
 	root.SetOutput(stderr)
-	dbFile := root.String("db-file", defaultUnifiedDBFile(), "Unified SQLite database path for schedule runtime and VOS sessions")
+	dbFile := root.String("db-file", openmatepaths.DefaultUnifiedDBFile(), "Unified SQLite database path for schedule runtime and VOS sessions")
 	runtimeDBFile := root.String("runtime-db-file", "", "Schedule runtime SQLite database path (overrides --db-file)")
 	workdir := root.String("workdir", ".", "Working directory for worker command execution")
 	vosMode := root.String("vos-mode", "direct", "VOS gateway mode: direct or shell")
 	vosCommandRaw := root.String("vos-command", defaultVOSCommand(), "Command used to invoke VOS CLI")
-	vosStateFile := root.String("vos-state-file", filepath.FromSlash(".openmate/runtime/vos_state.json"), "VOS state file path passed to vos command")
+	vosStateFile := root.String("vos-state-file", openmatepaths.DefaultVOSStateFile(), "VOS state file path passed to vos command")
 	vosSessionDBFile := root.String("vos-session-db-file", "", "VOS session database path passed to vos command (overrides --db-file)")
-	workerCommandRaw := root.String("worker-command", defaultWorkerCommand(), "Command used to invoke agent worker CLI")
+	workerCommandRaw := root.String("worker-command", openmatepaths.DefaultWorkerCommand("."), "Command used to invoke agent worker CLI")
 	defaultTimeoutMS := root.Int("default-timeout-ms", 120000, "Default worker timeout in milliseconds")
 	agingSeconds := root.Int("aging-seconds", 600, "Topic aging promotion threshold in seconds")
 	logLevel := root.String("log-level", "info", "Log level: debug|info|warn|error")
@@ -50,7 +51,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	if err := root.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			root.Usage()
 			return 0
 		}
 		fmt.Fprintln(stderr, err)
@@ -181,7 +181,6 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.Usage()
 			return 0
 		}
 		fmt.Fprintln(stderr, err)
@@ -227,7 +226,6 @@ func runEnqueue(args []string, stdout, stderr io.Writer, config runtimeCommandCo
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.Usage()
 			return 0
 		}
 		fmt.Fprintln(stderr, err)
@@ -279,7 +277,6 @@ func runTick(args []string, stdout, stderr io.Writer, config runtimeCommandConfi
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.Usage()
 			return 0
 		}
 		fmt.Fprintln(stderr, err)
@@ -319,7 +316,6 @@ func runLoop(args []string, stdout, stderr io.Writer, config runtimeCommandConfi
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.Usage()
 			return 0
 		}
 		fmt.Fprintln(stderr, err)
@@ -370,7 +366,6 @@ func runState(args []string, stdout, stderr io.Writer, config runtimeCommandConf
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.Usage()
 			return 0
 		}
 		fmt.Fprintln(stderr, err)
@@ -543,21 +538,9 @@ func openEngine(config runtimeCommandConfig) (*Engine, func(), error) {
 }
 
 func defaultVOSCommand() string {
-	defaultBinary := filepath.FromSlash(".openmate/bin/vos.exe")
+	defaultBinary := openmatepaths.DefaultVOSBinaryPath()
 	if _, err := os.Stat(defaultBinary); err == nil {
 		return defaultBinary
 	}
 	return "go run ./cmd/vos"
-}
-
-func defaultUnifiedDBFile() string {
-	return filepath.FromSlash(".openmate/runtime/openmate.db")
-}
-
-func defaultWorkerCommand() string {
-	venvPython := filepath.FromSlash(".venv/Scripts/python.exe")
-	if _, err := os.Stat(venvPython); err == nil {
-		return venvPython + " -m openmate_agent.cli worker run"
-	}
-	return "python -m openmate_agent.cli worker run"
 }

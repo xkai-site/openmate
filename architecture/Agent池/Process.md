@@ -253,3 +253,12 @@
    - `go test ./internal/poolgateway/...` passed
    - `go test ./...` passed
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` passed (63 tests)
+
+## 2026-04-21 Pool CLI 帮助输出去重（无行为改动）
+
+1. 修复 `openmate-pool --help` 场景下帮助文本重复打印的问题。
+2. 调整点：`cmd/openmate-pool/main.go` 中 `flag.ErrHelp` 分支不再二次调用 `Usage()`。
+3. `invoke/cap/records/usage/sync` 命令语义与 JSON 输出契约不变，仅修复帮助输出一致性。
+4. 回归结果：
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（63 项）

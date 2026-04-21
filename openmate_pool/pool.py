@@ -7,6 +7,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from openmate_shared.runtime_paths import (
+    default_model_config_path,
+    default_runtime_db_path,
+    resolve_workspace_root,
+)
+
 from .binary import ensure_pool_binary
 from .errors import InvocationFailedError, NoCapacityError, PoolError, PoolTransportError
 from .models import CapacitySnapshot, InvocationRecord, InvokeRequest, InvokeResponse, SyncResult, UsageSummary
@@ -23,9 +29,13 @@ class PoolGateway:
         model_config_path: str | Path | None = None,
         binary_path: str | Path | None = None,
     ) -> None:
-        self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
-        self._db_path = Path(db_path or self._workspace_root / ".openmate" / "runtime" / "openmate.db").resolve()
-        self._model_config_path = Path(model_config_path or self._workspace_root / "model.json").resolve()
+        self._workspace_root = resolve_workspace_root(workspace_root)
+        self._db_path = Path(db_path).resolve() if db_path is not None else default_runtime_db_path(self._workspace_root)
+        self._model_config_path = (
+            Path(model_config_path).resolve()
+            if model_config_path is not None
+            else default_model_config_path(self._workspace_root)
+        )
         self._binary_path = binary_path
 
     def invoke(self, request: InvokeRequest) -> InvokeResponse:

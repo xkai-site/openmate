@@ -6,10 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strconv"
 	"strings"
 
+	openmatepaths "vos/internal/openmate/paths"
 	"vos/internal/vos/domain"
 	"vos/internal/vos/service"
 	"vos/internal/vos/store"
@@ -29,8 +29,8 @@ func (values *multiString) Set(raw string) error {
 func Run(args []string, stdout, stderr io.Writer) int {
 	root := flag.NewFlagSet("vos", flag.ContinueOnError)
 	root.SetOutput(stderr)
-	dbFile := root.String("db-file", filepath.FromSlash(".openmate/runtime/openmate.db"), "Unified SQLite database path for VOS session operations")
-	stateFile := root.String("state-file", filepath.FromSlash(".openmate/runtime/vos_state.json"), "JSON state file path")
+	dbFile := root.String("db-file", openmatepaths.DefaultUnifiedDBFile(), "Unified SQLite database path for VOS session operations")
+	stateFile := root.String("state-file", openmatepaths.DefaultVOSStateFile(), "JSON state file path")
 	sessionDBFile := root.String("session-db-file", "", "SQLite session database path (overrides --db-file)")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")

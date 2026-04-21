@@ -81,3 +81,10 @@
    - 本仓库目录与能力映射
    - 编译/测试/运行命令（`npm run electron:dev/start/build` 等）
    - 常见问题排查（权限、桥接、工作区白名单）
+
+## 2026-04-21 前端结构清理（无行为改动）
+
+1. 已删除空白遗留文件：`frontend/src/pages/Home/index_new.tsx`。
+2. 已删除重复配置产物：`frontend/vite.config.js`（保留 `vite.config.ts` 作为唯一配置源）。
+3. 本轮未改动页面路由与 API 调用逻辑，仅清理历史残留文件以降低结构噪音。
+4. 构建验证：`npm run build` 通过。

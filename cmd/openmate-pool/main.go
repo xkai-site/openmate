@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"vos/internal/openmate/observability"
+	openmatepaths "vos/internal/openmate/paths"
 	"vos/internal/poolgateway"
 )
 
@@ -21,7 +22,7 @@ func main() {
 func run(args []string) int {
 	root := flag.NewFlagSet("pool", flag.ContinueOnError)
 	root.SetOutput(os.Stdout)
-	dbFile := root.String("db-file", filepath.FromSlash(".openmate/runtime/openmate.db"), "SQLite state database path")
+	dbFile := root.String("db-file", openmatepaths.DefaultUnifiedDBFile(), "SQLite state database path")
 	modelConfig := root.String("model-config", "model.json", "Model config JSON path")
 	logLevel := root.String("log-level", "info", "Log level: debug|info|warn|error")
 	logFormat := root.String("log-format", "json", "Log format: json|text")
@@ -32,7 +33,6 @@ func run(args []string) int {
 	}
 	if err := root.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			root.Usage()
 			return 0
 		}
 		fmt.Fprintln(os.Stderr, err)
@@ -94,7 +94,6 @@ func runInvoke(args []string, gateway *poolgateway.Gateway, logger *slog.Logger)
 	}
 	if err := cmd.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			cmd.Usage()
 			return 0
 		}
 		fmt.Fprintln(os.Stderr, err)

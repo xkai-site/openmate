@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from openmate_pool.pool import PoolGateway
+from openmate_shared.runtime_paths import (
+    default_model_config_path,
+    default_runtime_db_path,
+    resolve_workspace_root,
+)
 from pydantic import ValidationError
 
 from .context_gateway import VosContextGateway
@@ -169,7 +174,7 @@ class AgentCapabilityService:
         vos_session_db_file: str | Path | None = None,
         vos_binary_path: str | Path | None = None,
     ) -> None:
-        self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
+        self._workspace_root = resolve_workspace_root(workspace_root)
         if context_injector is not None:
             self._context_injector = context_injector
         elif any(value is not None for value in [vos_state_file, vos_session_db_file, vos_binary_path]):
@@ -193,8 +198,12 @@ class AgentCapabilityService:
             assembler=self._assembler,
         )
         self._gateway = gateway or PoolGateway(
-            db_path=Path(pool_db_path or self._workspace_root / ".openmate" / "runtime" / "openmate.db"),
-            model_config_path=Path(pool_model_config_path or self._workspace_root / "model.json"),
+            db_path=Path(pool_db_path).resolve() if pool_db_path is not None else default_runtime_db_path(self._workspace_root),
+            model_config_path=(
+                Path(pool_model_config_path).resolve()
+                if pool_model_config_path is not None
+                else default_model_config_path(self._workspace_root)
+            ),
             binary_path=pool_binary_path,
             workspace_root=self._workspace_root,
         )

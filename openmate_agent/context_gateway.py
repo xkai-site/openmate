@@ -4,6 +4,12 @@ import json
 import subprocess
 from pathlib import Path
 
+from openmate_shared.runtime_paths import (
+    default_runtime_db_path,
+    default_vos_state_path,
+    resolve_workspace_root,
+)
+
 from .context_models import ContextSnapshotRecord
 from .vos_binary import ensure_vos_binary
 
@@ -21,9 +27,11 @@ class VosContextGateway:
         session_db_file: str | Path | None = None,
         binary_path: str | Path | None = None,
     ) -> None:
-        self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
-        self._state_file = Path(state_file or self._workspace_root / ".openmate" / "runtime" / "vos_state.json").resolve()
-        self._session_db_file = Path(session_db_file or self._workspace_root / ".openmate" / "runtime" / "openmate.db").resolve()
+        self._workspace_root = resolve_workspace_root(workspace_root)
+        self._state_file = Path(state_file).resolve() if state_file is not None else default_vos_state_path(self._workspace_root)
+        self._session_db_file = (
+            Path(session_db_file).resolve() if session_db_file is not None else default_runtime_db_path(self._workspace_root)
+        )
         self._binary_path = binary_path
 
     def snapshot(self, node_id: str) -> ContextSnapshotRecord:

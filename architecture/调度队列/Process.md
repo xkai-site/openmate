@@ -172,3 +172,12 @@
 7. 回归结果：
    - `go test ./internal/schedule/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-21 CLI 帮助输出去重（无行为改动）
+
+1. 修复 `openmate-schedule --help` 触发帮助文本重复打印的问题。
+2. 调整点：`internal/schedule/cli.go` 中 `flag.ErrHelp` 分支不再额外调用 `Usage()`，仅返回 `0`。
+3. 命令/参数/业务输出契约保持不变，仅修复帮助输出一致性。
+4. 回归结果：
+   - `go test ./internal/schedule/...` 通过
+   - `go test ./...` 通过

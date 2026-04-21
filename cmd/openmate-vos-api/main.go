@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"vos/internal/openmate/observability"
+	openmatepaths "vos/internal/openmate/paths"
 	"vos/internal/vos/httpapi"
 )
 
@@ -22,8 +22,8 @@ func run(args []string) int {
 	root := flag.NewFlagSet("openmate-vos-api", flag.ContinueOnError)
 	root.SetOutput(os.Stderr)
 	addr := root.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	dbFile := root.String("db-file", filepath.FromSlash(".openmate/runtime/openmate.db"), "Unified SQLite database path for VOS sessions")
-	stateFile := root.String("state-file", filepath.FromSlash(".openmate/runtime/vos_state.json"), "JSON state file path")
+	dbFile := root.String("db-file", openmatepaths.DefaultUnifiedDBFile(), "Unified SQLite database path for VOS sessions")
+	stateFile := root.String("state-file", openmatepaths.DefaultVOSStateFile(), "JSON state file path")
 	sessionDBFile := root.String("session-db-file", "", "SQLite session database path (overrides --db-file)")
 	scheduleDBFile := root.String("schedule-db-file", "", "Schedule runtime database path (defaults to --db-file)")
 	scheduleMode := root.String("schedule-mode", "inproc", "Schedule execution mode: inproc or shell")
