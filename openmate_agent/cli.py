@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from .models import DecomposeRequest, PriorityRequest
 from .service import AgentCapabilityService
 from .worker import WorkerExecuteRequest, execute_worker_request
 
@@ -147,6 +148,18 @@ def create_parser() -> argparse.ArgumentParser:
     worker_run.add_argument("--request-json", default="", help="Inline WorkerExecuteRequest JSON.")
     worker_run.add_argument("--request-file", default="", help="Path to WorkerExecuteRequest JSON file.")
 
+    decompose_parser = subparsers.add_parser("decompose", help="Execute decompose agent action.")
+    decompose_subparsers = decompose_parser.add_subparsers(dest="decompose_name", required=True)
+    decompose_run = decompose_subparsers.add_parser("run", help="Run one decompose request (JSON in/out).")
+    decompose_run.add_argument("--request-json", default="", help="Inline DecomposeRequest JSON.")
+    decompose_run.add_argument("--request-file", default="", help="Path to DecomposeRequest JSON file.")
+
+    priority_parser = subparsers.add_parser("priority", help="Execute priority agent action.")
+    priority_subparsers = priority_parser.add_subparsers(dest="priority_name", required=True)
+    priority_run = priority_subparsers.add_parser("run", help="Run one priority request (JSON in/out).")
+    priority_run.add_argument("--request-json", default="", help="Inline PriorityRequest JSON.")
+    priority_run.add_argument("--request-file", default="", help="Path to PriorityRequest JSON file.")
+
     return parser
 
 
@@ -239,6 +252,60 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
         response = execute_worker_request(request)
+        print(response.model_dump_json(indent=2))
+        return 0 if response.status == "succeeded" else 1
+
+    if args.command == "decompose":
+        if args.decompose_name != "run":
+            print(json.dumps({"status": "failed", "error": f"unknown decompose command: {args.decompose_name}"}))
+            return 2
+        if bool(args.request_json) == bool(args.request_file):
+            print(
+                json.dumps(
+                    {"status": "failed", "error": "decompose run requires exactly one of --request-json or --request-file"}
+                )
+            )
+            return 2
+        raw = args.request_json
+        if args.request_file:
+            try:
+                raw = Path(args.request_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"status": "failed", "error": f"read request file failed: {exc}"}))
+                return 2
+        try:
+            request = DecomposeRequest.model_validate_json(raw)
+        except Exception as exc:
+            print(json.dumps({"status": "failed", "error": f"invalid decompose request json: {exc}"}))
+            return 2
+        response = service.run_decompose(request)
+        print(response.model_dump_json(indent=2))
+        return 0 if response.status == "succeeded" else 1
+
+    if args.command == "priority":
+        if args.priority_name != "run":
+            print(json.dumps({"status": "failed", "error": f"unknown priority command: {args.priority_name}"}))
+            return 2
+        if bool(args.request_json) == bool(args.request_file):
+            print(
+                json.dumps(
+                    {"status": "failed", "error": "priority run requires exactly one of --request-json or --request-file"}
+                )
+            )
+            return 2
+        raw = args.request_json
+        if args.request_file:
+            try:
+                raw = Path(args.request_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"status": "failed", "error": f"read request file failed: {exc}"}))
+                return 2
+        try:
+            request = PriorityRequest.model_validate_json(raw)
+        except Exception as exc:
+            print(json.dumps({"status": "failed", "error": f"invalid priority request json: {exc}"}))
+            return 2
+        response = service.run_priority(request)
         print(response.model_dump_json(indent=2))
         return 0 if response.status == "succeeded" else 1
 

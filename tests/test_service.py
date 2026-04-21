@@ -3,6 +3,7 @@ import shutil
 import sys
 import threading
 import unittest
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +18,7 @@ from openmate_pool.models import (
 )
 from openmate_agent.service import AgentCapabilityService
 from openmate_agent.session_models import AppendSessionEventInput
+from openmate_agent.models import DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
@@ -140,6 +142,49 @@ class AgentCapabilityServiceTests(unittest.TestCase):
     def test_priority_returns_false_for_empty_input(self) -> None:
         result = self.service.priority([])
         self.assertFalse(result)
+
+    def test_run_decompose_returns_tasks(self) -> None:
+        response = self.service.run_decompose(
+            DecomposeRequest(
+                request_id="req-decompose-service-1",
+                topic_id="topic-1",
+                node_id="node-1",
+                node_name="Implement agent refactor",
+                mode="decompose",
+                max_items=2,
+            )
+        )
+        self.assertEqual(response.status, "succeeded")
+        self.assertEqual(len(response.tasks), 2)
+
+    def test_run_priority_returns_plan(self) -> None:
+        response = self.service.run_priority(
+            PriorityRequest(
+                request_id="req-priority-service-1",
+                topic_id="topic-1",
+                node_id="priority-node",
+                node_name="__priority__",
+                mode="priority",
+                candidates=[
+                    PriorityCandidate(
+                        node_id="node-a",
+                        name="Node A",
+                        status="ready",
+                        current_priority=PriorityLevel(label="normal", rank=2),
+                        entered_priority_at=datetime.fromisoformat("2026-04-21T09:00:00+00:00"),
+                    ),
+                    PriorityCandidate(
+                        node_id="node-b",
+                        name="Node B",
+                        status="pending",
+                        current_priority=PriorityLevel(label="normal", rank=1),
+                        entered_priority_at=datetime.fromisoformat("2026-04-21T10:00:00+00:00"),
+                    ),
+                ],
+            )
+        )
+        self.assertEqual(response.status, "succeeded")
+        self.assertEqual(len(response.priority_plan), 2)
 
     def test_run_tool_write_read_query(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -440,3 +440,27 @@
    - `tests/test_service.py` 增加首轮 `request.input` 结构断言（数组 + `role=user`）。
 4. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest tests.test_service.AgentCapabilityServiceTests.test_execute_runs_responses_tool_loop_and_writes_session_events` 通过
+
+## 2026-04-21 Agent 组装层收敛重构（三服务 + 薄门面）
+
+1. `openmate_agent/service.py` 已从“混合职责大类”收敛为薄门面，职责限定为：
+   - 依赖装配（context/tool/skill/pipeline/gateway/session/tool runtime）。
+   - 对外路由（execution/decompose/priority/tool）。
+2. 新增三类能力服务实现：
+   - `ExecutionAgentService`：保留 ReAct 执行链路（build -> tool schema -> orchestration）。
+   - `DecomposeAgentService`：新增拆解模式骨架（workflow 入口，结构化 `tasks` 输出）。
+   - `PriorityAgentService`：新增排序模式骨架（结构化 `priority_plan` 输出）。
+3. `tool schema` 与 `tool runtime` 从 `service.py` 拆出：
+   - 新增 `openmate_agent/tool_schema.py`（OpenAI function schema 组装）。
+   - 新增 `openmate_agent/tool_runtime.py`（工具权限判定与执行器）。
+4. CLI 扩展（与 `worker run` 并存）：
+   - `python -m openmate_agent.cli decompose run`
+   - `python -m openmate_agent.cli priority run`
+   - 输入保持 `--request-json` / `--request-file` 二选一，输出结构化 JSON，退出码语义为 `0/1/2`。
+5. 兼容性说明：
+   - `worker run` 现有请求/响应契约保持不变，仍服务执行 Agent。
+   - `priority()` 旧布尔接口保留（兼容旧调用点）。
+6. 测试与回归：
+   - 新增/更新 `tests/test_cli.py`（decompose/priority CLI）。
+   - 新增/更新 `tests/test_service.py`（run_decompose/run_priority）。
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。

@@ -164,7 +164,8 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("OpenMate Agent tool CLI", result.stdout)
         self.assertNotIn("execute", result.stdout)
-        self.assertNotIn("priority", result.stdout)
+        self.assertIn("decompose", result.stdout)
+        self.assertIn("priority", result.stdout)
         tool_help = self._run("tool", "--help")
         self.assertEqual(tool_help.returncode, 0)
         self.assertIn("exec", tool_help.stdout)
@@ -378,6 +379,50 @@ class AgentCliTests(unittest.TestCase):
             ],
         }
         result = self._run("worker", "run", "--request-json", json.dumps(request))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn('"status": "succeeded"', result.stdout)
+        self.assertIn('"priority_plan"', result.stdout)
+
+    def test_decompose_run(self) -> None:
+        request = {
+            "request_id": "req-decompose-1",
+            "topic_id": "topic-1",
+            "node_id": "node-1",
+            "node_name": "Build project foundation",
+            "mode": "decompose",
+            "hint": "focus on backend delivery",
+            "max_items": 3,
+        }
+        result = self._run("decompose", "run", "--request-json", json.dumps(request))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn('"status": "succeeded"', result.stdout)
+        self.assertIn('"tasks"', result.stdout)
+
+    def test_priority_run(self) -> None:
+        request = {
+            "request_id": "req-priority-run-1",
+            "topic_id": "topic-1",
+            "node_id": "priority-node-1",
+            "node_name": "__priority__",
+            "mode": "priority",
+            "candidates": [
+                {
+                    "node_id": "node-a",
+                    "name": "Node A",
+                    "status": "ready",
+                    "current_priority": {"label": "normal", "rank": 2},
+                    "entered_priority_at": "2026-04-21T09:00:00Z",
+                },
+                {
+                    "node_id": "node-b",
+                    "name": "Node B",
+                    "status": "pending",
+                    "current_priority": {"label": "normal", "rank": 1},
+                    "entered_priority_at": "2026-04-21T10:00:00Z",
+                },
+            ],
+        }
+        result = self._run("priority", "run", "--request-json", json.dumps(request))
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn('"status": "succeeded"', result.stdout)
         self.assertIn('"priority_plan"', result.stdout)

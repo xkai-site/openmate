@@ -9,6 +9,7 @@ __pycache__/
 .pool_state.db-wal
 model.json
 *.pyc
+openmate_agent/.idea/
 
 # frontend artifacts
 frontend/node_modules/
