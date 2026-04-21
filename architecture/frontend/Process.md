@@ -88,3 +88,16 @@
 2. 已删除重复配置产物：`frontend/vite.config.js`（保留 `vite.config.ts` 作为唯一配置源）。
 3. 本轮未改动页面路由与 API 调用逻辑，仅清理历史残留文件以降低结构噪音。
 4. 构建验证：`npm run build` 通过。
+
+## 2026-04-21 frontend 分支初始化（Web + Electron）
+
+1. 已确认当前工作分支为 `frontend`，本阶段聚焦 Web 与 Electron 桌面壳能力。
+2. 已完成前端依赖初始化：`cd frontend && npm install`。
+3. Web 构建基线验证通过：`npm run build`。
+4. Electron 入口语法验证通过：
+   - `node --check electron/main.cjs`
+   - `node --check electron/preload.cjs`
+5. Electron 打包链路验证通过：`npm run electron:build`，产物输出 `frontend/dist/win-unpacked`。
+6. 为避免构建重复产物回归，已完成配置收敛：
+   - `frontend/tsconfig.node.json` 将输出重定向到 `node_modules/.tmp`，避免 `tsc -b` 在项目根产出 `vite.config.js`。
+   - `.gitignore` 增加 `frontend/vite.config.js` 兜底忽略规则。
