@@ -19,3 +19,4 @@ frontend/electron-dist/
 frontend/.vite/
 frontend/*.tsbuildinfo
 frontend/vite.config.d.ts
+frontend/vite.config.js
