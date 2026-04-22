@@ -129,6 +129,26 @@
      - 恢复链路调用 `waitChatResult()` 统一传入 `controller.signal`，保证仅由用户/页面中断控制，而非固定时长。
 3. 验证结果：`cd frontend && npm run build` 通过。
 
+## 2026-04-22 测试清理脚本（历史数据与前端缓存）
+
+1. 新增脚本：`scripts/clean-test-history.ps1`，用于测试前一键清理历史数据与前端缓存。
+2. 清理范围（仅仓库内）：
+   - 运行态历史：`.openmate/runtime/openmate.db*`、`.openmate/runtime/vos_state.json`、`.openmate/runtime/electron_audit.log`
+   - 兼容旧文件：`.vos_state.json`、`.pool_state.json`、`.pool_state.db*`
+   - 前端缓存：`frontend/dist`、`frontend/.vite`、`frontend/release`、`frontend/electron-dist`、`frontend/*.tsbuildinfo`、`frontend/vite.config.d.ts`
+3. 保护策略：
+   - 显式保留 `model.json`
+   - 不清理 `.openmate/bin`、`.venv`、`frontend/node_modules`
+   - 脚本内含“仅允许删除 workspace 根目录内路径”的安全检查
+4. 校验结果：
+   - 已执行 `.\scripts\clean-test-history.ps1 -WorkspaceRoot . -WhatIf`，干跑通过。
+
+## 2026-04-22 测试清理脚本路径解析修复
+
+1. 修复 `scripts/clean-test-history.ps1` 的根路径解析方式：由 `.NET GetFullPath(.)` 改为 `PowerShell Provider` 解析，避免在部分终端环境下把 `.` 误解析为进程启动目录（如 `C:\Users\HP`）。
+2. 修复后 `-WorkspaceRoot .` 在 `D:\XuKai\Project\openmate_frontend` 下可正确解析为仓库根目录，清理目标与预期一致。
+3. 验证：`.\scripts\clean-test-history.ps1 -WorkspaceRoot . -WhatIf` 输出 `Workspace root: D:\XuKai\Project\openmate_frontend`。
+
 ## 2026-04-22 长输出中断联调结论（前后端联合）
 
 1. 复盘结论：前端已去硬超时后，长输出仍中断的直接触发点在后端流式链路固定超时，而非前端请求超时。
