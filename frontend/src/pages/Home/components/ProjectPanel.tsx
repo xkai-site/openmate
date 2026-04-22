@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Spin, Dropdown, Modal, message } from 'antd';
 import type { MenuProps } from 'antd';
-import { FolderOutlined, ReloadOutlined, MoreOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { FolderOutlined, ReloadOutlined, MoreOutlined, EditOutlined, DeleteOutlined, PlusOutlined, LoadingOutlined } from '@ant-design/icons';
 import { listRootNodes } from '@/services/api/tree';
 import { updateNode, deleteNode } from '@/services/api/nodes';
 import type { RootNodeSummary } from '@/types/models';
@@ -252,9 +252,16 @@ function ProjectItem({ project, active, onClick, onDeleted, onRenamed, onStatusC
 interface ProjectPanelProps {
   activeNodeId?: string | null;
   onProjectSelect?: (project: RootNodeSummary) => void;
+  onNewConversation?: () => void;
+  creatingConversation?: boolean;
 }
 
-export default function ProjectPanel({ activeNodeId = null, onProjectSelect }: ProjectPanelProps) {
+export default function ProjectPanel({
+  activeNodeId = null,
+  onProjectSelect,
+  onNewConversation,
+  creatingConversation = false,
+}: ProjectPanelProps) {
   const [projects, setProjects] = useState<RootNodeSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -289,14 +296,26 @@ export default function ProjectPanel({ activeNodeId = null, onProjectSelect }: P
     <aside className="project-panel">
       <div className="project-panel-header">
         <span className="project-panel-title">我的历史</span>
-        <button
-          className="project-refresh-btn"
-          onClick={() => void fetchProjects()}
-          disabled={loading}
-          aria-label="刷新"
-        >
-          <ReloadOutlined spin={loading} />
-        </button>
+        <div className="project-panel-actions">
+          <button
+            className="project-new-btn"
+            onClick={() => onNewConversation?.()}
+            disabled={creatingConversation}
+            aria-label="开启新会话"
+            title="开启新会话"
+          >
+            {creatingConversation ? <LoadingOutlined /> : <PlusOutlined />}
+            <span>开启新会话</span>
+          </button>
+          <button
+            className="project-refresh-btn"
+            onClick={() => void fetchProjects()}
+            disabled={loading}
+            aria-label="刷新"
+          >
+            <ReloadOutlined spin={loading} />
+          </button>
+        </div>
       </div>
 
       <div className="project-panel-content">
@@ -373,6 +392,13 @@ export default function ProjectPanel({ activeNodeId = null, onProjectSelect }: P
           text-transform: uppercase;
         }
 
+        .project-panel-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .project-new-btn,
         .project-refresh-btn {
           width: 28px;
           height: 28px;
@@ -387,16 +413,30 @@ export default function ProjectPanel({ activeNodeId = null, onProjectSelect }: P
           transition: all 0.15s ease;
         }
 
+        .project-new-btn {
+          width: auto;
+          min-width: 96px;
+          padding: 0 10px;
+          gap: 6px;
+          background: rgba(255, 255, 255, 0.1);
+          color: rgba(255, 255, 255, 0.85);
+          font-size: 12px;
+          font-weight: 500;
+        }
+
+        .project-new-btn:hover:not(:disabled),
         .project-refresh-btn:hover:not(:disabled) {
           background: rgba(255, 255, 255, 0.1);
           color: rgba(255, 255, 255, 0.8);
         }
 
+        .project-new-btn:focus-visible,
         .project-refresh-btn:focus-visible {
           outline: 2px solid rgba(0, 113, 227, 0.8);
           outline-offset: 2px;
         }
 
+        .project-new-btn:disabled,
         .project-refresh-btn:disabled {
           opacity: 0.4;
           cursor: not-allowed;

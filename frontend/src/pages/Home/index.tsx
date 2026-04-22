@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
 import { decomposeNode } from '@/services/api/tree';
-import { getNodeSession } from '@/services/api/nodes';
+import { createNode, getNodeSession } from '@/services/api/nodes';
 import { getLocalWorkspace, isLocalFileBridgeAvailable, selectLocalWorkspace } from '@/services/localFile';
 import type {
   ChatStreamMethodCallEvent,
@@ -73,6 +73,7 @@ export default function HomePage() {
   const [projectPanelKey, setProjectPanelKey] = useState(0);
   const [localWorkspaceRoot, setLocalWorkspaceRoot] = useState<string | null>(null);
   const [selectingWorkspace, setSelectingWorkspace] = useState(false);
+  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -596,6 +597,35 @@ export default function HomePage() {
     }
   }, [isDecomposing, nodeId, message, navigate]);
 
+  const handleStartNewConversation = useCallback(async () => {
+    if (isSending || isDecomposing || isCreatingConversation) {
+      return;
+    }
+
+    setIsCreatingConversation(true);
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    clearPendingInvocation();
+
+    try {
+      const created = await createNode({ name: '新对话' });
+      setNodeId(created.id);
+      setMessages(buildDefaultMessages());
+      setInput('');
+      setLivePhase(null);
+      setStreamingText('');
+      setLiveMethodCalls([]);
+      setProjectPanelKey((k) => k + 1);
+      inputRef.current?.focus();
+      message.success('已开启新对话');
+    } catch (err) {
+      console.error('开启新对话失败:', err);
+      message.error(err instanceof Error ? `开启失败: ${err.message}` : '开启新对话失败');
+    } finally {
+      setIsCreatingConversation(false);
+    }
+  }, [clearPendingInvocation, isCreatingConversation, isDecomposing, isSending, message]);
+
   const handleSelectWorkspace = useCallback(async () => {
     if (!localBridgeAvailable || selectingWorkspace) {
       return;
@@ -632,6 +662,8 @@ export default function HomePage() {
         key={projectPanelKey}
         activeNodeId={nodeId}
         onProjectSelect={handleProjectSelect}
+        onNewConversation={() => void handleStartNewConversation()}
+        creatingConversation={isCreatingConversation}
       />
 
       {/* 右侧主内容区 */}
