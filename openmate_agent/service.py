@@ -95,7 +95,10 @@ class AgentCapabilityService:
             build_pipeline=self._build_pipeline,
             execution_orchestrator=self._execution_orchestrator,
         )
-        self._decompose_agent = decompose_agent or DecomposeAgentService(build_pipeline=self._build_pipeline)
+        self._decompose_agent = decompose_agent or DecomposeAgentService(
+            build_pipeline=self._build_pipeline,
+            gateway=self._gateway,
+        )
         self._priority_agent = priority_agent or PriorityAgentService()
 
     def build(self, node_id: str, session_id: str | None = None) -> Build:

@@ -505,7 +505,7 @@ export default function HomePage() {
     try {
       const result = await decomposeNode(nodeId);
       loadingMsg();
-      message.success(`任务树生成成功，包含 ${result.nodes.length} 个子节点`);
+      message.success(`任务树生成成功，包含 ${result.created_nodes.length} 个子节点`);
       navigate(`/workspace/${nodeId}`);
     } catch (err) {
       loadingMsg();

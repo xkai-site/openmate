@@ -230,7 +230,7 @@ export default function WorkspacePage() {
     try {
       const result = await decomposeNode(rootId);
       loadingMsg();
-      message.success(`任务树生成成功，包含 ${result.nodes.length} 个子节点`);
+      message.success(`任务树生成成功，包含 ${result.created_nodes.length} 个子节点`);
       void treeQuery.refetch();
     } catch (err) {
       loadingMsg();

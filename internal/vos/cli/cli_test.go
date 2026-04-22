@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -147,6 +148,223 @@ func TestNodeCreateDefaultsToDefaultTopic(t *testing.T) {
 	}
 }
 
+func TestNodeDecomposeHelpAvailable(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	sessionDBFile := t.TempDir() + "/openmate.db"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(
+		[]string{
+			"--state-file", stateFile,
+			"--session-db-file", sessionDBFile,
+			"node", "decompose", "--help",
+		},
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("node decompose --help code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "vos node decompose") {
+		t.Fatalf("help output = %q, want vos node decompose usage", stderr.String())
+	}
+}
+
+func TestNodeDecomposeCreatesDirectChildren(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	sessionDBFile := t.TempDir() + "/openmate.db"
+	base := []string{"--state-file", stateFile, "--session-db-file", sessionDBFile}
+
+	if code := cli.Run(
+		append(base, "topic", "create", "--topic-id", "topic-1", "--name", "Topic One"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("topic create code = %d, want 0", code)
+	}
+	if code := cli.Run(
+		append(base, "node", "create", "--topic-id", "topic-1", "--node-id", "node-parent", "--name", "Parent Node"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("node create code = %d, want 0", code)
+	}
+	if code := cli.Run(
+		append(base, "session", "create", "--node-id", "node-parent", "--session-id", "session-parent"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("session create code = %d, want 0", code)
+	}
+	if code := cli.Run(
+		append(base, "session", "append-event", "--session-id", "session-parent", "--item-type", "message", "--payload-json", `{"role":"user","content":"split task"}`),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("session append-event code = %d, want 0", code)
+	}
+
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER", "1")
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER_MODE", "success")
+	helperCommand := os.Args[0] + " -test.run TestNodeDecomposeAgentHelper --"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(
+		append(
+			base,
+			"node", "decompose",
+			"--node-id", "node-parent",
+			"--hint", "focus first runnable tasks",
+			"--max-items", "2",
+			"--agent-command", helperCommand,
+		),
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("node decompose code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+
+	var output struct {
+		Status       string        `json:"status"`
+		Tasks        []any         `json:"tasks"`
+		CreatedNodes []domain.Node `json:"created_nodes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("json.Unmarshal(node decompose) error = %v", err)
+	}
+	if output.Status != "succeeded" {
+		t.Fatalf("status = %s, want succeeded", output.Status)
+	}
+	if len(output.Tasks) != 2 {
+		t.Fatalf("len(tasks) = %d, want 2", len(output.Tasks))
+	}
+	if len(output.CreatedNodes) != 2 {
+		t.Fatalf("len(created_nodes) = %d, want 2", len(output.CreatedNodes))
+	}
+	for _, node := range output.CreatedNodes {
+		if node.ParentID == nil || *node.ParentID != "node-parent" {
+			t.Fatalf("created node parent_id = %v, want node-parent", node.ParentID)
+		}
+		if node.Status != domain.NodeStatusReady {
+			t.Fatalf("created node status = %s, want ready", node.Status)
+		}
+	}
+
+	svc := service.New(store.NewJSONStateStore(stateFile))
+	children, err := svc.ListChildren("node-parent")
+	if err != nil {
+		t.Fatalf("ListChildren() error = %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+}
+
+func TestNodeDecomposeReturnsErrorWhenTargetMissing(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	sessionDBFile := t.TempDir() + "/openmate.db"
+	base := []string{"--state-file", stateFile, "--session-db-file", sessionDBFile}
+
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER", "1")
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER_MODE", "success")
+	helperCommand := os.Args[0] + " -test.run TestNodeDecomposeAgentHelper --"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(
+		append(base, "node", "decompose", "--node-id", "missing-node", "--agent-command", helperCommand),
+		&stdout,
+		&stderr,
+	)
+	if code != 2 {
+		t.Fatalf("node decompose missing target code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "node not found") {
+		t.Fatalf("stderr = %q, want node not found", stderr.String())
+	}
+}
+
+func TestNodeDecomposeReturnsErrorWhenAgentFailed(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	sessionDBFile := t.TempDir() + "/openmate.db"
+	base := []string{"--state-file", stateFile, "--session-db-file", sessionDBFile}
+
+	if code := cli.Run(
+		append(base, "topic", "create", "--topic-id", "topic-1", "--name", "Topic One"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("topic create code = %d, want 0", code)
+	}
+	if code := cli.Run(
+		append(base, "node", "create", "--topic-id", "topic-1", "--node-id", "node-parent", "--name", "Parent Node"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("node create code = %d, want 0", code)
+	}
+
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER", "1")
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER_MODE", "failed")
+	helperCommand := os.Args[0] + " -test.run TestNodeDecomposeAgentHelper --"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(
+		append(base, "node", "decompose", "--node-id", "node-parent", "--agent-command", helperCommand),
+		&stdout,
+		&stderr,
+	)
+	if code != 2 {
+		t.Fatalf("node decompose agent failed code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "helper failed") {
+		t.Fatalf("stderr = %q, want helper failed", stderr.String())
+	}
+}
+
+func TestNodeDecomposeReturnsErrorWhenAgentReturnedEmptyTasks(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	sessionDBFile := t.TempDir() + "/openmate.db"
+	base := []string{"--state-file", stateFile, "--session-db-file", sessionDBFile}
+
+	if code := cli.Run(
+		append(base, "topic", "create", "--topic-id", "topic-1", "--name", "Topic One"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("topic create code = %d, want 0", code)
+	}
+	if code := cli.Run(
+		append(base, "node", "create", "--topic-id", "topic-1", "--node-id", "node-parent", "--name", "Parent Node"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("node create code = %d, want 0", code)
+	}
+
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER", "1")
+	t.Setenv("OPENMATE_DECOMPOSE_HELPER_MODE", "empty")
+	helperCommand := os.Args[0] + " -test.run TestNodeDecomposeAgentHelper --"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(
+		append(base, "node", "decompose", "--node-id", "node-parent", "--agent-command", helperCommand),
+		&stdout,
+		&stderr,
+	)
+	if code != 2 {
+		t.Fatalf("node decompose empty tasks code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "empty tasks") {
+		t.Fatalf("stderr = %q, want empty tasks", stderr.String())
+	}
+}
+
 func TestTopicDeleteCommandRemovesTopicTree(t *testing.T) {
 	stateFile := t.TempDir() + "/vos_state.json"
 	base := []string{"--state-file", stateFile}
@@ -220,4 +438,70 @@ func TestInvalidJSONReturnsError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "metadata-json must be a JSON object") {
 		t.Fatalf("stderr = %q, want metadata-json error", stderr.String())
 	}
+}
+
+func TestNodeDecomposeAgentHelper(t *testing.T) {
+	if os.Getenv("OPENMATE_DECOMPOSE_HELPER") != "1" {
+		return
+	}
+
+	requestFile := ""
+	for index := 0; index < len(os.Args)-1; index++ {
+		if os.Args[index] == "--request-file" {
+			requestFile = os.Args[index+1]
+			break
+		}
+	}
+
+	response := map[string]any{
+		"request_id":  "helper-req",
+		"topic_id":    "helper-topic",
+		"node_id":     "helper-node",
+		"duration_ms": 3,
+	}
+	switch os.Getenv("OPENMATE_DECOMPOSE_HELPER_MODE") {
+	case "failed":
+		response["status"] = "failed"
+		response["error"] = "helper failed"
+		response["tasks"] = []any{}
+	case "empty":
+		response["status"] = "succeeded"
+		response["output"] = "helper empty"
+		response["tasks"] = []any{}
+	default:
+		if requestFile != "" {
+			if raw, err := os.ReadFile(requestFile); err == nil {
+				var requestPayload map[string]any
+				if jsonErr := json.Unmarshal(raw, &requestPayload); jsonErr == nil {
+					if value, ok := requestPayload["request_id"].(string); ok && value != "" {
+						response["request_id"] = value
+					}
+					if value, ok := requestPayload["topic_id"].(string); ok && value != "" {
+						response["topic_id"] = value
+					}
+					if value, ok := requestPayload["node_id"].(string); ok && value != "" {
+						response["node_id"] = value
+					}
+				}
+			}
+		}
+		response["status"] = "succeeded"
+		response["output"] = "helper success"
+		response["tasks"] = []map[string]any{
+			{
+				"title":       "Business scope alignment",
+				"description": "Align user value and acceptance.",
+				"status":      "ready",
+			},
+			{
+				"title":       "First delivery slice",
+				"description": "Define first executable child task.",
+				"status":      "pending",
+			},
+		}
+	}
+
+	raw, _ := json.Marshal(response)
+	_, _ = os.Stdout.Write(raw)
+	os.Exit(0)
 }

@@ -144,6 +144,7 @@ func normalizeBusinessEnqueueRequest(request EnqueueRequest) (EnqueueRequest, er
 			),
 		}
 	}
+	request.MarkPriorityDirty = true
 	return request, nil
 }
 

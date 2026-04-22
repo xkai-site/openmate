@@ -550,3 +550,26 @@
 5. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_session_gateway tests.test_service tests.test_pipeline_orchestration -v` 通过（35 项）。
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（67 项）。
+
+## 2026-04-22 DecomposeAgent 模型驱动化（替换模板拆解）
+
+1. `DecomposeAgentService` 从静态模板生成升级为真实模型调用：
+   - 通过 `PoolGateway` 走 Responses 请求
+   - 要求输出严格 JSON `tasks`
+   - 解析失败/空任务均返回 `status=failed`
+2. `DecomposeRequest` 补充可选 `context_snapshot` 字段，用于上游（VOS）显式传入上下文快照。
+3. 拆解提示词收口规则：
+   - 业务域优先拆解，不按技术栈拆解
+   - 仅输出一层可执行子任务
+   - 结构化 JSON 输出
+4. CLI 回归对齐：
+   - `tests/test_cli.py::test_decompose_run` 改为本地假网关 + 临时 `model.json`，验证真实模型调用路径
+5. 新增/更新测试：
+   - `tests/test_service.py`：
+     - 拆解成功
+     - 非法 JSON 失败
+     - 空任务失败
+   - `tests/test_cli.py`：`decompose run` 成功链路
+6. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli -v` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）

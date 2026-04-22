@@ -42,6 +42,7 @@ type Config struct {
 type Server struct {
 	service              *service.Service
 	runtime              *omruntime.Runtime
+	decomposeRunner      service.NodeDecomposeRunner
 	mux                  *http.ServeMux
 	handler              http.Handler
 	stateFile            string
@@ -158,6 +159,7 @@ func NewServer(config Config) (*Server, error) {
 	server := &Server{
 		service:              runtime.Service,
 		runtime:              runtime,
+		decomposeRunner:      service.NewCommandDecomposeRunner(service.DefaultDecomposeAgentCommand()),
 		mux:                  http.NewServeMux(),
 		stateFile:            filepath.Clean(config.StateFile),
 		sessionDB:            filepath.Clean(config.SessionDBFile),
@@ -485,7 +487,7 @@ func (server *Server) handleV1NodeRoutes(writer http.ResponseWriter, request *ht
 			server.writeV1Error(writer, http.StatusNotFound, "not found")
 			return
 		}
-		server.handleV1Unimplemented(writer, request)
+		server.handleV1NodeDecompose(writer, request, nodeID)
 		return
 	}
 
@@ -647,6 +649,39 @@ func (server *Server) handleV1NodeLeaf(writer http.ResponseWriter, request *http
 		"node_id":  nodeID,
 		"operable": operable,
 	})
+}
+
+func (server *Server) handleV1NodeDecompose(writer http.ResponseWriter, request *http.Request, nodeID string) {
+	if request.Method != http.MethodPost {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodPost)
+		return
+	}
+
+	var payload v1NodeDecomposePayload
+	if err := decodeJSON(request.Body, &payload); err != nil {
+		server.writeV1Error(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	hint := ""
+	if payload.Hint != nil {
+		hint = strings.TrimSpace(*payload.Hint)
+	}
+	maxItems := service.DefaultNodeDecomposeMaxItems
+	if payload.MaxItems != nil {
+		maxItems = *payload.MaxItems
+	}
+
+	result, err := server.service.DecomposeNode(request.Context(), service.NodeDecomposeInput{
+		NodeID:   nodeID,
+		Hint:     hint,
+		MaxItems: maxItems,
+	}, server.decomposeRunner)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+	server.writeV1Success(writer, result)
 }
 
 func (server *Server) handleV1TreeEntry(writer http.ResponseWriter, request *http.Request) {
@@ -1119,6 +1154,11 @@ type v1UpdateNodePayload struct {
 	Output           map[string]any `json:"output"`
 	SessionIDs       []string       `json:"session_ids"`
 	Progress         []string       `json:"progress"`
+}
+
+type v1NodeDecomposePayload struct {
+	Hint     *string `json:"hint"`
+	MaxItems *int    `json:"max_items"`
 }
 
 type moveNodePayload struct {

@@ -197,6 +197,68 @@ func TestEngineEnqueueDefaultsBusinessPriority(t *testing.T) {
 	}
 }
 
+func TestEngineEnqueueAlwaysMarksPriorityDirty(t *testing.T) {
+	store := openTestRuntimeStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	vos := &fakeVOSGateway{}
+	worker := &fakeWorkerGateway{}
+	engine, err := NewEngine(
+		store,
+		vos,
+		worker,
+		EngineConfig{
+			MaxDispatchPerTick: 1,
+			DefaultTimeoutMS:   120000,
+			AgingThreshold:     10 * time.Minute,
+		},
+		fixedNow(time.Date(2026, time.April, 14, 9, 0, 0, 0, time.UTC)),
+	)
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	_, err = engine.Enqueue(context.Background(), EnqueueRequest{
+		TopicID:  "topic-1",
+		NodeID:   "node-a",
+		NodeName: "node a",
+		AgentSpec: AgentSpec{
+			Mode: "simulate_success",
+		},
+	})
+	if err != nil {
+		t.Fatalf("first Enqueue() error = %v", err)
+	}
+	if err := store.ClearPriorityDirty("topic-1", nil); err != nil {
+		t.Fatalf("ClearPriorityDirty() error = %v", err)
+	}
+
+	result, err := engine.Enqueue(context.Background(), EnqueueRequest{
+		TopicID:  "topic-1",
+		NodeID:   "node-b",
+		NodeName: "node b",
+		AgentSpec: AgentSpec{
+			Mode: "simulate_success",
+		},
+	})
+	if err != nil {
+		t.Fatalf("second Enqueue() error = %v", err)
+	}
+	if !result.PriorityDirty {
+		t.Fatalf("result.PriorityDirty = false, want true")
+	}
+
+	topic, err := store.GetTopic("topic-1")
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	if !topic.PriorityDirty {
+		t.Fatalf("topic.PriorityDirty = false, want true")
+	}
+}
+
 func TestEngineEnqueueRejectsNonBusinessPriority(t *testing.T) {
 	store := openTestRuntimeStore(t)
 	defer func() {

@@ -384,6 +384,11 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn('"priority_plan"', result.stdout)
 
     def test_decompose_run(self) -> None:
+        server, thread = _start_decompose_gateway_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
+
         request = {
             "request_id": "req-decompose-1",
             "topic_id": "topic-1",
@@ -393,7 +398,28 @@ class AgentCliTests(unittest.TestCase):
             "hint": "focus on backend delivery",
             "max_items": 3,
         }
-        result = self._run("decompose", "run", "--request-json", json.dumps(request))
+        with TemporaryDirectory() as tmp:
+            model_config = Path(tmp, "model.json")
+            model_config.write_text(
+                json.dumps(
+                    {
+                        "global_max_concurrent": 2,
+                        "offline_failure_threshold": 3,
+                        "apis": [
+                            {
+                                "api_id": "api-1",
+                                "model": "gpt-4.1",
+                                "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                                "api_key": "sk-test",
+                                "max_concurrent": 1,
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = self._run("decompose", "run", "--request-json", json.dumps(request), cwd=tmp)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn('"status": "succeeded"', result.stdout)
         self.assertIn('"tasks"', result.stdout)
@@ -527,6 +553,45 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         _ = (format, args)
 
 
+class _DecomposeGatewayHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/v1/responses":
+            self.send_error(404)
+            return
+        _ = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
+        tasks_payload = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "title": "Align business scope",
+                        "description": "Clarify user value and completion signal.",
+                        "status": "ready",
+                    },
+                    {
+                        "title": "Define first delivery slice",
+                        "description": "Pick the first directly executable child task.",
+                        "status": "pending",
+                    },
+                    {
+                        "title": "Set acceptance criteria",
+                        "description": "Document measurable checks for this node.",
+                        "status": "pending",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        )
+        response = json.dumps(_response_payload_for_text(tasks_payload)).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+        _ = (format, args)
+
+
 def _start_echo_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _EchoHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -541,6 +606,13 @@ def _start_gateway_server(*, fail: bool = False) -> tuple[ThreadingHTTPServer, t
         {"fail": fail},
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _start_decompose_gateway_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DecomposeGatewayHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread

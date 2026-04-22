@@ -78,7 +78,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runTopic(svc, rest[1:], stdout, stderr)
 	case "node":
 		svc := service.New(store.NewJSONStateStore(*stateFile))
-		return runNode(svc, rest[1:], stdout, stderr)
+		return runNode(svc, *stateFile, resolvedSessionDBFile, rest[1:], stdout, stderr)
 	case "session":
 		sessionStore, err := store.NewSQLiteSessionStore(resolvedSessionDBFile)
 		if err != nil {
@@ -129,7 +129,7 @@ func runTopic(svc *service.Service, args []string, stdout, stderr io.Writer) int
 	}
 }
 
-func runNode(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+func runNode(svc *service.Service, stateFile string, sessionDBFile string, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpToken(args[0]) {
 		printNodeUsage(stderr)
 		if len(args) > 0 {
@@ -155,6 +155,8 @@ func runNode(svc *service.Service, args []string, stdout, stderr io.Writer) int 
 		return runNodeUpdate(svc, args[1:], stdout, stderr)
 	case "leaf":
 		return runNodeLeaf(svc, args[1:], stdout, stderr)
+	case "decompose":
+		return runNodeDecompose(svc, stateFile, sessionDBFile, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown node command: %s\n", args[0])
 		printNodeUsage(stderr)
@@ -622,7 +624,7 @@ func printTopicUsage(writer io.Writer) {
 
 func printNodeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
-	fmt.Fprintln(writer, "  vos node <create|get|list|children|move|delete|update|leaf> [flags]")
+	fmt.Fprintln(writer, "  vos node <create|get|list|children|move|delete|update|leaf|decompose> [flags]")
 }
 
 func parseFlagSet(fs *flag.FlagSet, args []string) int {

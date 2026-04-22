@@ -83,6 +83,7 @@ class DecomposeRequest(BaseModel):
     hint: str | None = None
     max_items: int = Field(default=3, ge=1, le=20)
     session_id: str | None = None
+    context_snapshot: dict[str, Any] | None = None
 
 
 class DecomposeResponse(BaseModel):
