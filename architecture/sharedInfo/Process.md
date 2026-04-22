@@ -1,5 +1,15 @@
 # SharedInfo Process
 
+## 2026-04-22 master 初始化（不跑测试）
+
+1. 已确认当前工作分支为 `master`，并保持在 `master` 上继续开发。
+2. 按当前协作约束，分支维持现状，仅保留 `master` 与 `frontend`，本次不新增 `vos/schedule/pool/agent` 分支。
+3. 已完成初始化前置检查与契约读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+4. 按本次指令不执行单元测试与冒烟测试，本次仅完成初始化沉淀。
+
 ## 2026-04-21 master 初始化基线
 
 1. 已确认当前工作分支为 `master`，并完成仓库结构与当前状态检查。
@@ -100,6 +110,52 @@
 2. 该调整用于支持首页侧边栏“Topic roots + default 会话 roots”统一展示。
 3. 实现由服务层 `ListDisplayRootNodes()` 承担，采用单次状态加载与内存筛选，减少重复 I/O。
 4. 回归结果：`go test ./...` 通过。
+
+## 2026-04-22 Agent 拆解落盘 + Schedule 脏化默认值对齐（CLI 优先）
+
+1. `agent`：
+   - `DecomposeAgentService` 改为真实模型驱动，不再走静态模板。
+   - 输出要求为结构化 JSON `tasks`，解析失败/空任务返回 `status=failed`。
+   - `DecomposeRequest` 新增可选 `context_snapshot` 透传字段。
+2. `vos`：
+   - 新增 `vos node decompose`（CLI-only）：
+     - `--node-id`（必填）
+     - `--hint`、`--max-items`、`--agent-command`（可选）
+   - 执行链路：读取节点与 context snapshot -> 调 agent decompose run -> 创建直接子节点（默认 `ready`）。
+   - 输出：`DecomposeResponse + created_nodes[]`。
+   - HTTP `/api/v1/nodes/{id}/decompose` 继续保持 `501`，本轮未改。
+3. `schedule`：
+   - 业务节点 enqueue 标准化阶段强制 `MarkPriorityDirty=true`，避免同 Topic 新节点入队后不触发重排。
+4. 回归结果：
+   - Go：`go test ./internal/vos/cli ./internal/schedule` 通过
+   - Go：`go test ./...` 通过
+   - Python：`.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）
+   - 帮助冒烟通过：
+     - `python -m openmate_agent.cli --help`
+     - `python -m openmate_agent.cli decompose run --help`
+     - `python -m openmate_agent.cli priority run --help`
+     - `go run ./cmd/openmate-schedule --help`
+     - `go run ./cmd/vos --help`
+
+## 2026-04-22 VOS Decompose HTTP 落地与前端契约对齐
+
+1. VOS `node decompose` 已从 CLI-only 扩展到 HTTP：
+   - 新增 `POST /api/v1/nodes/{id}/decompose`
+   - 请求：`hint?`、`max_items?`
+   - 响应：沿用 `{code,message,data}` envelope，`data` 为后端 `decompose` 输出（含 `tasks`、`created_nodes`）
+2. 复用层收敛：
+   - 新增服务层 `Service.DecomposeNode(...)`
+   - CLI 与 HTTP 共用同一核心链路与错误语义
+   - 新增可注入 `NodeDecomposeRunner`，便于 HTTP/Service 单测替换执行器
+3. 前端契约以当前后端为准（不做旧字段双兼容）：
+   - `frontend/src/types/models.ts` 中 `NodeDecomposeRequest/Response` 已切到新结构
+   - Home/Workspace 的“生成任务树”成功提示改为 `created_nodes.length`
+4. 未实现接口 `501` 保持在 `/api/v1/tree/generate` 等路径；`/nodes/{id}/decompose` 不再属于未实现列表。
+5. 回归结果：
+   - `go test ./internal/vos/httpapi ./internal/vos/cli ./internal/vos/service` 通过
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）
+   - `frontend npm run build` 通过
 
 ## 2026-04-22 Chat 长输出超时策略修复（后端）
 

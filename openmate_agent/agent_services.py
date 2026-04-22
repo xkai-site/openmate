@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
+from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
+
+from .interfaces import LlmGateway
 from .models import (
     Build,
     DecomposeRequest,
@@ -149,14 +154,28 @@ class ExecutionAgentService:
 
 
 class DecomposeAgentService:
-    def __init__(self, *, build_pipeline: BuildPipeline) -> None:
+    def __init__(self, *, build_pipeline: BuildPipeline, gateway: LlmGateway) -> None:
         self._build_pipeline = build_pipeline
+        self._gateway = gateway
 
     def run(self, request: DecomposeRequest) -> DecomposeResponse:
         started = time.perf_counter()
         try:
-            _ = self._build_pipeline.build(request.node_id)
-            tasks = self._build_tasks(request)
+            agent_input = self._build_pipeline.build(request.node_id)
+            prompt = self._build_decompose_prompt(request=request, context_payload=agent_input.context.payload)
+            model_response = self._gateway.invoke(
+                InvokeRequest(
+                    request_id=request.request_id or str(uuid4()),
+                    node_id=request.node_id,
+                    request=OpenAIResponsesRequest(
+                        input=self._build_initial_input(prompt),
+                        temperature=0.2,
+                        text={"format": {"type": "json_object"}},
+                    ),
+                )
+            )
+            raw_output = self._extract_response_text(model_response)
+            tasks = self._parse_tasks_from_output(raw_output=raw_output, max_items=request.max_items)
             return DecomposeResponse(
                 request_id=request.request_id,
                 topic_id=request.topic_id,
@@ -177,25 +196,138 @@ class DecomposeAgentService:
             )
 
     @staticmethod
-    def _build_tasks(request: DecomposeRequest) -> list[DecomposeTask]:
-        hint = (request.hint or "").strip()
-        base = request.node_name.strip()
-        templates = [
-            ("Clarify objective", f"Refine scope and expected outcome for {base}."),
-            ("Split into executable nodes", f"Break {base} into independent node-sized tasks."),
-            ("Define acceptance checks", "Write measurable completion criteria and dependencies."),
-            ("Prepare execution order", "Set initial order and identify first runnable nodes."),
-            ("Review risk and rollback", "List key risks, mitigations, and fallback actions."),
-        ]
-        if hint:
-            templates[0] = ("Clarify objective", f"Refine scope with hint: {hint}")
-        max_items = min(request.max_items, len(templates))
+    def _build_initial_input(prompt: str) -> list[dict[str, str]]:
+        return [{"role": "user", "content": prompt}]
+
+    @staticmethod
+    def _build_decompose_prompt(*, request: DecomposeRequest, context_payload: str) -> str:
+        context_json = context_payload.strip() if context_payload and context_payload.strip() else "{}"
+        external_context = json.dumps(request.context_snapshot or {}, ensure_ascii=False)
+        user_hint = (request.hint or "").strip()
+        return (
+            "You are OpenMate Decompose Agent.\n"
+            "Goal: produce one-level executable child tasks for the target node.\n"
+            "Hard rules:\n"
+            "1) Decompose by business/domain outcomes first, not by technical stack.\n"
+            "2) Keep one-level granularity only; do not create nested subtasks.\n"
+            "3) Tasks must be directly executable and independently trackable.\n"
+            "4) Return strict JSON only.\n\n"
+            f"request_id={request.request_id}\n"
+            f"topic_id={request.topic_id}\n"
+            f"node_id={request.node_id}\n"
+            f"node_name={request.node_name}\n"
+            f"max_items={request.max_items}\n"
+            f"user_hint={user_hint}\n"
+            f"context_snapshot_json={context_json}\n"
+            f"external_context_snapshot_json={external_context}\n\n"
+            "Return JSON schema:\n"
+            "{\n"
+            '  "tasks": [\n'
+            '    {"title": "string", "description": "string", "status": "ready|pending"}\n'
+            "  ]\n"
+            "}\n"
+        )
+
+    @staticmethod
+    def _extract_response_text(response: Any) -> str:
+        if response is None:
+            raise ValueError("decompose model returned empty response")
+        status_value = getattr(response, "status", "")
+        status_text = str(getattr(status_value, "value", status_value)).lower()
+        if status_text == "failure":
+            error = getattr(response, "error", None)
+            if error is not None:
+                message = getattr(error, "message", "") or str(error)
+                raise ValueError(f"decompose model invocation failed: {message}")
+            raise ValueError("decompose model invocation failed")
+
+        output_text = getattr(response, "output_text", None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        response_payload = getattr(response, "response", None)
+        output_items = getattr(response_payload, "output", None)
+        if not isinstance(output_items, list):
+            raise ValueError("decompose model returned empty output")
+
+        fragments: list[str] = []
+        for item in output_items:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for content_item in content:
+                if not isinstance(content_item, dict):
+                    continue
+                if content_item.get("type") not in {"output_text", "text"}:
+                    continue
+                text = content_item.get("text")
+                if isinstance(text, str) and text.strip():
+                    fragments.append(text)
+        if not fragments:
+            raise ValueError("decompose model returned empty output")
+        return "".join(fragments).strip()
+
+    @staticmethod
+    def _parse_tasks_from_output(*, raw_output: str, max_items: int) -> list[DecomposeTask]:
+        candidates = [raw_output.strip()]
+        stripped_fence = DecomposeAgentService._strip_code_fence(raw_output)
+        if stripped_fence != candidates[0]:
+            candidates.append(stripped_fence)
+
+        payload: Any = None
+        parse_errors: list[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                payload = json.loads(candidate)
+                break
+            except json.JSONDecodeError as exc:
+                parse_errors.append(str(exc))
+        if payload is None:
+            raise ValueError(f"decompose output is not valid JSON: {'; '.join(parse_errors) or 'empty output'}")
+
+        tasks_raw: Any
+        if isinstance(payload, dict):
+            tasks_raw = payload.get("tasks")
+        elif isinstance(payload, list):
+            tasks_raw = payload
+        else:
+            raise ValueError("decompose output JSON must be an object or task array")
+        if not isinstance(tasks_raw, list):
+            raise ValueError("decompose output tasks must be a JSON array")
+
         tasks: list[DecomposeTask] = []
-        for index in range(max_items):
-            title, description = templates[index]
-            status = "ready" if index == 0 else "pending"
+        for entry in tasks_raw:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title", "")).strip()
+            if not title:
+                continue
+            description = str(entry.get("description", "")).strip()
+            status_raw = str(entry.get("status", "pending")).strip().lower()
+            status = "ready" if status_raw == "ready" else "pending"
             tasks.append(DecomposeTask(title=title, description=description, status=status))
-        return tasks
+
+        if len(tasks) == 0:
+            raise ValueError("decompose output contains no valid tasks")
+        return tasks[:max_items]
+
+    @staticmethod
+    def _strip_code_fence(raw_output: str) -> str:
+        text = raw_output.strip()
+        if not text.startswith("```"):
+            return text
+        lines = text.splitlines()
+        if len(lines) <= 1:
+            return text
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
 
 
 class PriorityAgentService:

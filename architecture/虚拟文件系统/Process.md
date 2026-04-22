@@ -370,3 +370,50 @@
 5. 回归结果：
    - `go test ./internal/vos/service ./internal/vos/httpapi` 通过
    - `go test ./...` 通过
+
+## 2026-04-22 Node Decompose CLI 落地（CLI-only）
+
+1. 新增 `vos node decompose` 命令（保持 CLI-only，对外 HTTP `/api/v1/nodes/{id}/decompose` 继续 `501` 不变）。
+2. 新命令参数：
+   - 必填：`--node-id`
+   - 可选：`--hint`、`--max-items`、`--agent-command`
+3. 运行链路收口：
+   - 读取目标节点与 `context snapshot`
+   - 调用 `openmate_agent.cli decompose run`（JSON in/out）
+   - 将返回任务作为目标节点的直接子节点落盘（仅一层挂载）
+   - 新建子节点默认状态统一为 `ready`
+4. 输出结构扩展为：`DecomposeResponse + created_nodes[]`，用于 CLI 调用方直接拿到落盘结果。
+5. 新增/更新测试：
+   - `internal/vos/cli/cli_test.go`
+   - 覆盖 `--help`、成功创建子节点、目标节点不存在、Agent 失败、空任务返回。
+6. 回归结果：
+   - `go test ./internal/vos/cli ./internal/schedule` 通过
+   - `go test ./...` 通过
+
+## 2026-04-22 HTTP 挂载 Node Decompose + 前端契约切换（以后端为准）
+
+1. 新增 `/api/v1/nodes/{id}/decompose` 实现，不再返回 `501`：
+   - 路由：`POST /api/v1/nodes/{id}/decompose`
+   - 请求体：`hint?`、`max_items?`（默认与 CLI 一致为 `5`）
+   - 响应保持 v1 envelope，`data` 返回 `request_id/topic_id/node_id/status/output/error/duration_ms/tasks/created_nodes`
+2. 抽取并复用 decompose 核心到服务层：
+   - 新增 `Service.DecomposeNode(...)`
+   - 新增可注入执行器 `NodeDecomposeRunner`
+   - CLI 与 HTTP 共用同一落盘逻辑（读取 node + context snapshot，调用 agent，创建直接子节点，默认 `ready`）
+3. CLI `vos node decompose` 保持用户语义不变：
+   - 仍支持 `--node-id/--hint/--max-items/--agent-command`
+   - 改为调用服务层复用实现
+4. HTTP 回归测试补齐：
+   - 成功链路：返回新契约并实际创建子节点
+   - 节点不存在：`404`
+   - agent 失败与空任务：用户可见错误（`400`）
+5. 仍未实现接口保持 `501`，测试改为断言 `/api/v1/tree/generate`。
+6. 前端契约切换完成：
+   - `NodeDecomposeRequest`：`hint?`、`max_items?`
+   - `NodeDecomposeResponse`：改为后端当前结构（`tasks + created_nodes`）
+   - Home/Workspace 成功提示改为 `created_nodes.length`
+7. 验证结果：
+   - `go test ./internal/vos/httpapi ./internal/vos/cli ./internal/vos/service` 通过
+   - `go test ./...` 通过
+   - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）
+   - `frontend npm run build` 通过

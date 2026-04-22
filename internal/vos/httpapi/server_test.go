@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"vos/internal/poolgateway"
+	"vos/internal/vos/domain"
 	"vos/internal/vos/service"
 )
 
@@ -187,6 +188,185 @@ func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 	}
 }
 
+func TestServerV1NodeDecomposeCreatesChildren(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	if _, _, err := server.service.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-decompose",
+		Name:    "Decompose Topic",
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	parentNode, err := server.service.CreateNode(service.CreateNodeInput{
+		TopicID: "topic-decompose",
+		NodeID:  "node-parent",
+		Name:    "Parent Node",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	gotRequest := service.DecomposeAgentRequest{}
+	server.decomposeRunner = service.NodeDecomposeRunnerFunc(func(ctx context.Context, request service.DecomposeAgentRequest) (*service.DecomposeAgentResponse, error) {
+		gotRequest = request
+		return &service.DecomposeAgentResponse{
+			RequestID:  request.RequestID,
+			TopicID:    request.TopicID,
+			NodeID:     request.NodeID,
+			Status:     "succeeded",
+			Output:     "ok",
+			DurationMS: 7,
+			Tasks: []service.DecomposeAgentTask{
+				{
+					Title:       "Task A",
+					Description: "first child",
+					Status:      "ready",
+				},
+				{
+					Title:       "Task B",
+					Description: "second child",
+					Status:      "ready",
+				},
+			},
+		}, nil
+	})
+
+	envelope := mustRequestEnvelope(t, testServer.Client(), http.MethodPost, testServer.URL+"/api/v1/nodes/"+parentNode.ID+"/decompose", map[string]any{
+		"hint":      "focus MVP",
+		"max_items": 2,
+	}, http.StatusOK)
+
+	var result service.NodeDecomposeResult
+	mustDecodeEnvelopeData(t, envelope, &result)
+	if result.Status != "succeeded" {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if len(result.Tasks) != 2 {
+		t.Fatalf("len(tasks) = %d, want 2", len(result.Tasks))
+	}
+	if len(result.CreatedNodes) != 2 {
+		t.Fatalf("len(created_nodes) = %d, want 2", len(result.CreatedNodes))
+	}
+	for _, created := range result.CreatedNodes {
+		if created.ParentID == nil || *created.ParentID != parentNode.ID {
+			t.Fatalf("created node parent_id = %v, want %s", created.ParentID, parentNode.ID)
+		}
+		if created.Status != domain.NodeStatusReady {
+			t.Fatalf("created node status = %s, want ready", created.Status)
+		}
+	}
+
+	if gotRequest.NodeID != parentNode.ID {
+		t.Fatalf("runner request node_id = %q, want %q", gotRequest.NodeID, parentNode.ID)
+	}
+	if gotRequest.MaxItems != 2 {
+		t.Fatalf("runner request max_items = %d, want 2", gotRequest.MaxItems)
+	}
+	if !strings.Contains(gotRequest.Hint, "focus MVP") {
+		t.Fatalf("runner request hint = %q, want contains user hint", gotRequest.Hint)
+	}
+
+	children, err := server.service.ListChildren(parentNode.ID)
+	if err != nil {
+		t.Fatalf("ListChildren() error = %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+}
+
+func TestServerV1NodeDecomposeReturnsNotFoundWhenNodeMissing(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	envelope := mustRequestEnvelope(t, testServer.Client(), http.MethodPost, testServer.URL+"/api/v1/nodes/missing-node/decompose", map[string]any{}, http.StatusNotFound)
+	if envelope.Code != http.StatusNotFound {
+		t.Fatalf("code = %d, want %d", envelope.Code, http.StatusNotFound)
+	}
+	if !strings.Contains(envelope.Message, "node not found") {
+		t.Fatalf("message = %q, want node not found", envelope.Message)
+	}
+}
+
+func TestServerV1NodeDecomposeReturnsUserFacingErrors(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	if _, _, err := server.service.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-decompose-errors",
+		Name:    "Decompose Topic Errors",
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	parentNode, err := server.service.CreateNode(service.CreateNodeInput{
+		TopicID: "topic-decompose-errors",
+		NodeID:  "node-parent-errors",
+		Name:    "Parent Node",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	testCases := []struct {
+		name        string
+		runner      service.NodeDecomposeRunner
+		wantStatus  int
+		wantMessage string
+	}{
+		{
+			name: "agent failed",
+			runner: service.NodeDecomposeRunnerFunc(func(ctx context.Context, request service.DecomposeAgentRequest) (*service.DecomposeAgentResponse, error) {
+				return &service.DecomposeAgentResponse{
+					RequestID: request.RequestID,
+					TopicID:   request.TopicID,
+					NodeID:    request.NodeID,
+					Status:    "failed",
+					Error:     "agent failed",
+				}, nil
+			}),
+			wantStatus:  http.StatusBadRequest,
+			wantMessage: "agent failed",
+		},
+		{
+			name: "agent empty tasks",
+			runner: service.NodeDecomposeRunnerFunc(func(ctx context.Context, request service.DecomposeAgentRequest) (*service.DecomposeAgentResponse, error) {
+				return &service.DecomposeAgentResponse{
+					RequestID: request.RequestID,
+					TopicID:   request.TopicID,
+					NodeID:    request.NodeID,
+					Status:    "succeeded",
+					Tasks:     []service.DecomposeAgentTask{},
+				}, nil
+			}),
+			wantStatus:  http.StatusBadRequest,
+			wantMessage: "empty tasks",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server.decomposeRunner = testCase.runner
+			envelope := mustRequestEnvelope(t, testServer.Client(), http.MethodPost, testServer.URL+"/api/v1/nodes/"+parentNode.ID+"/decompose", map[string]any{}, testCase.wantStatus)
+			if envelope.Code != testCase.wantStatus {
+				t.Fatalf("code = %d, want %d", envelope.Code, testCase.wantStatus)
+			}
+			if !strings.Contains(envelope.Message, testCase.wantMessage) {
+				t.Fatalf("message = %q, want contains %q", envelope.Message, testCase.wantMessage)
+			}
+		})
+	}
+}
+
 func TestServerV1ReturnsValidationError(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {
@@ -212,7 +392,7 @@ func TestServerV1UnimplementedEndpoint(t *testing.T) {
 		testServer.Close()
 	}()
 
-	response := mustRequestEnvelope(t, testServer.Client(), http.MethodGet, testServer.URL+"/api/v1/planlist", nil, http.StatusNotImplemented)
+	response := mustRequestEnvelope(t, testServer.Client(), http.MethodPost, testServer.URL+"/api/v1/tree/generate", map[string]any{"demand": "build app"}, http.StatusNotImplemented)
 	if response.Code != http.StatusNotImplemented {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNotImplemented)
 	}

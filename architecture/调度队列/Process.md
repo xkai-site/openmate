@@ -181,3 +181,15 @@
 4. 回归结果：
    - `go test ./internal/schedule/...` 通过
    - `go test ./...` 通过
+
+## 2026-04-22 入队默认脏化收口（priority_dirty）
+
+1. 在 `Engine.Enqueue` 的业务节点标准化阶段，强制收口 `MarkPriorityDirty=true`。
+2. 行为目的：避免“同 Topic 新节点进入二级队列但未触发 PriorityAgent 重排”的漏触发。
+3. 保持优先级分配单一出口不变：`priority_plan -> runtime store` 回写。
+4. 新增测试：
+   - `internal/schedule/engine_test.go::TestEngineEnqueueAlwaysMarksPriorityDirty`
+   - 覆盖“topic 已清脏后再次 enqueue 会重新置脏”。
+5. 回归结果：
+   - `go test ./internal/schedule` 通过
+   - `go test ./...` 通过

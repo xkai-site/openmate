@@ -199,14 +199,44 @@ export interface TreeGenerateResponse {
 }
 
 export interface NodeDecomposeRequest {
-  tree_name?: string;
+  hint?: string;
+  max_items?: number;
+}
+
+export interface DecomposeTask {
+  title: string;
+  description: string;
+  status: string;
+}
+
+export interface DecomposeCreatedNode {
+  id: string;
+  topic_id: string;
+  name: string;
+  description?: string | null;
+  parent_id?: string | null;
+  children_ids: string[];
+  session: string[];
+  memory?: Record<string, unknown> | null;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  progress: string[];
+  status: CommonStatus;
+  version: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface NodeDecomposeResponse {
-  root_node_id: string;
-  nodes: TreeNodeInfo[];
-  planlist_context: string;
-  analysis: string;
+  request_id: string;
+  topic_id: string;
+  node_id: string;
+  status: string;
+  output?: string;
+  error?: string;
+  duration_ms: number;
+  tasks: DecomposeTask[];
+  created_nodes: DecomposeCreatedNode[];
 }
 
 export interface HealthResponse {

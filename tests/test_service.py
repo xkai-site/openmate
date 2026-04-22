@@ -144,7 +144,8 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertFalse(result)
 
     def test_decompose_agent_returns_tasks(self) -> None:
-        response = self.service.decompose_agent(
+        service = AgentCapabilityService(gateway=_DecomposeGateway())
+        response = service.decompose_agent(
             DecomposeRequest(
                 request_id="req-decompose-service-1",
                 topic_id="topic-1",
@@ -156,6 +157,37 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         )
         self.assertEqual(response.status, "succeeded")
         self.assertEqual(len(response.tasks), 2)
+        self.assertEqual(response.tasks[0].status, "ready")
+
+    def test_decompose_agent_returns_failed_on_invalid_json_output(self) -> None:
+        service = AgentCapabilityService(gateway=_BadDecomposeGateway())
+        response = service.decompose_agent(
+            DecomposeRequest(
+                request_id="req-decompose-service-invalid",
+                topic_id="topic-1",
+                node_id="node-1",
+                node_name="Invalid decompose output",
+                mode="decompose",
+                max_items=3,
+            )
+        )
+        self.assertEqual(response.status, "failed")
+        self.assertIn("not valid JSON", response.error or "")
+
+    def test_decompose_agent_returns_failed_on_empty_tasks(self) -> None:
+        service = AgentCapabilityService(gateway=_EmptyDecomposeGateway())
+        response = service.decompose_agent(
+            DecomposeRequest(
+                request_id="req-decompose-service-empty",
+                topic_id="topic-1",
+                node_id="node-1",
+                node_name="Empty decompose output",
+                mode="decompose",
+                max_items=3,
+            )
+        )
+        self.assertEqual(response.status, "failed")
+        self.assertIn("no valid tasks", response.error or "")
 
     def test_priority_agent_returns_plan(self) -> None:
         response = self.service.priority_agent(
@@ -629,6 +661,83 @@ class _ToolLoopThenFailGateway:
                 timing=InvocationTiming(),
             )
         raise RuntimeError("gateway temporary failure")
+
+
+class _DecomposeGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        payload = _response_payload_for_text(
+            json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "title": "Clarify scope and constraints",
+                            "description": "Pin down business outcome and success metrics.",
+                            "status": "ready",
+                        },
+                        {
+                            "title": "Prepare first executable slice",
+                            "description": "Define the first direct child node to run.",
+                            "status": "pending",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=OpenAIResponsesResponse.model_validate(payload),
+            output_text=json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "title": "Clarify scope and constraints",
+                            "description": "Pin down business outcome and success metrics.",
+                            "status": "ready",
+                        },
+                        {
+                            "title": "Prepare first executable slice",
+                            "description": "Define the first direct child node to run.",
+                            "status": "pending",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            timing=InvocationTiming(),
+        )
+
+
+class _BadDecomposeGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=None,
+            output_text="not-json-output",
+            timing=InvocationTiming(),
+        )
+
+
+class _EmptyDecomposeGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=None,
+            output_text=json.dumps({"tasks": []}, ensure_ascii=False),
+            timing=InvocationTiming(),
+        )
 
 
 class _FakeGateway:
