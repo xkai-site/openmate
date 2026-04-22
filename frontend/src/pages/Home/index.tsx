@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
 import { decomposeNode } from '@/services/api/tree';
+import { getNodeSession } from '@/services/api/nodes';
 import { getLocalWorkspace, isLocalFileBridgeAvailable, selectLocalWorkspace } from '@/services/localFile';
 import type {
   ChatStreamMethodCallEvent,
@@ -15,6 +16,7 @@ import type {
   SessionMessage,
   MethodTrace,
   StreamPhase,
+  RootNodeSummary,
 } from '@/types/models';
 import ProjectPanel from './components/ProjectPanel';
 
@@ -30,6 +32,18 @@ const FEATURE_TAGS = [
   { icon: <ExperimentOutlined />, label: 'Think', color: '#bf5af2' },
   { icon: <ThunderboltOutlined />, label: 'Fast', color: '#34c759' },
 ];
+
+const DEFAULT_ASSISTANT_MESSAGE =
+  '你好！我是 AITree，你的智能协作伙伴。\n\n你可以先跟我聊聊你的想法或项目背景，当你觉得想法足够清晰时，点击「生成任务树」，我会将我们的对话转化为一棵可执行的任务树。';
+
+function buildDefaultMessages(): ChatBubble[] {
+  return [
+    {
+      role: 'assistant',
+      content: DEFAULT_ASSISTANT_MESSAGE,
+    },
+  ];
+}
 
 function buildSummaryFromResult(result: ChatResultResponse): ChatStreamSummaryEvent {
   return {
@@ -48,12 +62,7 @@ function buildSummaryFromResult(result: ChatResultResponse): ChatStreamSummaryEv
 }
 
 export default function HomePage() {
-  const [messages, setMessages] = useState<ChatBubble[]>([
-    {
-      role: 'assistant',
-      content: '你好！我是 AITree，你的智能协作伙伴。\n\n你可以先跟我聊聊你的想法或项目背景，当你觉得想法足够清晰时，点击「生成任务树」，我会将我们的对话转化为一棵可执行的任务树。',
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatBubble[]>(() => buildDefaultMessages());
   const [input, setInput] = useState('');
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
@@ -513,6 +522,54 @@ export default function HomePage() {
     }
   }, [clearPendingInvocation, input, isSending, messages, nodeId, message, savePendingInvocation]);
 
+  const buildMessagesFromSession = useCallback((sessionHistory: SessionMessage[]): ChatBubble[] => {
+    const historyMessages: ChatBubble[] = sessionHistory
+      .map((item) => {
+        if (item.role === 'user') {
+          return { role: 'user', content: item.content };
+        }
+        if (item.role === 'assistant') {
+          return { role: 'assistant', content: item.content };
+        }
+        return null;
+      })
+      .filter((item): item is ChatBubble => item !== null);
+
+    if (historyMessages.length === 0) {
+      return buildDefaultMessages();
+    }
+    return [...buildDefaultMessages(), ...historyMessages];
+  }, []);
+
+  const handleProjectSelect = useCallback(async (project: RootNodeSummary) => {
+    if (project.children_count > 0) {
+      navigate(`/workspace/${project.id}`);
+      return;
+    }
+    if (isSending) {
+      message.info('当前会话正在响应，请稍候再切换');
+      return;
+    }
+
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    clearPendingInvocation();
+    setNodeId(project.id);
+    setInput('');
+    setLivePhase(null);
+    setStreamingText('');
+    setLiveMethodCalls([]);
+
+    try {
+      const sessionHistory = await getNodeSession(project.id);
+      setMessages(buildMessagesFromSession(sessionHistory));
+    } catch (err) {
+      console.error('加载会话历史失败:', err);
+      setMessages(buildDefaultMessages());
+      message.error('加载会话历史失败，请重试');
+    }
+  }, [buildMessagesFromSession, clearPendingInvocation, isSending, message, navigate]);
+
   const handleDecompose = useCallback(async () => {
     if (isDecomposing) return;
 
@@ -571,7 +628,11 @@ export default function HomePage() {
   return (
     <div className="home-root">
       {/* 左侧项目管理面板 */}
-      <ProjectPanel key={projectPanelKey} />
+      <ProjectPanel
+        key={projectPanelKey}
+        activeNodeId={nodeId}
+        onProjectSelect={handleProjectSelect}
+      />
 
       {/* 右侧主内容区 */}
       <div className="home-main">

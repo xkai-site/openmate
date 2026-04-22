@@ -119,32 +119,46 @@ func TestTopicAndNodeFlow(t *testing.T) {
 	}
 }
 
-func TestNodeCreateDefaultsToDefaultTopic(t *testing.T) {
+func TestNodeCreateWithoutTopicCreatesIndependentTopic(t *testing.T) {
 	stateFile := t.TempDir() + "/vos_state.json"
 	base := []string{"--state-file", stateFile}
 
-	var stdout bytes.Buffer
+	var firstStdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := cli.Run(append(base, "node", "create", "--name", "Quick Node"), &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("node create code = %d, want 0, stderr=%q", code, stderr.String())
+	if code := cli.Run(append(base, "node", "create", "--name", "Quick Node A"), &firstStdout, &stderr); code != 0 {
+		t.Fatalf("first node create code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+	var secondStdout bytes.Buffer
+	if code := cli.Run(append(base, "node", "create", "--name", "Quick Node B"), &secondStdout, &stderr); code != 0 {
+		t.Fatalf("second node create code = %d, want 0, stderr=%q", code, stderr.String())
 	}
 
-	createdNode := domain.Node{}
-	if err := json.Unmarshal(stdout.Bytes(), &createdNode); err != nil {
-		t.Fatalf("json.Unmarshal(node create) error = %v", err)
+	firstNode := domain.Node{}
+	if err := json.Unmarshal(firstStdout.Bytes(), &firstNode); err != nil {
+		t.Fatalf("json.Unmarshal(first node create) error = %v", err)
 	}
-	if createdNode.TopicID != service.DefaultTopicID {
-		t.Fatalf("node topic_id = %q, want %q", createdNode.TopicID, service.DefaultTopicID)
+	secondNode := domain.Node{}
+	if err := json.Unmarshal(secondStdout.Bytes(), &secondNode); err != nil {
+		t.Fatalf("json.Unmarshal(second node create) error = %v", err)
+	}
+	if firstNode.TopicID == secondNode.TopicID {
+		t.Fatalf("topic IDs should differ, got %q", firstNode.TopicID)
 	}
 
 	svc := service.New(store.NewJSONStateStore(stateFile))
-	defaultTopic, err := svc.GetTopic(service.DefaultTopicID)
+	firstTopic, err := svc.GetTopic(firstNode.TopicID)
 	if err != nil {
-		t.Fatalf("GetTopic(default) error = %v", err)
+		t.Fatalf("GetTopic(first) error = %v", err)
 	}
-	if createdNode.ParentID == nil || *createdNode.ParentID != defaultTopic.RootNodeID {
-		t.Fatalf("node parent_id = %v, want %s", createdNode.ParentID, defaultTopic.RootNodeID)
+	secondTopic, err := svc.GetTopic(secondNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(second) error = %v", err)
+	}
+	if firstNode.ParentID == nil || *firstNode.ParentID != firstTopic.RootNodeID {
+		t.Fatalf("first node parent_id = %v, want %s", firstNode.ParentID, firstTopic.RootNodeID)
+	}
+	if secondNode.ParentID == nil || *secondNode.ParentID != secondTopic.RootNodeID {
+		t.Fatalf("second node parent_id = %v, want %s", secondNode.ParentID, secondTopic.RootNodeID)
 	}
 }
 

@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Spin, Dropdown, Modal, message } from 'antd';
 import type { MenuProps } from 'antd';
 import { FolderOutlined, ReloadOutlined, MoreOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -47,13 +46,14 @@ const STATUS_OPTIONS = [
 
 interface ProjectItemProps {
   project: RootNodeSummary;
-  onClick: (id: string) => void;
+  active: boolean;
+  onClick: (project: RootNodeSummary) => void;
   onDeleted: (id: string) => void;
   onRenamed: (id: string, newName: string) => void;
   onStatusChanged: (id: string, newStatus: string) => void;
 }
 
-function ProjectItem({ project, onClick, onDeleted, onRenamed, onStatusChanged }: ProjectItemProps) {
+function ProjectItem({ project, active, onClick, onDeleted, onRenamed, onStatusChanged }: ProjectItemProps) {
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(project.name || '');
@@ -183,9 +183,9 @@ function ProjectItem({ project, onClick, onDeleted, onRenamed, onStatusChanged }
 
   return (
     <div
-      className={`project-item ${editing ? 'editing' : ''}`}
+      className={`project-item ${editing ? 'editing' : ''} ${active ? 'active' : ''}`}
       style={{ borderLeftColor: hovered ? getStatusColor(project.status) : 'transparent' }}
-      onClick={() => !editing && onClick(project.id)}
+      onClick={() => !editing && onClick(project)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -249,8 +249,12 @@ function ProjectItem({ project, onClick, onDeleted, onRenamed, onStatusChanged }
   );
 }
 
-export default function ProjectPanel() {
-  const navigate = useNavigate();
+interface ProjectPanelProps {
+  activeNodeId?: string | null;
+  onProjectSelect?: (project: RootNodeSummary) => void;
+}
+
+export default function ProjectPanel({ activeNodeId = null, onProjectSelect }: ProjectPanelProps) {
   const [projects, setProjects] = useState<RootNodeSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -275,10 +279,10 @@ export default function ProjectPanel() {
   }, [fetchProjects]);
 
   const handleProjectClick = useCallback(
-    (id: string) => {
-      navigate(`/workspace/${id}`);
+    (project: RootNodeSummary) => {
+      onProjectSelect?.(project);
     },
-    [navigate],
+    [onProjectSelect],
   );
 
   return (
@@ -318,6 +322,7 @@ export default function ProjectPanel() {
               <ProjectItem
                 key={project.id}
                 project={project}
+                active={activeNodeId === project.id}
                 onClick={handleProjectClick}
                 onDeleted={(id) => {
                   setProjects((prev) => prev.filter((p) => p.id !== id));
@@ -470,6 +475,11 @@ export default function ProjectPanel() {
 
         .project-item:hover {
           background: rgba(255, 255, 255, 0.08);
+        }
+
+        .project-item.active {
+          background: rgba(255, 255, 255, 0.12);
+          border-left-color: rgba(96, 165, 250, 0.9) !important;
         }
 
         .project-item:active:not(.editing) {

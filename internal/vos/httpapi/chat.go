@@ -796,18 +796,21 @@ func (server *Server) resolveChatNode(request v1ChatRequest) (*domain.Node, erro
 		topicID = strings.TrimSpace(*request.TopicID)
 	}
 	if topicID == "" {
-		defaultTopic, _, err := server.service.EnsureDefaultTopic()
+		topicName := summarizeMessageForTopic(request.Message)
+		_, rootNode, err := server.service.CreateTopic(service.CreateTopicInput{
+			Name: topicName,
+		})
 		if err != nil {
 			return nil, err
 		}
-		topicID = defaultTopic.ID
+		return rootNode, nil
 	}
 
 	topic, err := server.service.GetTopic(topicID)
 	if err != nil {
 		return nil, err
 	}
-	nodeName := buildAutoNodeName(request.Message)
+	nodeName := summarizeMessageForTopic(request.Message)
 	return server.service.CreateNode(service.CreateNodeInput{
 		TopicID: topic.ID,
 		Name:    nodeName,
@@ -815,7 +818,7 @@ func (server *Server) resolveChatNode(request v1ChatRequest) (*domain.Node, erro
 	})
 }
 
-func buildAutoNodeName(message string) string {
+func summarizeMessageForTopic(message string) string {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
 		return "Conversation"
@@ -824,7 +827,7 @@ func buildAutoNodeName(message string) string {
 	if len(runes) > 24 {
 		trimmed = string(runes[:24]) + "..."
 	}
-	return "Chat: " + trimmed
+	return trimmed
 }
 
 func (server *Server) enqueueChatNode(ctx context.Context, node domain.Node, sessionID string) error {

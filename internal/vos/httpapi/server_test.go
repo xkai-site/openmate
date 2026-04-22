@@ -95,7 +95,7 @@ func TestServerV1TopicAndNodeLifecycle(t *testing.T) {
 	}
 }
 
-func TestServerV1NodeCreateDefaultsToDefaultTopic(t *testing.T) {
+func TestServerV1NodeCreateWithoutTopicCreatesIndependentTopic(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {
 		_ = server.Close()
@@ -120,14 +120,11 @@ func TestServerV1NodeCreateDefaultsToDefaultTopic(t *testing.T) {
 	mustDecodeEnvelopeData(t, firstEnv, &firstNode)
 	mustDecodeEnvelopeData(t, secondEnv, &secondNode)
 
-	if firstNode.TopicID != service.DefaultTopicID {
-		t.Fatalf("first node topic_id = %q, want %q", firstNode.TopicID, service.DefaultTopicID)
-	}
-	if secondNode.TopicID != service.DefaultTopicID {
-		t.Fatalf("second node topic_id = %q, want %q", secondNode.TopicID, service.DefaultTopicID)
-	}
 	if firstNode.ID == secondNode.ID {
 		t.Fatalf("node IDs should differ, got %q", firstNode.ID)
+	}
+	if firstNode.TopicID == secondNode.TopicID {
+		t.Fatalf("topic IDs should differ, got %q", firstNode.TopicID)
 	}
 }
 
@@ -138,17 +135,25 @@ func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 		testServer.Close()
 	}()
 
-	defaultNodeA, err := server.service.CreateNode(service.CreateNodeInput{
+	firstNode, err := server.service.CreateNode(service.CreateNodeInput{
 		Name: "Temp Root A",
 	})
 	if err != nil {
-		t.Fatalf("CreateNode(default A) error = %v", err)
+		t.Fatalf("CreateNode(first) error = %v", err)
 	}
-	defaultNodeB, err := server.service.CreateNode(service.CreateNodeInput{
+	firstTopic, err := server.service.GetTopic(firstNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(first) error = %v", err)
+	}
+	secondNode, err := server.service.CreateNode(service.CreateNodeInput{
 		Name: "Temp Root B",
 	})
 	if err != nil {
-		t.Fatalf("CreateNode(default B) error = %v", err)
+		t.Fatalf("CreateNode(second) error = %v", err)
+	}
+	secondTopic, err := server.service.GetTopic(secondNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(second) error = %v", err)
 	}
 	_, topicRoot, err := server.service.CreateTopic(service.CreateTopicInput{
 		TopicID: "topic-visible",
@@ -156,10 +161,6 @@ func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateTopic() error = %v", err)
-	}
-	defaultTopic, err := server.service.GetTopic(service.DefaultTopicID)
-	if err != nil {
-		t.Fatalf("GetTopic(default) error = %v", err)
 	}
 
 	rootsEnv := mustRequestEnvelope(t, testServer.Client(), http.MethodGet, testServer.URL+"/api/v1/tree/roots", nil, http.StatusOK)
@@ -173,18 +174,21 @@ func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 	for _, item := range rootsResp {
 		id, _ := item["id"].(string)
 		found[id] = true
-		if id == defaultTopic.RootNodeID {
-			t.Fatalf("roots should not include default structural root: %s", id)
-		}
 	}
-	if !found[defaultNodeA.ID] {
-		t.Fatalf("roots missing default entry: %s", defaultNodeA.ID)
+	if !found[firstTopic.RootNodeID] {
+		t.Fatalf("roots missing first topic root: %s", firstTopic.RootNodeID)
 	}
-	if !found[defaultNodeB.ID] {
-		t.Fatalf("roots missing default entry: %s", defaultNodeB.ID)
+	if !found[secondTopic.RootNodeID] {
+		t.Fatalf("roots missing second topic root: %s", secondTopic.RootNodeID)
 	}
 	if !found[topicRoot.ID] {
 		t.Fatalf("roots missing topic root: %s", topicRoot.ID)
+	}
+	if found[firstNode.ID] {
+		t.Fatalf("roots should not include first chat node: %s", firstNode.ID)
+	}
+	if found[secondNode.ID] {
+		t.Fatalf("roots should not include second chat node: %s", secondNode.ID)
 	}
 }
 
@@ -432,7 +436,7 @@ func TestServerV1ChatValidatesMessage(t *testing.T) {
 	}
 }
 
-func TestResolveChatNodeUsesDefaultTopicWithoutNodeAndTopic(t *testing.T) {
+func TestResolveChatNodeWithoutNodeAndTopicCreatesIndependentTopicRoot(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {
 		_ = server.Close()
@@ -447,22 +451,40 @@ func TestResolveChatNodeUsesDefaultTopicWithoutNodeAndTopic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveChatNode(second) error = %v", err)
 	}
-	if firstNode.TopicID != service.DefaultTopicID {
-		t.Fatalf("first node topic_id = %q, want %q", firstNode.TopicID, service.DefaultTopicID)
-	}
-	if secondNode.TopicID != service.DefaultTopicID {
-		t.Fatalf("second node topic_id = %q, want %q", secondNode.TopicID, service.DefaultTopicID)
+	if firstNode.TopicID == secondNode.TopicID {
+		t.Fatalf("topic IDs should differ, got %q", firstNode.TopicID)
 	}
 	if firstNode.ID == secondNode.ID {
-		t.Fatalf("chat nodes should differ, got %q", firstNode.ID)
+		t.Fatalf("root node IDs should differ, got %q", firstNode.ID)
+	}
+
+	firstTopic, err := server.service.GetTopic(firstNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(first) error = %v", err)
+	}
+	secondTopic, err := server.service.GetTopic(secondNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(second) error = %v", err)
+	}
+	if firstTopic.Name != "hello one" {
+		t.Fatalf("first topic name = %q, want %q", firstTopic.Name, "hello one")
+	}
+	if secondTopic.Name != "hello two" {
+		t.Fatalf("second topic name = %q, want %q", secondTopic.Name, "hello two")
+	}
+	if firstNode.ID != firstTopic.RootNodeID {
+		t.Fatalf("first node id = %q, want root %q", firstNode.ID, firstTopic.RootNodeID)
+	}
+	if secondNode.ID != secondTopic.RootNodeID {
+		t.Fatalf("second node id = %q, want root %q", secondNode.ID, secondTopic.RootNodeID)
 	}
 
 	topics, err := server.service.ListTopics()
 	if err != nil {
 		t.Fatalf("ListTopics() error = %v", err)
 	}
-	if len(topics) != 1 || topics[0].ID != service.DefaultTopicID {
-		t.Fatalf("topics = %#v, want single default topic", topics)
+	if len(topics) != 2 {
+		t.Fatalf("topics len = %d, want 2", len(topics))
 	}
 }
 

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -13,12 +12,6 @@ import (
 )
 
 const childMemoryCacheKey = "_child_memory_cache"
-
-const (
-	DefaultTopicID           = "default-topic"
-	defaultTopicName         = "Default Topic"
-	defaultTopicRootNodeName = "Conversations"
-)
 
 type Service struct {
 	store        store.StateStore
@@ -272,28 +265,6 @@ func (service *Service) GetTopic(topicID string) (*domain.Topic, error) {
 	return cloneTopic(topic), nil
 }
 
-func (service *Service) EnsureDefaultTopic() (*domain.Topic, *domain.Node, error) {
-	topic, err := service.GetTopic(DefaultTopicID)
-	if err != nil {
-		var notFound domain.TopicNotFoundError
-		if !errors.As(err, &notFound) {
-			return nil, nil, err
-		}
-		rootName := defaultTopicRootNodeName
-		return service.CreateTopic(CreateTopicInput{
-			TopicID:      DefaultTopicID,
-			Name:         defaultTopicName,
-			RootNodeID:   fmt.Sprintf("%s:root", DefaultTopicID),
-			RootNodeName: &rootName,
-		})
-	}
-	rootNode, err := service.GetNode(topic.RootNodeID)
-	if err != nil {
-		return nil, nil, err
-	}
-	return topic, rootNode, nil
-}
-
 func (service *Service) ListDisplayRootNodes() ([]*domain.Node, error) {
 	state, err := service.store.Load()
 	if err != nil {
@@ -305,31 +276,7 @@ func (service *Service) ListDisplayRootNodes() ([]*domain.Node, error) {
 		if node == nil || node.ParentID != nil {
 			continue
 		}
-		if node.TopicID == DefaultTopicID {
-			// Skip the structural default root. Home list should show its chat entries.
-			continue
-		}
 		roots = append(roots, cloneNode(node))
-	}
-
-	defaultTopic, hasDefaultTopic := state.Topics[DefaultTopicID]
-	if hasDefaultTopic && defaultTopic != nil && strings.TrimSpace(defaultTopic.RootNodeID) != "" {
-		defaultRoot, exists := state.Nodes[defaultTopic.RootNodeID]
-		if exists && defaultRoot != nil {
-			for _, childID := range defaultRoot.ChildrenIDs {
-				child, childExists := state.Nodes[childID]
-				if !childExists || child == nil {
-					continue
-				}
-				if child.TopicID != DefaultTopicID {
-					continue
-				}
-				if child.ParentID == nil || *child.ParentID != defaultRoot.ID {
-					continue
-				}
-				roots = append(roots, cloneNode(child))
-			}
-		}
 	}
 
 	sort.Slice(roots, func(i, j int) bool {
@@ -374,7 +321,9 @@ func (service *Service) CreateNode(input CreateNodeInput) (*domain.Node, error) 
 		input.TopicID = parent.TopicID
 	}
 	if input.TopicID == "" {
-		topic, _, err := service.EnsureDefaultTopic()
+		topic, _, err := service.CreateTopic(CreateTopicInput{
+			Name: inferAutoTopicName(input.Name),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -894,4 +843,12 @@ func cloneStrings(raw []string) []string {
 		return []string{}
 	}
 	return slices.Clone(raw)
+}
+
+func inferAutoTopicName(nodeName string) string {
+	trimmed := strings.TrimSpace(nodeName)
+	if trimmed == "" {
+		return "Untitled Topic"
+	}
+	return trimmed
 }

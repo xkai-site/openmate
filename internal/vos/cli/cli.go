@@ -331,9 +331,9 @@ func runNodeCreate(svc *service.Service, args []string, stdout, stderr io.Writer
 	fs := flag.NewFlagSet("vos node create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		topicID     = fs.String("topic-id", "", "Optional topic ID, defaults to default-topic")
+		topicID     = fs.String("topic-id", "", "Optional topic ID")
 		nodeID      = fs.String("node-id", "", "Optional node ID")
-		parentID    = fs.String("parent-id", "", "Parent node ID, default topic root")
+		parentID    = fs.String("parent-id", "", "Parent node ID, defaults to topic root")
 		name        = fs.String("name", "", "Node name")
 		description = fs.String("description", "", "Node description")
 		statusRaw   = fs.String("status", string(domain.NodeStatusDraft), "Initial node status")

@@ -1,5 +1,18 @@
 # Frontend Process
 
+## 2026-04-22 Home 历史项点击语义收敛（children_count 判定）
+
+1. Home 左侧历史面板点击行为改造：
+   - `children_count === 0`：不跳转 Workspace，留在 Home 切换当前会话节点。
+   - `children_count > 0`：保持跳转 `/workspace/:nodeId`。
+2. 会话切换补齐历史回填：
+   - 新增切换会话后调用 `getNodeSession(nodeId)` 拉取历史消息并刷新对话面板，避免只切 `nodeId` 不回填内容。
+3. 组件协同调整：
+   - `ProjectPanel` 从内部 `navigate` 改为上抛 `onProjectSelect(project)` 回调，由 Home 统一决策跳转或留在当前页。
+   - 增加当前会话项高亮（`activeNodeId`）。
+4. 构建验证：
+   - `cd frontend && npm run build` 通过。
+
 ## 2026-04-17 前端基线与联调对齐
 
 1. 当前 `frontend` 已切换为你提供的既有前端实现（React + Vite），页面形态以现有版本为准，不回退到此前的 HTML+JS 预览页。

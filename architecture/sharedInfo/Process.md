@@ -1,5 +1,22 @@
 # SharedInfo Process
 
+## 2026-04-22 去除 default-topic 特例（首条对话独立 Topic）
+
+1. 已完成跨模块改造：移除 `default-topic` 兜底语义，统一改为“首条对话即独立 Topic”。
+2. 后端收敛：
+   - `chat` 无 `node_id/topic_id` 时改为自动创建新 Topic，并直接使用该 Topic 的 root 节点承载会话。
+   - `POST /api/v1/nodes` 与 `vos node create` 在 `topic_id/parent_id` 同时缺省时，自动创建新 Topic 后再创建节点。
+   - `/api/v1/tree/roots` 回归 Topic root 聚合，不再做 `default-topic` 特殊展开。
+3. 前端收敛：
+   - Home 左侧历史项点击改为由 `children_count` 决策：`0` 留在 Home 切会话并回填历史，`>0` 跳转 Workspace。
+4. 共享契约同步：
+   - 已更新 `architecture/sharedInfo/模块契约.md`，删除 `default-topic` 描述并写入新语义。
+5. 验证结果：
+   - `go test ./internal/vos/service ./internal/vos/httpapi ./internal/vos/cli` 通过（使用仓库内 `GOCACHE/GOMODCACHE`）。
+   - `go test ./...` 通过。
+   - `cd frontend && npm run build` 通过。
+   - Python 全量回归存在既有失败：`tests.test_store_sqlite.SqliteConcurrencyTestCase.test_concurrent_invoke_respects_max_concurrent`（期望 2，实际 3），本次未改 Python/Pool 并发逻辑。
+
 ## 2026-04-22 master 初始化（不跑测试）
 
 1. 已确认当前工作分支为 `master`，并保持在 `master` 上继续开发。
@@ -168,3 +185,17 @@
      - Responses/ChatCompletions 在 `stream=true` 且未显式设置 `timeout_ms` 时，HTTP client 超时改为 `0`（不限时），避免客户端默认超时切断流式输出。
 3. 影响范围：仅调整超时与取消策略，不改动 `chat/result`、SSE 事件结构和业务字段契约。
 4. 回归结果：`go test ./internal/poolgateway/... ./internal/vos/httpapi/...` 通过。
+
+## 2026-04-22 master 初始化（不跑测试/不加分支，第三次）
+
+1. 已确认当前工作分支为 `master`，并按本次指令保持不切分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前要求，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。

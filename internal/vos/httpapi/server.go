@@ -412,39 +412,20 @@ func (server *Server) handleV1Nodes(writer http.ResponseWriter, request *http.Re
 	parentID := normalizeOptionalString(payload.ParentID)
 	trimmedName := strings.TrimSpace(payload.Name)
 
-	resolvedTopicID := ""
-	if topicID != nil {
-		resolvedTopicID = *topicID
-	} else {
-		if parentID != nil {
-			parent, err := server.service.GetNode(*parentID)
-			if err != nil {
-				server.writeV1ServiceError(writer, err)
-				return
-			}
-			resolvedTopicID = parent.TopicID
-		} else {
-			topic, _, err := server.service.EnsureDefaultTopic()
-			if err != nil {
-				server.writeV1ServiceError(writer, err)
-				return
-			}
-			resolvedTopicID = topic.ID
-		}
-	}
-
 	if trimmedName == "" {
 		trimmedName = "Untitled Node"
 	}
 
 	input := service.CreateNodeInput{
-		TopicID:     resolvedTopicID,
 		NodeID:      strings.TrimSpace(payload.NodeID),
 		Name:        trimmedName,
 		Description: normalizeOptionalString(payload.Description),
 		Memory:      payload.Memory,
 		Input:       payload.Input,
 		Output:      payload.Output,
+	}
+	if topicID != nil {
+		input.TopicID = *topicID
 	}
 	if parentID != nil {
 		input.ParentID = parentID
@@ -469,7 +450,7 @@ func (server *Server) handleV1Nodes(writer http.ResponseWriter, request *http.Re
 		server.writeV1ServiceError(writer, err)
 		return
 	}
-	nodeView["topic_id"] = resolvedTopicID
+	nodeView["topic_id"] = node.TopicID
 	server.writeV1Success(writer, nodeView)
 }
 

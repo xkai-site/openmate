@@ -54,57 +54,53 @@ func TestCreateTopicCreatesRootNode(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultTopicIsIdempotent(t *testing.T) {
+func TestCreateNodeWithoutTopicCreatesIndependentTopic(t *testing.T) {
 	svc := newTestService(t)
 
-	firstTopic, firstRoot, err := svc.EnsureDefaultTopic()
-	if err != nil {
-		t.Fatalf("EnsureDefaultTopic(first) error = %v", err)
-	}
-	secondTopic, secondRoot, err := svc.EnsureDefaultTopic()
-	if err != nil {
-		t.Fatalf("EnsureDefaultTopic(second) error = %v", err)
-	}
-
-	if firstTopic.ID != service.DefaultTopicID {
-		t.Fatalf("default topic id = %q, want %q", firstTopic.ID, service.DefaultTopicID)
-	}
-	if secondTopic.ID != firstTopic.ID {
-		t.Fatalf("second topic id = %q, want %q", secondTopic.ID, firstTopic.ID)
-	}
-	if secondRoot.ID != firstRoot.ID {
-		t.Fatalf("second root id = %q, want %q", secondRoot.ID, firstRoot.ID)
-	}
-}
-
-func TestCreateNodeWithoutTopicUsesDefaultTopic(t *testing.T) {
-	svc := newTestService(t)
-
-	node, err := svc.CreateNode(service.CreateNodeInput{
-		Name: "Quick Chat",
+	firstNode, err := svc.CreateNode(service.CreateNodeInput{
+		Name: "Quick Chat A",
 	})
 	if err != nil {
-		t.Fatalf("CreateNode() error = %v", err)
+		t.Fatalf("CreateNode(first) error = %v", err)
+	}
+	secondNode, err := svc.CreateNode(service.CreateNodeInput{
+		Name: "Quick Chat B",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode(second) error = %v", err)
 	}
 
-	defaultTopic, err := svc.GetTopic(service.DefaultTopicID)
+	if firstNode.TopicID == secondNode.TopicID {
+		t.Fatalf("topic ids should differ, got %q", firstNode.TopicID)
+	}
+
+	firstTopic, err := svc.GetTopic(firstNode.TopicID)
 	if err != nil {
-		t.Fatalf("GetTopic(default) error = %v", err)
+		t.Fatalf("GetTopic(first) error = %v", err)
 	}
-	if node.TopicID != defaultTopic.ID {
-		t.Fatalf("node topic id = %q, want %q", node.TopicID, defaultTopic.ID)
+	secondTopic, err := svc.GetTopic(secondNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(second) error = %v", err)
 	}
-	if node.ParentID == nil || *node.ParentID != defaultTopic.RootNodeID {
-		t.Fatalf("node parent id = %v, want %s", node.ParentID, defaultTopic.RootNodeID)
+
+	if firstNode.ParentID == nil || *firstNode.ParentID != firstTopic.RootNodeID {
+		t.Fatalf("first node parent id = %v, want %s", firstNode.ParentID, firstTopic.RootNodeID)
+	}
+	if secondNode.ParentID == nil || *secondNode.ParentID != secondTopic.RootNodeID {
+		t.Fatalf("second node parent id = %v, want %s", secondNode.ParentID, secondTopic.RootNodeID)
 	}
 }
 
-func TestListDisplayRootNodesIncludesDefaultEntriesAndTopicRoots(t *testing.T) {
+func TestListDisplayRootNodesReturnsTopicRootsOnly(t *testing.T) {
 	svc := newTestService(t)
 
-	defaultNode, err := svc.CreateNode(service.CreateNodeInput{Name: "Temp A"})
+	firstNode, err := svc.CreateNode(service.CreateNodeInput{Name: "Temp A"})
 	if err != nil {
-		t.Fatalf("CreateNode(default) error = %v", err)
+		t.Fatalf("CreateNode(first) error = %v", err)
+	}
+	firstTopic, err := svc.GetTopic(firstNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(first) error = %v", err)
 	}
 	_, topicRoot, err := svc.CreateTopic(service.CreateTopicInput{
 		TopicID: "topic-project",
@@ -113,12 +109,13 @@ func TestListDisplayRootNodesIncludesDefaultEntriesAndTopicRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTopic(project) error = %v", err)
 	}
-	if _, err := svc.CreateNode(service.CreateNodeInput{Name: "Temp B"}); err != nil {
-		t.Fatalf("CreateNode(default second) error = %v", err)
-	}
-	defaultTopic, err := svc.GetTopic(service.DefaultTopicID)
+	secondNode, err := svc.CreateNode(service.CreateNodeInput{Name: "Temp B"})
 	if err != nil {
-		t.Fatalf("GetTopic(default) error = %v", err)
+		t.Fatalf("CreateNode(second) error = %v", err)
+	}
+	secondTopic, err := svc.GetTopic(secondNode.TopicID)
+	if err != nil {
+		t.Fatalf("GetTopic(second) error = %v", err)
 	}
 
 	roots, err := svc.ListDisplayRootNodes()
@@ -132,15 +129,21 @@ func TestListDisplayRootNodesIncludesDefaultEntriesAndTopicRoots(t *testing.T) {
 	foundIDs := map[string]bool{}
 	for _, node := range roots {
 		foundIDs[node.ID] = true
-		if node.ID == defaultTopic.RootNodeID {
-			t.Fatalf("display roots should not include default structural root: %s", node.ID)
-		}
 	}
-	if !foundIDs[defaultNode.ID] {
-		t.Fatalf("display roots missing default entry: %s", defaultNode.ID)
+	if !foundIDs[firstTopic.RootNodeID] {
+		t.Fatalf("display roots missing first topic root: %s", firstTopic.RootNodeID)
+	}
+	if !foundIDs[secondTopic.RootNodeID] {
+		t.Fatalf("display roots missing second topic root: %s", secondTopic.RootNodeID)
 	}
 	if !foundIDs[topicRoot.ID] {
 		t.Fatalf("display roots missing topic root: %s", topicRoot.ID)
+	}
+	if foundIDs[firstNode.ID] {
+		t.Fatalf("display roots should not include first chat node: %s", firstNode.ID)
+	}
+	if foundIDs[secondNode.ID] {
+		t.Fatalf("display roots should not include second chat node: %s", secondNode.ID)
 	}
 }
 

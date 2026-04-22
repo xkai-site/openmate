@@ -1,5 +1,25 @@
 # 虚拟文件系统 Process
 
+## 2026-04-22 去除 default-topic 特例，切换到独立 Topic 语义
+
+1. 服务层移除 `default-topic` 相关逻辑：
+   - 删除 `EnsureDefaultTopic()` 兜底路径。
+   - `CreateNode()` 在 `topic_id/parent_id` 同时缺省时，自动创建新 Topic（名称取节点名），并在该 Topic root 下创建节点。
+2. `tree/roots` 聚合收敛为“按 Topic root 返回”：
+   - `ListDisplayRootNodes()` 不再对历史会话做 `default-topic` 子节点展开。
+3. HTTP 适配层同步：
+   - `POST /api/v1/nodes` 去掉 `default-topic` 推断，改为透传 `topic_id/parent_id` 给服务层，由服务层完成自动建 Topic。
+4. Chat 会话入口同步：
+   - `resolveChatNode()` 在无 `node_id/topic_id` 时创建新 Topic，并直接返回其 root 节点作为会话节点。
+   - 首条消息摘要命名去掉 `Chat:` 前缀，保留原 24 字符截断策略。
+5. 测试更新：
+   - `internal/vos/service/service_test.go`
+   - `internal/vos/httpapi/server_test.go`
+   - `internal/vos/cli/cli_test.go`
+6. 验证结果：
+   - `go test ./internal/vos/service ./internal/vos/httpapi ./internal/vos/cli` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+   - `go test ./...` 通过。
+
 ## 2026-04-11 初始化
 
 1. 已读取当前 `Process.md`（初始化时为空）和 [虚拟文件系统.md](D:/XuKai/Project/vos/architecture/虚拟文件系统/虚拟文件系统.md) 作为本轮开发输入。
