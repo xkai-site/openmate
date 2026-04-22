@@ -101,3 +101,30 @@
 6. 为避免构建重复产物回归，已完成配置收敛：
    - `frontend/tsconfig.node.json` 将输出重定向到 `node_modules/.tmp`，避免 `tsc -b` 在项目根产出 `vite.config.js`。
    - `.gitignore` 增加 `frontend/vite.config.js` 兜底忽略规则。
+
+## 2026-04-22 frontend 分支初始化（免测）
+
+1. 已确认当前仍在 `frontend` 分支开展初始化工作。
+2. 已按前端工作区完成依赖初始化：`cd frontend && npm install`（结果 `up to date`）。
+3. 本轮遵循当前协作要求，未执行测试命令，未进行分支创建或切换操作。
+
+## 2026-04-22 Chat 流式超时恢复修复（避免长输出截断）
+
+1. 修复长文本流式响应在中途超时后被前端直接判失败的问题，核心策略为“保留 invocation 并主动补拉最终结果”。
+2. 变更点：
+   - `frontend/src/services/api/chat.ts`：新增 `waitChatResult()` 轮询等待最终状态；`sendChatMessage()` 超时提升至 180s。
+   - `frontend/src/pages/Home/index.tsx`：`fatal` 事件不再清理 pending invocation；流结束未收到 `summary` 时触发恢复链路，不再直接提交半截回复。
+   - `frontend/src/pages/AITree/components/SessionPanel.tsx`：同样接入恢复链路，保证会话页行为一致。
+3. 验证结果：`cd frontend && npm run build` 通过。
+
+## 2026-04-22 Chat 输出链路去硬超时（看门狗化）
+
+1. 针对“长输出被前端超时误判失败”的风险，前端输出链路改为以后端状态为准，不使用固定截止时间判定失败。
+2. 变更点：
+   - `frontend/src/services/api/chat.ts`：
+     - `waitChatResult()` 去掉 `timeoutMs`，改为持续轮询直到状态不再是 `running`。
+     - `waitChatResult()` 增加 `AbortSignal` 支持，页面卸载/中断时可终止轮询。
+     - `sendChatMessage()` 与 `getChatResult()` 显式配置 `timeout: 0`（禁用请求超时），避免长输出链路被固定时长截断。
+   - `frontend/src/pages/Home/index.tsx` 与 `frontend/src/pages/AITree/components/SessionPanel.tsx`：
+     - 恢复链路调用 `waitChatResult()` 统一传入 `controller.signal`，保证仅由用户/页面中断控制，而非固定时长。
+3. 验证结果：`cd frontend && npm run build` 通过。

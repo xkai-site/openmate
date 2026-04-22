@@ -29,15 +29,78 @@ export interface ChatStreamHandlers {
  * 非流式对话（兼容）
  */
 export async function sendChatMessage(payload: ChatRequest): Promise<ChatResponse> {
-  const response = await api.post<ApiResponse<ChatResponse>>('/chat', payload);
+  const response = await api.post<ApiResponse<ChatResponse>>('/chat', payload, {
+    timeout: 0,
+  });
   return response.data;
 }
 
-export async function getChatResult(invocationID: string): Promise<ChatResultResponse> {
+export async function getChatResult(
+  invocationID: string,
+  signal?: AbortSignal,
+): Promise<ChatResultResponse> {
   const response = await api.get<ApiResponse<ChatResultResponse>>('/chat/result', {
     params: { invocation_id: invocationID },
+    timeout: 0,
+    signal,
   });
   return response.data;
+}
+
+export interface WaitChatResultOptions {
+  intervalMs?: number;
+  signal?: AbortSignal;
+}
+
+function abortError(): DOMException {
+  return new DOMException('Aborted', 'AbortError');
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw abortError();
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort);
+  });
+}
+
+export async function waitChatResult(
+  invocationID: string,
+  options: WaitChatResultOptions = {},
+): Promise<ChatResultResponse> {
+  const intervalMs = Math.max(200, options.intervalMs ?? 1500);
+  const { signal } = options;
+
+  while (true) {
+    throwIfAborted(signal);
+    const latest = await getChatResult(invocationID, signal);
+    if (latest.status !== 'running') {
+      return latest;
+    }
+    await sleep(intervalMs, signal);
+    throwIfAborted(signal);
+  }
 }
 
 function resolveApiUrl(pathname: string): string {

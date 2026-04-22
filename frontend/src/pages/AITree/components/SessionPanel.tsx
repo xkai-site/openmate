@@ -4,7 +4,7 @@ import { SendOutlined, UserOutlined, RobotOutlined, CopyOutlined, ExperimentOutl
 import { message as antMessage } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getChatResult, sendChatMessage, sendChatMessageStream } from '@/services/api/chat';
+import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
 import { getNode } from '@/services/api/nodes';
 import type {
   ChatMessage,
@@ -389,6 +389,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
       clearPendingInvocation();
       return;
     }
+    savePendingInvocation(invocationID);
     if (pending.node_id && pending.node_id !== nodeId) {
       return;
     }
@@ -408,7 +409,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
       let assistantThinking = '';
       let summary: ChatStreamSummaryEvent | null = null;
       try {
-        const result = await getChatResult(invocationID);
+        const result = await getChatResult(invocationID, controller.signal);
         if (cancelled) return;
         if (result.status === 'success') {
           assistantReply = result.reply || '（无输出）';
@@ -475,20 +476,27 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
                 summary = event;
                 clearPendingInvocation();
               },
-              onFatal: () => {
-                clearPendingInvocation();
+              onFatal: (event) => {
+                const fatalInvocationID = String((event as { invocation_id?: string }).invocation_id ?? '').trim();
+                if (fatalInvocationID) {
+                  savePendingInvocation(fatalInvocationID);
+                }
               },
             },
             controller.signal,
           );
           if (!summary) {
-            const refreshed = await getChatResult(invocationID);
+            const refreshed = await waitChatResult(invocationID, { signal: controller.signal });
             if (refreshed.status === 'success') {
               summary = buildSummaryFromResult(refreshed);
               if (!assistantReply && refreshed.reply) {
                 assistantReply = refreshed.reply;
               }
               clearPendingInvocation();
+            } else if (refreshed.status === 'failure') {
+              clearPendingInvocation();
+              antMessage.error(refreshed.error?.message || '恢复会话失败');
+              return;
             }
           }
         }
@@ -648,12 +656,18 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
               hasSummary = true;
               clearPendingInvocation();
             },
-            onFatal: () => {
-              clearPendingInvocation();
+            onFatal: (payload) => {
+              const fatalInvocationID = String((payload as { invocation_id?: string }).invocation_id ?? '').trim();
+              if (fatalInvocationID) {
+                savePendingInvocation(fatalInvocationID);
+              }
             },
           },
           controller.signal,
         );
+        if (!hasSummary) {
+          throw new Error('stream ended before summary');
+        }
 
       } catch (streamErr) {
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
@@ -661,7 +675,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
         }
         const activeInvocationID = (activeInvocationRef.current ?? '').trim();
         if (activeInvocationID) {
-          const result = await getChatResult(activeInvocationID);
+          const result = await getChatResult(activeInvocationID, controller.signal);
           if (result.status === 'success') {
             assistantReply = result.reply || assistantReply;
             if (!hasSummary) {
@@ -725,18 +739,26 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
                   hasSummary = true;
                   clearPendingInvocation();
                 },
-                onFatal: () => {
-                  clearPendingInvocation();
+                onFatal: (payload) => {
+                  const fatalInvocationID = String((payload as { invocation_id?: string }).invocation_id ?? '').trim();
+                  if (fatalInvocationID) {
+                    savePendingInvocation(fatalInvocationID);
+                  }
                 },
               },
               controller.signal,
             );
             if (!hasSummary) {
-              const refreshed = await getChatResult(activeInvocationID);
+              const refreshed = await waitChatResult(activeInvocationID, { signal: controller.signal });
               if (refreshed.status === 'success') {
                 summary = buildSummaryFromResult(refreshed);
                 assistantReply = refreshed.reply || assistantReply;
                 clearPendingInvocation();
+              } else if (refreshed.status === 'failure') {
+                clearPendingInvocation();
+                throw new Error(refreshed.error?.message || '流式对话失败');
+              } else {
+                throw new Error('流式对话仍在进行中，请稍后重试');
               }
             }
           } else {
