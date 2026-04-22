@@ -100,3 +100,15 @@
 2. 该调整用于支持首页侧边栏“Topic roots + default 会话 roots”统一展示。
 3. 实现由服务层 `ListDisplayRootNodes()` 承担，采用单次状态加载与内存筛选，减少重复 I/O。
 4. 回归结果：`go test ./...` 通过。
+
+## 2026-04-22 Chat 长输出超时策略修复（后端）
+
+1. 修复前端长输出场景下出现 `context deadline exceeded` 的后端根因：流式调用链存在固定超时截断。
+2. 变更点：
+   - `internal/vos/httpapi/chat.go`
+     - 移除 `chat.stream.invoke` 的 `context.WithTimeout(..., 2m)` 包装，改为由上层取消控制。
+     - 移除 `waitChatTurn()` 的固定截止时间判定，不再因为本地时钟到期直接返回 `chat session timed out`。
+   - `internal/poolgateway/providers.go`
+     - Responses/ChatCompletions 在 `stream=true` 且未显式设置 `timeout_ms` 时，HTTP client 超时改为 `0`（不限时），避免客户端默认超时切断流式输出。
+3. 影响范围：仅调整超时与取消策略，不改动 `chat/result`、SSE 事件结构和业务字段契约。
+4. 回归结果：`go test ./internal/poolgateway/... ./internal/vos/httpapi/...` 通过。

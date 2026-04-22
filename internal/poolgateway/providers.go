@@ -76,6 +76,9 @@ func (provider OpenAICompatibleProvider) invokeResponses(
 		timeout := 30 * time.Second
 		if request.TimeoutMS != nil {
 			timeout = time.Duration(*request.TimeoutMS) * time.Millisecond
+		} else if streamEnabled {
+			// Streaming requests should not be cut off by client-side fixed timeout.
+			timeout = 0
 		}
 		client = &http.Client{Timeout: timeout}
 	}
@@ -171,6 +174,9 @@ func (provider OpenAICompatibleProvider) invokeChatCompletions(
 		timeout := 30 * time.Second
 		if request.TimeoutMS != nil {
 			timeout = time.Duration(*request.TimeoutMS) * time.Millisecond
+		} else if streamEnabled {
+			// Streaming requests should not be cut off by client-side fixed timeout.
+			timeout = 0
 		}
 		client = &http.Client{Timeout: timeout}
 	}

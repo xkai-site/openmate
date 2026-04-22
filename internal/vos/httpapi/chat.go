@@ -21,9 +21,8 @@ import (
 )
 
 const (
-	defaultChatTurnTimeout = 2 * time.Minute
-	chatPollInterval       = 150 * time.Millisecond
-	chatPollLimit          = 200
+	chatPollInterval = 150 * time.Millisecond
+	chatPollLimit    = 200
 )
 
 type v1ChatRequest struct {
@@ -524,9 +523,7 @@ func (server *Server) startChatRun(
 			},
 		}
 
-		invokeCtx, cancel := context.WithTimeout(context.Background(), defaultChatTurnTimeout)
-		defer cancel()
-		response, err := server.runtime.PoolGateway.Invoke(invokeCtx, poolRequest)
+		response, err := server.runtime.PoolGateway.Invoke(context.Background(), poolRequest)
 		if err != nil {
 			operationLogger.Error("stream invoke failed", slog.Any("error", err))
 			_, _ = server.service.AppendSessionEvent(service.AppendSessionEventInput{
@@ -945,7 +942,6 @@ func (server *Server) waitChatTurn(ctx context.Context, state *chatTurnState, em
 		slog.String(observability.FieldNodeID, state.NodeID),
 		slog.String(observability.FieldSessionID, state.SessionID),
 	)
-	deadline := time.Now().UTC().Add(defaultChatTurnTimeout)
 	responsePhaseEmitted := false
 	for {
 		if server.scheduleMode == "inproc" {
@@ -1056,10 +1052,6 @@ func (server *Server) waitChatTurn(ctx context.Context, state *chatTurnState, em
 			return domain.ValidationError{Message: "chat session failed"}
 		}
 
-		if time.Now().UTC().After(deadline) {
-			logger.Warn("chat session timed out")
-			return domain.ValidationError{Message: "chat session timed out"}
-		}
 		if err := waitWithContext(ctx, server.scheduleTickInterval); err != nil {
 			return err
 		}

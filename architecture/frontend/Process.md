@@ -128,3 +128,17 @@
    - `frontend/src/pages/Home/index.tsx` 与 `frontend/src/pages/AITree/components/SessionPanel.tsx`：
      - 恢复链路调用 `waitChatResult()` 统一传入 `controller.signal`，保证仅由用户/页面中断控制，而非固定时长。
 3. 验证结果：`cd frontend && npm run build` 通过。
+
+## 2026-04-22 长输出中断联调结论（前后端联合）
+
+1. 复盘结论：前端已去硬超时后，长输出仍中断的直接触发点在后端流式链路固定超时，而非前端请求超时。
+2. 后端配合修复已落地：
+   - `internal/vos/httpapi/chat.go` 去除流式调用和会话等待中的固定 2 分钟超时截断。
+   - `internal/poolgateway/providers.go` 对流式请求默认使用不限时 HTTP client（未显式 `timeout_ms` 时）。
+3. 联调结果：后端单测 `go test ./internal/poolgateway/... ./internal/vos/httpapi/...` 通过，前端输出恢复策略继续沿用“以后端状态为准”。
+
+## 2026-04-22 frontend 分支初始化（免测，第二次）
+
+1. 已确认当前工作分支为 `frontend`（`git status --short --branch` 显示 `## frontend...origin/frontend`）。
+2. 已完成前端依赖初始化：`cd frontend && npm install`，结果为 `up to date in 4s`。
+3. 本轮按协作要求未执行测试命令，未创建/切换分支，仅完成初始化准备。
