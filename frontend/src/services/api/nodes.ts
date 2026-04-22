@@ -1,5 +1,5 @@
 import { api } from '@/services/api';
-import type { ApiResponse, NodeCreate, NodeResponse, NodeUpdate, SessionMessage } from '@/types/models';
+import type { ApiResponse, NodeCreate, NodeResponse, NodeUpdate, ProcessItem, SessionMessage } from '@/types/models';
 
 /**
  * 创建节点
@@ -13,7 +13,7 @@ export async function createNode(payload: NodeCreate): Promise<NodeResponse> {
 /**
  * 获取节点信息（按需加载）
  * @param nodeId 节点 ID
- * @param include 按需加载的字段，逗号分隔：session,memory,input,output,step,progress
+ * @param include 按需加载的字段，逗号分隔：session,memory,input,output,process
  */
 export async function getNode(
   nodeId: string,
@@ -74,16 +74,14 @@ export async function getNodeMemory(
 }
 
 /**
- * 获取节点执行步骤和进展
- * 通过 include=step,progress 获取
+ * 获取节点执行过程
+ * 通过 include=process 获取
  */
 export async function getNodeExecution(nodeId: string): Promise<{
-  step?: string[];
-  progress?: string[];
+  process?: ProcessItem[];
 }> {
-  const response = await getNode(nodeId, 'step,progress');
+  const response = await getNode(nodeId, 'process');
   return {
-    step: response.step,
-    progress: response.progress,
+    process: response.process,
   };
 }

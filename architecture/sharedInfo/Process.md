@@ -1,5 +1,34 @@
 # SharedInfo Process
 
+## 2026-04-22 VOS Node 增加 process 对象（对话进度）
+
+1. `vos` 侧 `Node` 进度结构已收敛为新 `process` 列表字段（完全替换旧 `progress`）：
+   - `name`
+   - `status`（`todo|done`）
+   - `timestamp`
+2. 旧字段处理：
+   - `progress` 与旧 `process(current/history/updated_at)` 已下线，不再作为读写契约。
+3. 接口变化：
+   - `vos node update` 新增 `--process-json`。
+   - `PATCH /api/v1/nodes/{id}` 支持 `process`。
+   - `GET /api/v1/nodes/{id}?include=process` 可按需读取 `process`。
+4. 验证结果：
+   - `go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+
+## 2026-04-22 master 初始化（不跑测试/不创分支，第四次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建新分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮按指令不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
 ## 2026-04-22 去除 default-topic 特例（首条对话独立 Topic）
 
 1. 已完成跨模块改造：移除 `default-topic` 兜底语义，统一改为“首条对话即独立 Topic”。

@@ -1,5 +1,20 @@
 # 虚拟文件系统 Process
 
+## 2026-04-22 Node 新增 Process 对象（对话进度）
+
+1. VOS `Node` 数据结构收敛为新 `process` 列表（替换旧 `progress`）：
+   - `name`
+   - `status`（`todo|done`）
+   - `timestamp`
+2. 旧字段处理：
+   - 旧 `progress` 与旧 `process(current/history/updated_at)` 已移除。
+3. 更新入口扩展：
+   - CLI：`vos node update` 新增 `--process-json`（JSON array）。
+   - HTTP：`PATCH /api/v1/nodes/{id}` 新增 `process` 字段。
+   - HTTP 按需加载新增 `include=process`。
+4. 回归结果：
+   - `go test ./internal/vos/...` 通过（使用仓库内 `GOCACHE/GOMODCACHE`）。
+
 ## 2026-04-22 去除 default-topic 特例，切换到独立 Topic 语义
 
 1. 服务层移除 `default-topic` 相关逻辑：

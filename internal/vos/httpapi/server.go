@@ -539,7 +539,7 @@ func (server *Server) handleV1NodeRoutes(writer http.ResponseWriter, request *ht
 			Input:            payload.Input,
 			Output:           payload.Output,
 			SessionIDs:       payload.SessionIDs,
-			Progress:         payload.Progress,
+			Process:          payload.Process,
 		}
 		if value := normalizeOptionalString(payload.Name); value != nil {
 			input.Name = value
@@ -783,11 +783,8 @@ func (server *Server) buildV1NodeView(node *domain.Node, include nodeIncludeSet)
 	if include["output"] {
 		view["output"] = cloneMapOrEmpty(node.Output)
 	}
-	if include["progress"] {
-		view["progress"] = cloneStringSlice(node.Progress)
-	}
-	if include["step"] {
-		view["step"] = cloneStringSlice(node.Progress)
+	if include["process"] {
+		view["process"] = cloneProcessItems(node.Process)
 	}
 	if include["session"] {
 		messages, err := server.buildV1SessionMessages(node.Session)
@@ -987,6 +984,15 @@ func cloneStringSlice(raw []string) []string {
 	return cloned
 }
 
+func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
+	if raw == nil {
+		return []domain.ProcessItem{}
+	}
+	cloned := make([]domain.ProcessItem, len(raw))
+	copy(cloned, raw)
+	return cloned
+}
+
 func cloneMapOrEmpty(raw map[string]any) map[string]any {
 	if raw == nil {
 		return map[string]any{}
@@ -1125,16 +1131,16 @@ type v1CreateNodePayload struct {
 }
 
 type v1UpdateNodePayload struct {
-	ExpectedVersion  *int           `json:"expected_version"`
-	Name             *string        `json:"name"`
-	Description      *string        `json:"description"`
-	ClearDescription bool           `json:"clear_description"`
-	Status           *string        `json:"status"`
-	Memory           map[string]any `json:"memory"`
-	Input            map[string]any `json:"input"`
-	Output           map[string]any `json:"output"`
-	SessionIDs       []string       `json:"session_ids"`
-	Progress         []string       `json:"progress"`
+	ExpectedVersion  *int                 `json:"expected_version"`
+	Name             *string              `json:"name"`
+	Description      *string              `json:"description"`
+	ClearDescription bool                 `json:"clear_description"`
+	Status           *string              `json:"status"`
+	Memory           map[string]any       `json:"memory"`
+	Input            map[string]any       `json:"input"`
+	Output           map[string]any       `json:"output"`
+	SessionIDs       []string             `json:"session_ids"`
+	Process          []domain.ProcessItem `json:"process"`
 }
 
 type v1NodeDecomposePayload struct {

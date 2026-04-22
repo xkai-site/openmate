@@ -134,6 +134,13 @@ export interface NodeCreate {
 export interface NodeUpdate {
   name?: string;
   status?: CommonStatus;
+  process?: ProcessItem[];
+}
+
+export interface ProcessItem {
+  name: string;
+  status: 'todo' | 'done';
+  timestamp: string;
 }
 
 export interface NodeResponse {
@@ -153,8 +160,7 @@ export interface NodeResponse {
   memory?: Record<string, unknown>;
   input?: Record<string, unknown>;
   output?: Record<string, unknown>;
-  step?: string[];
-  progress?: string[];
+  process?: ProcessItem[];
 }
 
 export interface SessionMessage {
@@ -220,7 +226,7 @@ export interface DecomposeCreatedNode {
   memory?: Record<string, unknown> | null;
   input: Record<string, unknown>;
   output: Record<string, unknown>;
-  progress: string[];
+  process: ProcessItem[];
   status: CommonStatus;
   version: number;
   created_at: string;

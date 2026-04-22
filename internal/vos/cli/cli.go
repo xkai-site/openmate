@@ -519,7 +519,6 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 	fs := flag.NewFlagSet("vos node update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var sessionIDs multiString
-	var progress multiString
 	var (
 		nodeID           = fs.String("node-id", "", "Node ID")
 		expectedVersion  = fs.String("expected-version", "", "Require current node version to match before update")
@@ -530,9 +529,9 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 		memoryJSON       = fs.String("memory-json", "", "Node memory JSON object")
 		inputJSON        = fs.String("input-json", "", "Node input JSON object")
 		outputJSON       = fs.String("output-json", "", "Node output JSON object")
+		processJSON      = fs.String("process-json", "", "Node process JSON array")
 	)
 	fs.Var(&sessionIDs, "session-id", "Append one session ID. Repeatable.")
-	fs.Var(&progress, "progress", "Append one progress entry. Repeatable.")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage:")
 		fmt.Fprintln(fs.Output(), "  vos node update --node-id ID [flags]")
@@ -572,6 +571,10 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return printError(err, stderr)
 	}
+	process, err := parseOptionalProcessItemsJSON(*processJSON)
+	if err != nil {
+		return printError(err, stderr)
+	}
 
 	update := service.UpdateNodeInput{
 		NodeID:           *nodeID,
@@ -583,7 +586,7 @@ func runNodeUpdate(svc *service.Service, args []string, stdout, stderr io.Writer
 		Input:            input,
 		Output:           output,
 		SessionIDs:       []string(sessionIDs),
-		Progress:         []string(progress),
+		Process:          process,
 	}
 	if *name != "" {
 		update.Name = stringPtr(*name)
@@ -665,6 +668,17 @@ func parseOptionalJSONObject(raw, field string) (map[string]any, error) {
 		return nil, nil
 	}
 	return parseJSONObject(raw, field)
+}
+
+func parseOptionalProcessItemsJSON(raw string) ([]domain.ProcessItem, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parsed := []domain.ProcessItem{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, domain.ValidationError{Message: fmt.Sprintf("invalid JSON for process-json: %s", err.Error())}
+	}
+	return parsed, nil
 }
 
 func parseJSONStringList(raw, field string) ([]string, error) {

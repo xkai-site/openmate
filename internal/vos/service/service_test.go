@@ -357,7 +357,10 @@ func TestUpdateNodeAppendsRuntimeFieldsAndAggregatesParentMemory(t *testing.T) {
 		Input:           map[string]any{"attachment": "input-1"},
 		Output:          map[string]any{"artifact": "output-1"},
 		SessionIDs:      []string{"session-1", "session-2"},
-		Progress:        []string{"created", "running"},
+		Process: []domain.ProcessItem{
+			{Name: "created", Status: domain.ProcessStatusDone},
+			{Name: "running", Status: domain.ProcessStatusTodo},
+		},
 	})
 	if err != nil {
 		t.Fatalf("UpdateNode() error = %v", err)
@@ -387,8 +390,17 @@ func TestUpdateNodeAppendsRuntimeFieldsAndAggregatesParentMemory(t *testing.T) {
 	if len(updated.Session) != 2 || updated.Session[0] != "session-1" || updated.Session[1] != "session-2" {
 		t.Fatalf("Session = %v, want [session-1 session-2]", updated.Session)
 	}
-	if len(updated.Progress) != 2 || updated.Progress[0] != "created" || updated.Progress[1] != "running" {
-		t.Fatalf("Progress = %v, want [created running]", updated.Progress)
+	if len(updated.Process) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	}
+	if updated.Process[0].Name != "created" || updated.Process[0].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[0] = %+v, want created/done", updated.Process[0])
+	}
+	if updated.Process[1].Name != "running" || updated.Process[1].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[1] = %+v, want running/todo", updated.Process[1])
+	}
+	if updated.Process[0].Timestamp.IsZero() || updated.Process[1].Timestamp.IsZero() {
+		t.Fatalf("Process timestamp should not be zero: %+v", updated.Process)
 	}
 
 	parent, err := svc.GetNode(root.ID)
@@ -431,7 +443,7 @@ func TestUpdateNodeRejectsVersionConflict(t *testing.T) {
 	_, err = svc.UpdateNode(service.UpdateNodeInput{
 		NodeID:          node.ID,
 		ExpectedVersion: &staleVersion,
-		Progress:        []string{"should-fail"},
+		Process:         []domain.ProcessItem{{Name: "should-fail", Status: domain.ProcessStatusTodo}},
 	})
 	if err == nil {
 		t.Fatalf("UpdateNode() error = nil, want version conflict")
@@ -440,6 +452,40 @@ func TestUpdateNodeRejectsVersionConflict(t *testing.T) {
 	var conflict domain.VersionConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("UpdateNode() error = %T, want VersionConflictError", err)
+	}
+}
+
+func TestUpdateNodeSupportsProcessList(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-a", Name: "Node A"})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	updated, err := svc.UpdateNode(service.UpdateNodeInput{
+		NodeID: node.ID,
+		Process: []domain.ProcessItem{
+			{Name: "queued", Status: domain.ProcessStatusTodo},
+			{Name: "thinking", Status: domain.ProcessStatusDone},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+
+	if len(updated.Process) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	}
+	if updated.Process[0].Name != "queued" || updated.Process[0].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[0] = %+v, want queued/todo", updated.Process[0])
+	}
+	if updated.Process[1].Name != "thinking" || updated.Process[1].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[1] = %+v, want thinking/done", updated.Process[1])
 	}
 }
 
