@@ -152,6 +152,7 @@ class ExecutionAgentService:
 
     def run(self, build: Build) -> str:
         agent_input = self._build_pipeline.build(build.node_id)
+        agent_input = agent_input.model_copy(update={"prompt": self._build_execution_prompt(agent_input)})
         tools_payload = _build_openai_tools(agent_input.tools)
         try:
             return self._execution_orchestrator.execute(
@@ -163,12 +164,75 @@ class ExecutionAgentService:
             # Context was compacted by the runner. Rebuild and retry once.
             _LOGGER.info("ContextTooLargeError, rebuilding context and retrying for node=%s", build.node_id)
             agent_input = self._build_pipeline.build(build.node_id)
+            agent_input = agent_input.model_copy(update={"prompt": self._build_execution_prompt(agent_input)})
             tools_payload = _build_openai_tools(agent_input.tools)
             return self._execution_orchestrator.execute(
                 build=build,
                 agent_input=agent_input,
                 tools_payload=tools_payload,
             )
+
+    @staticmethod
+    def _build_execution_prompt(agent_input: Any) -> str:
+        context_payload = ExecutionAgentService._parse_context_payload(agent_input.context.payload)
+        system_prompt = {
+            "preset": (
+                "你是 OpenMate Agent。保持输出可执行、可追踪、可回放；"
+                "优先利用工具与技能完成任务。"
+            ),
+            "tool_management": [
+                {"name": tool.name, "description": tool.description}
+                for tool in agent_input.tools.tools
+            ],
+            "skill_management": [
+                {"name": skill.name, "config": skill.config}
+                for skill in agent_input.skills.skills
+            ],
+            "memory_update_confirmation_rule": (
+                "当你的回答可能更新 user_memory 或 topic_memory 时，先询问用户是否更新。"
+            ),
+        }
+
+        user_prompt = {
+            "node_id": context_payload.get("node_id", agent_input.node_id),
+            "user_memory": context_payload.get("user_memory"),
+            "topic_memory": context_payload.get("topic_memory"),
+            "process_contexts": context_payload.get("process_contexts", []),
+            "session_history": context_payload.get("session_history", []),
+        }
+
+        payload = {
+            "SystemPrompt": system_prompt,
+            "UserPrompt": user_prompt,
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _parse_context_payload(payload_text: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(payload_text)
+            if isinstance(parsed, dict):
+                # Backward-compatible read for old payload shape.
+                if "UserPrompt" in parsed and isinstance(parsed["UserPrompt"], dict):
+                    legacy_user = parsed["UserPrompt"]
+                    legacy_system = parsed.get("SystemPrompt", {})
+                    memory = legacy_system.get("memory", {}) if isinstance(legacy_system, dict) else {}
+                    return {
+                        "node_id": parsed.get("node_id"),
+                        "user_memory": memory.get("user_memory"),
+                        "topic_memory": memory.get("topic_memory"),
+                        "process_contexts": legacy_system.get("process_contexts", []),
+                        "session_history": legacy_user.get("session", []),
+                    }
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        return {
+            "user_memory": None,
+            "topic_memory": None,
+            "process_contexts": [],
+            "session_history": [],
+        }
 
 
 class DecomposeAgentService:
@@ -435,11 +499,12 @@ def _tool_parameters_for_name(tool_name: str) -> dict[str, object]:
 
 
 class CompactAgentService:
-    """Fixed-workflow agent that compresses session events into Process memory.
+    """Fixed-workflow agent that compacts process context into summary and proposals.
 
     For each process with uncompacted session IDs, extracts the relevant
-    session events from the context snapshot and calls LLM to produce a
-    structured memory summary. Incrementally merges with existing memory.
+    session events from the context snapshot and calls LLM once to produce:
+    1) process summary (written to Process.summary)
+    2) topic_memory proposal candidates (must be user-confirmed later)
     """
 
     def __init__(self, *, gateway: LlmGateway) -> None:
@@ -464,6 +529,7 @@ class CompactAgentService:
         session_map = _build_session_event_map(request.context) if request.context else {}
 
         for proc_input in request.processes:
+            proc_id = str(proc_input.process.get("id", "")).strip()
             proc_name = proc_input.process.get("name", "")
             if not proc_name:
                 continue
@@ -478,46 +544,59 @@ class CompactAgentService:
             if not session_events:
                 continue
 
-            # Call LLM to compress
-            memory = self._llm_compress(proc_name, session_events)
+            # Call LLM to compact: summary + proposal candidates
+            summary, proposals = self._llm_compact(proc_name, session_events)
 
-            # Merge with existing process memory
-            existing_memory = proc_input.process.get("memory") or {}
-            if isinstance(existing_memory, dict):
-                merged = {**existing_memory, **memory}
+            # Merge with existing process summary
+            existing_summary = proc_input.process.get("summary") or {}
+            if isinstance(existing_summary, dict):
+                merged = {**existing_summary, **summary}
             else:
-                merged = memory
+                merged = summary
 
             results.append(CompactedProcess(
+                process_id=proc_id,
                 name=proc_name,
-                memory=merged,
+                summary=merged,
                 compacted_session_ids=proc_input.uncompacted_session_ids,
+                memory_proposals=proposals,
             ))
 
         return results
 
-    def _llm_compress(self, process_name: str, session_events: list[dict[str, Any]]) -> dict[str, Any]:
-        """Call LLM to compress session events into structured memory."""
+    def _llm_compact(
+        self, process_name: str, session_events: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Call LLM to compact session events into summary and memory proposals."""
         events_text = json.dumps(session_events, ensure_ascii=False, indent=2)
         prompt = (
             "You are OpenMate Compact Agent.\n"
-            "Goal: compress the given session events into a structured memory summary for a Process item.\n"
+            "Goal: compact the given session events for one Process item.\n"
             "Hard rules:\n"
-            "1) Extract key decisions, outcomes, artifacts, and state changes.\n"
-            "2) Output a flat JSON object with string values only.\n"
-            "3) Keep values concise (1-3 sentences per field).\n"
+            "1) Extract process summary: key decisions, outcomes, artifacts, and state changes.\n"
+            "2) Extract topic_memory proposal only for stable consensus that will impact future project actions.\n"
+            "3) Do not propose temporary intent, one-off preference, or speculation.\n"
             "4) Return strict JSON only — no markdown fences, no explanation.\n\n"
             f"process_name={process_name}\n"
             f"session_events={events_text}\n\n"
             'Return JSON schema:\n'
-            '{"key_findings": "...", "decisions": "...", "artifacts": "...", "next_steps": "..."}'
+            "{\n"
+            '  "summary": {"key_findings": "...", "decisions": "...", "artifacts": "...", "next_steps": "..."},\n'
+            '  "memory_proposal": {\n'
+            '    "propose_update": true|false,\n'
+            '    "entries": [{"key":"...", "value":"..."}],\n'
+            '    "evidence": ["..."],\n'
+            '    "confidence": 0.0,\n'
+            '    "reason": "..."\n'
+            "  }\n"
+            "}"
         )
 
         initial_input = [{"role": "user", "content": prompt}]
         model_response = self._gateway.invoke(
             InvokeRequest(
                 request_id=str(uuid4()),
-                node_id="",
+                node_id=process_name or "compact-node",
                 request=OpenAIResponsesRequest(
                     input=initial_input,
                     temperature=0.2,
@@ -527,8 +606,7 @@ class CompactAgentService:
         )
 
         raw_output = _extract_compact_response_text(model_response)
-        parsed = _parse_compact_memory(raw_output)
-        return parsed
+        return _parse_compact_payload(raw_output)
 
 
 def _build_session_event_map(context: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -587,8 +665,8 @@ def _extract_compact_response_text(response: Any) -> str:
     return "".join(fragments).strip()
 
 
-def _parse_compact_memory(raw_output: str) -> dict[str, Any]:
-    """Parse LLM JSON output into a memory dict."""
+def _parse_compact_payload(raw_output: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Parse LLM JSON output into summary and proposal candidates."""
     text = raw_output.strip()
     # Strip code fences if present
     if text.startswith("```"):
@@ -607,11 +685,49 @@ def _parse_compact_memory(raw_output: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("compact output must be a JSON object")
 
-    # Ensure all values are strings (truncate if needed)
-    result: dict[str, Any] = {}
-    for key, value in parsed.items():
+    raw_summary = parsed.get("summary")
+    if not isinstance(raw_summary, dict):
+        raw_summary = {}
+    summary: dict[str, Any] = {}
+    for key, value in raw_summary.items():
         if isinstance(value, str):
-            result[key] = value
+            summary[key] = value
         else:
-            result[key] = json.dumps(value, ensure_ascii=False)
-    return result
+            summary[key] = json.dumps(value, ensure_ascii=False)
+
+    proposals: list[dict[str, Any]] = []
+    raw_proposal = parsed.get("memory_proposal")
+    if isinstance(raw_proposal, dict):
+        entries_payload = raw_proposal.get("entries")
+        entries: list[dict[str, Any]] = []
+        if isinstance(entries_payload, list):
+            for item in entries_payload:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key", "")).strip()
+                if not key:
+                    continue
+                entries.append({"key": key, "value": item.get("value")})
+        evidence_payload = raw_proposal.get("evidence")
+        evidence: list[str] = []
+        if isinstance(evidence_payload, list):
+            for item in evidence_payload:
+                text_item = str(item).strip()
+                if text_item:
+                    evidence.append(text_item)
+        confidence_raw = raw_proposal.get("confidence", 0.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        proposals.append(
+            {
+                "propose_update": bool(raw_proposal.get("propose_update", False)),
+                "entries": entries,
+                "evidence": evidence,
+                "confidence": confidence,
+                "reason": str(raw_proposal.get("reason", "")).strip(),
+            }
+        )
+    return summary, proposals

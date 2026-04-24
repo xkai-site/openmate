@@ -128,6 +128,119 @@ func TestServerV1NodeCreateWithoutTopicCreatesIndependentTopic(t *testing.T) {
 	}
 }
 
+func TestServerV1TopicMemoryProposalListAndApply(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	if _, _, err := server.service.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-memory",
+		Name:    "Topic Memory",
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := server.service.CreateNode(service.CreateNodeInput{
+		TopicID: "topic-memory",
+		NodeID:  "node-memory",
+		Name:    "Node Memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := server.service.UpdateNode(service.UpdateNodeInput{
+		NodeID: node.ID,
+		Process: []domain.ProcessItem{
+			{ID: "proc-memory", Name: "P", Status: domain.ProcessStatusDone},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateNode(process) error = %v", err)
+	}
+	node, err = server.service.GetNode(node.ID)
+	if err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	processes, err := server.service.ListNodeProcesses(node.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
+	}
+	processes[0].Summary = map[string]any{"k": "v"}
+	_, created, err := server.service.ApplyCompactionResults(service.ApplyCompactionResultsInput{
+		NodeID:          node.ID,
+		ExpectedVersion: &node.Version,
+		Processes:       processes,
+		Compacted: []service.CompactedProcess{
+			{
+				ProcessID: "proc-memory",
+				Name:      "P",
+				Summary:   map[string]any{"k": "v"},
+				MemoryProposals: []service.MemoryProposalCandidate{
+					{
+						ProposeUpdate: true,
+						Entries:       []service.MemoryProposalEntry{{Key: "team_rule", Value: "must confirm before write"}},
+						Evidence:      []string{"repeated in conversation"},
+						Confidence:    0.9,
+						Reason:        "stable consensus",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyCompactionResults() error = %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("len(created) = %d, want 1", len(created))
+	}
+
+	listEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/topics/topic-memory/memory/proposals",
+		nil,
+		http.StatusOK,
+	)
+	listed := []domain.MemoryProposal{}
+	mustDecodeEnvelopeData(t, listEnv, &listed)
+	if len(listed) != 1 {
+		t.Fatalf("len(listed proposals) = %d, want 1", len(listed))
+	}
+	if listed[0].Status != domain.MemoryProposalStatusPending {
+		t.Fatalf("listed status = %s, want pending", listed[0].Status)
+	}
+
+	applyEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodPost,
+		testServer.URL+"/api/v1/topics/topic-memory/memory/apply",
+		map[string]any{
+			"proposal_id": created[0].ProposalID,
+			"decision":    "confirm",
+		},
+		http.StatusOK,
+	)
+	applied := domain.MemoryProposal{}
+	mustDecodeEnvelopeData(t, applyEnv, &applied)
+	if applied.Status != domain.MemoryProposalStatusApplied {
+		t.Fatalf("applied status = %s, want applied", applied.Status)
+	}
+
+	topic, err := server.service.GetTopic("topic-memory")
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	topicMemory, ok := topic.Metadata["topic_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("topic_memory = %T, want map[string]any", topic.Metadata["topic_memory"])
+	}
+	if topicMemory["team_rule"] != "must confirm before write" {
+		t.Fatalf("topic_memory = %v, want merged key", topicMemory)
+	}
+}
+
 func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {

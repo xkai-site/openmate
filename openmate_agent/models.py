@@ -151,11 +151,26 @@ class CompactRequest(BaseModel):
     context: dict[str, Any] | None = None
 
 
+class MemoryProposalEntry(BaseModel):
+    key: str = Field(min_length=1)
+    value: Any = None
+
+
+class MemoryProposalCandidate(BaseModel):
+    propose_update: bool = False
+    entries: list[MemoryProposalEntry] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+
 class CompactedProcess(BaseModel):
     """Result of compacting a single process."""
+    process_id: str = ""
     name: str = ""
-    memory: dict[str, Any] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
     compacted_session_ids: list[str] = Field(default_factory=list)
+    memory_proposals: list[MemoryProposalCandidate] = Field(default_factory=list)
 
 
 class CompactResponse(BaseModel):

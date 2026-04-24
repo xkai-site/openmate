@@ -52,11 +52,11 @@ func runProcessList(svc *service.Service, args []string, stdout, stderr io.Write
 		return code
 	}
 
-	node, err := svc.GetNode(*nodeID)
+	processes, err := svc.ListNodeProcesses(*nodeID)
 	if err != nil {
 		return printError(err, stderr)
 	}
-	return dumpJSON(node.Process, stdout, stderr)
+	return dumpJSON(processes, stdout, stderr)
 }
 
 func runProcessCompact(svc *service.Service, args []string, stdout, stderr io.Writer) int {
@@ -73,8 +73,12 @@ func runProcessCompact(svc *service.Service, args []string, stdout, stderr io.Wr
 		return code
 	}
 
-	// Get node with current processes
+	// Get node with current process references
 	node, err := svc.GetNode(*nodeID)
+	if err != nil {
+		return printError(err, stderr)
+	}
+	processes, err := svc.ListNodeProcesses(*nodeID)
 	if err != nil {
 		return printError(err, stderr)
 	}
@@ -87,19 +91,19 @@ func runProcessCompact(svc *service.Service, args []string, stdout, stderr io.Wr
 
 	// Build compact request: node_id + list of processes with their session info
 	type processCompactInput struct {
-		Process              domain.ProcessItem `json:"process"`
+		Process               domain.ProcessItem `json:"process"`
 		UncompactedSessionIDs []string           `json:"uncompacted_session_ids"`
 	}
 	input := struct {
-		NodeID    string               `json:"node_id"`
-		Processes []processCompactInput `json:"processes"`
+		NodeID    string                  `json:"node_id"`
+		Processes []processCompactInput   `json:"processes"`
 		Context   *domain.ContextSnapshot `json:"context,omitempty"`
 	}{
 		NodeID:  node.ID,
 		Context: snapshot,
 	}
 
-	for _, proc := range node.Process {
+	for _, proc := range processes {
 		if proc.SessionRange == nil || proc.SessionRange.StartSessionID == "" {
 			continue
 		}
@@ -130,19 +134,20 @@ func runProcessCompact(svc *service.Service, args []string, stdout, stderr io.Wr
 
 	// Update node's processes with compacted results
 	for _, cp := range result.Compacted {
-		for i := range node.Process {
-			if node.Process[i].Name == cp.Name {
-				node.Process[i].Memory = cp.Memory
-				node.Process[i].CompactedSessionIDs = cp.CompactedSessionIDs
+		for i := range processes {
+			if (cp.ProcessID != "" && processes[i].ID == cp.ProcessID) || (cp.ProcessID == "" && processes[i].Name == cp.Name) {
+				processes[i].Summary = cp.Summary
+				processes[i].CompactedSessionIDs = cp.CompactedSessionIDs
 				break
 			}
 		}
 	}
 
-	if _, err := svc.UpdateNode(service.UpdateNodeInput{
-		NodeID:  node.ID,
+	if _, _, err := svc.ApplyCompactionResults(service.ApplyCompactionResultsInput{
+		NodeID:          node.ID,
 		ExpectedVersion: &node.Version,
-		Process: node.Process,
+		Processes:       processes,
+		Compacted:       result.Compacted,
 	}); err != nil {
 		return printError(err, stderr)
 	}

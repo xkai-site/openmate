@@ -88,9 +88,10 @@ class VosContextInjectorTests(unittest.TestCase):
 
         self.assertIsInstance(bundle, ContextBundle)
         self.assertEqual(bundle.node_id, "node-2")
-        self.assertIn('"SystemPrompt"', bundle.payload)
-        self.assertIn('"UserPrompt"', bundle.payload)
-        self.assertIn('"session"', bundle.payload)
+        self.assertIn('"user_memory"', bundle.payload)
+        self.assertIn('"topic_memory"', bundle.payload)
+        self.assertIn('"process_contexts"', bundle.payload)
+        self.assertIn('"session_history"', bundle.payload)
 
 
 class AgentServiceContextSelectionTests(unittest.TestCase):

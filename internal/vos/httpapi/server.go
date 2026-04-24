@@ -296,6 +296,26 @@ func (server *Server) handleV1TopicRoutes(writer http.ResponseWriter, request *h
 		server.handleV1TopicNodes(writer, request, topicID)
 		return
 	}
+	if strings.HasSuffix(path, "/memory/proposals") {
+		topicID := strings.TrimSuffix(path, "/memory/proposals")
+		topicID = strings.TrimSuffix(topicID, "/")
+		if topicID == "" || strings.Contains(topicID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1TopicMemoryProposals(writer, request, topicID)
+		return
+	}
+	if strings.HasSuffix(path, "/memory/apply") {
+		topicID := strings.TrimSuffix(path, "/memory/apply")
+		topicID = strings.TrimSuffix(topicID, "/")
+		if topicID == "" || strings.Contains(topicID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1TopicMemoryApply(writer, request, topicID)
+		return
+	}
 
 	topicID := strings.TrimSuffix(path, "/")
 	if topicID == "" || strings.Contains(topicID, "/") {
@@ -396,6 +416,41 @@ func (server *Server) handleV1TopicNodes(writer http.ResponseWriter, request *ht
 	server.writeV1Success(writer, payload)
 }
 
+func (server *Server) handleV1TopicMemoryProposals(writer http.ResponseWriter, request *http.Request, topicID string) {
+	if request.Method != http.MethodGet {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet)
+		return
+	}
+	items, err := server.service.ListTopicMemoryProposals(topicID)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+	server.writeV1Success(writer, items)
+}
+
+func (server *Server) handleV1TopicMemoryApply(writer http.ResponseWriter, request *http.Request, topicID string) {
+	if request.Method != http.MethodPost {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodPost)
+		return
+	}
+	var payload v1TopicMemoryApplyPayload
+	if err := decodeJSON(request.Body, &payload); err != nil {
+		server.writeV1Error(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := server.service.ApplyTopicMemoryProposal(
+		topicID,
+		strings.TrimSpace(payload.ProposalID),
+		service.MemoryApplyDecision(strings.ToLower(strings.TrimSpace(payload.Decision))),
+	)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+	server.writeV1Success(writer, result)
+}
+
 func (server *Server) handleV1Nodes(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodPost)
@@ -481,7 +536,6 @@ func (server *Server) handleV1NodeRoutes(writer http.ResponseWriter, request *ht
 		server.handleV1NodeCompact(writer, request, nodeID)
 		return
 	}
-
 
 	if strings.HasSuffix(path, "/children") {
 		nodeID := strings.TrimSuffix(path, "/children")
@@ -696,11 +750,16 @@ func (server *Server) handleV1NodeCompact(writer http.ResponseWriter, request *h
 
 	// Build compact input: processes with uncompacted sessions
 	type procInput struct {
-		Process              domain.ProcessItem
+		Process               domain.ProcessItem
 		UncompactedSessionIDs []string
 	}
 	var inputs []procInput
-	for _, proc := range node.Process {
+	processes, err := server.service.ListNodeProcesses(nodeID)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+	for _, proc := range processes {
 		if proc.SessionRange == nil || proc.SessionRange.StartSessionID == "" {
 			continue
 		}
@@ -709,7 +768,7 @@ func (server *Server) handleV1NodeCompact(writer http.ResponseWriter, request *h
 			continue
 		}
 		inputs = append(inputs, procInput{
-			Process:              proc,
+			Process:               proc,
 			UncompactedSessionIDs: uncompacted,
 		})
 	}
@@ -740,19 +799,20 @@ func (server *Server) handleV1NodeCompact(writer http.ResponseWriter, request *h
 
 	// Update node processes with compaction results
 	for _, cp := range result.Compacted {
-		for i := range node.Process {
-			if node.Process[i].Name == cp.Name {
-				node.Process[i].Memory = cp.Memory
-				node.Process[i].CompactedSessionIDs = cp.CompactedSessionIDs
+		for i := range processes {
+			if (cp.ProcessID != "" && processes[i].ID == cp.ProcessID) || (cp.ProcessID == "" && processes[i].Name == cp.Name) {
+				processes[i].Summary = cp.Summary
+				processes[i].CompactedSessionIDs = cp.CompactedSessionIDs
 				break
 			}
 		}
 	}
 
-	if _, err := server.service.UpdateNode(service.UpdateNodeInput{
+	if _, _, err := server.service.ApplyCompactionResults(service.ApplyCompactionResultsInput{
 		NodeID:          node.ID,
 		ExpectedVersion: &node.Version,
-		Process:         node.Process,
+		Processes:       processes,
+		Compacted:       result.Compacted,
 	}); err != nil {
 		server.writeV1ServiceError(writer, err)
 		return
@@ -760,7 +820,6 @@ func (server *Server) handleV1NodeCompact(writer http.ResponseWriter, request *h
 
 	server.writeV1Success(writer, result)
 }
-
 
 func (server *Server) handleV1TreeEntry(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, v1Prefix+"/tree")
@@ -881,7 +940,11 @@ func (server *Server) buildV1NodeView(node *domain.Node, include nodeIncludeSet)
 		view["output"] = cloneMapOrEmpty(node.Output)
 	}
 	if include["process"] {
-		view["process"] = cloneProcessItems(node.Process)
+		processes, err := server.service.ListNodeProcesses(node.ID)
+		if err != nil {
+			return nil, err
+		}
+		view["process"] = cloneProcessItems(processes)
 	}
 	if include["session"] {
 		messages, err := server.buildV1SessionMessages(node.Session)
@@ -1092,8 +1155,8 @@ func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
 			sr := *item.SessionRange
 			cloned[i].SessionRange = &sr
 		}
-		cloned[i].Memory = cloneMapNil(item.Memory)
-			cloned[i].CompactedSessionIDs = cloneStringSlice(item.CompactedSessionIDs)
+		cloned[i].Summary = cloneMapNil(item.Summary)
+		cloned[i].CompactedSessionIDs = cloneStringSlice(item.CompactedSessionIDs)
 	}
 	return cloned
 }
@@ -1287,6 +1350,11 @@ type v1UpdateNodePayload struct {
 type v1NodeDecomposePayload struct {
 	Hint     *string `json:"hint"`
 	MaxItems *int    `json:"max_items"`
+}
+
+type v1TopicMemoryApplyPayload struct {
+	ProposalID string `json:"proposal_id"`
+	Decision   string `json:"decision"`
 }
 
 type moveNodePayload struct {

@@ -17,8 +17,11 @@ from .models import (
 class DefaultContextInjector(ContextInjector):
     def inject(self, node_id: str) -> ContextBundle:
         payload = {
-            "SystemPrompt": {"memory": {}},
-            "UserPrompt": {"session": []},
+            "node_id": node_id,
+            "user_memory": None,
+            "topic_memory": None,
+            "process_contexts": [],
+            "session_history": [],
         }
         return ContextBundle(
             node_id=node_id,

@@ -1,5 +1,34 @@
 # SharedInfo Process
 
+## 2026-04-24 VFS Process 主键化与引用化（Node.process_ids）
+
+1. VFS `Process` 已从 Node 内嵌列表升级为独立实体：
+   - `ProcessItem` 新增 `id`。
+   - `Node` 改为 `process_ids[]` 引用关系。
+   - 状态文件新增 `processes` 集合承载 Process 实体。
+2. 兼容口径：
+   - `vos node update --process-json` 与 HTTP `PATCH /api/v1/nodes/{id}` 的 `process` 入参语义保持不变。
+   - 读取 `process` 明细统一走服务层解析（`process_ids -> processes`）。
+3. 影响范围：
+   - `context snapshot`、`vos process list/compact`、HTTP `include=process` 已全部切换到引用解析路径。
+4. 回归结果：
+   - `go test ./internal/vos/...` 通过。
+   - `go test ./...` 通过。
+
+## 2026-04-24 master 初始化（不跑测试/不切分支，第五次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建/切换分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前指令，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
 ## 2026-04-24 VFS Process 驱动的上下文窗口改造
 
 1. VFS `ProcessItem` 已扩展为上下文窗口载体：
@@ -254,3 +283,20 @@
    - `architecture/Agent能力/Process.md`
    - `architecture/frontend/Process.md`
 3. 本轮遵循当前要求，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
+## 2026-04-24 Compact 双动作共享变更（summary + memory proposal pending）
+
+1. VOS compact 流程改为双动作：
+   - Process 压缩摘要写入 `Process.summary`
+   - 生成 `topic_memory` 提案并先落 pending，待用户确认后 apply
+2. 硬切字段：`ProcessItem.memory -> ProcessItem.summary`（Go/Python/CLI/HTTP/上下文注入链路同步）。
+3. 新增专用确认通道，避免复用 `topic update` 全量 metadata 覆盖：
+   - CLI: `vos memory proposal list --topic-id ...`
+   - CLI: `vos memory apply --topic-id ... --proposal-id ... --decision confirm|reject`
+   - HTTP: `GET /api/v1/topics/{topic_id}/memory/proposals`
+   - HTTP: `POST /api/v1/topics/{topic_id}/memory/apply`
+4. 服务端门槛校验：空条目/低置信/证据不足/敏感键均丢弃，仅保留 summary 回写。
+5. 回归：
+   - `go test ./internal/vos/...` 通过
+   - `go test ./...` 通过
+   - `python -m unittest discover -s tests` 通过（71 项）

@@ -1,5 +1,23 @@
 # Process 记录
 
+## 2026-04-24 执行链路注入封装重构（单消息内 SystemPrompt + UserPrompt）
+
+1. 执行链路保持单条 `OpenAIResponsesRequest.input`（`role=user`）不变，不改为 `system/user` 双消息。
+2. `VosContextInjector` 输出上下文字段改为：
+   - `node_id`
+   - `user_memory`
+   - `topic_memory`
+   - `process_contexts`
+   - `session_history`
+   - 不再注入 `node_memory`、`global_index` 到执行上下文载荷。
+3. `ExecutionAgentService` 新增执行态封装：
+   - 在单条请求内容中构造第一段 `SystemPrompt`（预设提示词 + 工具管理 + skill 管理 + 记忆更新确认规则）。
+   - 同一内容中构造 `UserPrompt`（`user_memory/topic_memory/process_contexts/session_history`，其中主要体量为 `session_history`）。
+4. 兼容处理：执行封装支持读取旧 `ContextBundle.payload` 结构并转换到新结构，避免存量注入格式导致执行失败。
+5. 本轮范围仅影响执行链路；`decompose` 维持现有注入路径不变。
+6. 验证结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_service tests.test_pipeline_orchestration -v` 通过（33 项）。
+
 ## 2026-04-09
 
 ### 本次决策
@@ -573,3 +591,19 @@
 6. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli -v` 通过
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）
+
+## 2026-04-24 Compact Agent 输出契约升级（summary + memory_proposal）
+
+1. `openmate_agent` compact 输出从单一 `memory` 改为双输出：
+   - `summary`：Process 摘要
+   - `memory_proposals`：topic_memory 候选提案（候选，不直接落库）
+2. 模型变更：
+   - `openmate_agent/models.py`
+     - `CompactedProcess.memory -> summary`
+     - 新增 `process_id` 与 `memory_proposals` 结构
+3. 解析与注入链路变更：
+   - `openmate_agent/agent_services.py`：compact prompt/解析改为结构化 JSON 双动作输出
+   - `openmate_agent/context_reader.py`、`openmate_agent/context_injector.py`：`process_contexts.memory -> process_contexts.summary`
+4. 新增测试：
+   - `tests/test_service.py`：compact 成功输出 summary+proposal、异常输出失败路径
+5. 回归：`python -m unittest discover -s tests` 通过（71 项）。

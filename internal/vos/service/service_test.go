@@ -390,17 +390,21 @@ func TestUpdateNodeAppendsRuntimeFieldsAndAggregatesParentMemory(t *testing.T) {
 	if len(updated.Session) != 2 || updated.Session[0] != "session-1" || updated.Session[1] != "session-2" {
 		t.Fatalf("Session = %v, want [session-1 session-2]", updated.Session)
 	}
-	if len(updated.Process) != 2 {
-		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	processes, err := svc.ListNodeProcesses(updated.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
 	}
-	if updated.Process[0].Name != "created" || updated.Process[0].Status != domain.ProcessStatusDone {
-		t.Fatalf("Process[0] = %+v, want created/done", updated.Process[0])
+	if len(processes) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(processes))
 	}
-	if updated.Process[1].Name != "running" || updated.Process[1].Status != domain.ProcessStatusTodo {
-		t.Fatalf("Process[1] = %+v, want running/todo", updated.Process[1])
+	if processes[0].Name != "created" || processes[0].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[0] = %+v, want created/done", processes[0])
 	}
-	if updated.Process[0].Timestamp.IsZero() || updated.Process[1].Timestamp.IsZero() {
-		t.Fatalf("Process timestamp should not be zero: %+v", updated.Process)
+	if processes[1].Name != "running" || processes[1].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[1] = %+v, want running/todo", processes[1])
+	}
+	if processes[0].Timestamp.IsZero() || processes[1].Timestamp.IsZero() {
+		t.Fatalf("Process timestamp should not be zero: %+v", processes)
 	}
 
 	parent, err := svc.GetNode(root.ID)
@@ -478,14 +482,18 @@ func TestUpdateNodeSupportsProcessList(t *testing.T) {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
 
-	if len(updated.Process) != 2 {
-		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	processes, err := svc.ListNodeProcesses(updated.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
 	}
-	if updated.Process[0].Name != "queued" || updated.Process[0].Status != domain.ProcessStatusTodo {
-		t.Fatalf("Process[0] = %+v, want queued/todo", updated.Process[0])
+	if len(processes) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(processes))
 	}
-	if updated.Process[1].Name != "thinking" || updated.Process[1].Status != domain.ProcessStatusDone {
-		t.Fatalf("Process[1] = %+v, want thinking/done", updated.Process[1])
+	if processes[0].Name != "queued" || processes[0].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[0] = %+v, want queued/todo", processes[0])
+	}
+	if processes[1].Name != "thinking" || processes[1].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[1] = %+v, want thinking/done", processes[1])
 	}
 }
 

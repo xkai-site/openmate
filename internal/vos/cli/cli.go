@@ -34,14 +34,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	sessionDBFile := root.String("session-db-file", "", "SQLite session database path (overrides --db-file)")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")
-		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context> <command> [flags]")
+		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context|process|memory> <command> [flags]")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Commands:")
 		fmt.Fprintln(root.Output(), "  topic   Topic operations")
 		fmt.Fprintln(root.Output(), "  node    Node operations")
 		fmt.Fprintln(root.Output(), "  session Session operations")
 		fmt.Fprintln(root.Output(), "  context Context aggregation operations")
-	fmt.Fprintln(root.Output(), "  process Process operations")
+		fmt.Fprintln(root.Output(), "  process Process operations")
+		fmt.Fprintln(root.Output(), "  memory  Topic memory proposal operations")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Global flags:")
 		root.PrintDefaults()
@@ -96,9 +97,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		defer sessionStore.Close()
 		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
 		return runContext(svc, rest[1:], stdout, stderr)
-		case "process":
-			svc := service.New(store.NewJSONStateStore(*stateFile))
-			return runProcess(svc, *stateFile, resolvedSessionDBFile, rest[1:], stdout, stderr)
+	case "process":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
+		return runProcess(svc, *stateFile, resolvedSessionDBFile, rest[1:], stdout, stderr)
+	case "memory":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
+		return runMemory(svc, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown resource: %s\n", rest[0])
 		root.Usage()

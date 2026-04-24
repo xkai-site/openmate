@@ -18,7 +18,7 @@ from openmate_pool.models import (
 )
 from openmate_agent.service import AgentCapabilityService
 from openmate_agent.session_models import AppendSessionEventInput
-from openmate_agent.models import DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest
+from openmate_agent.models import CompactProcessInput, CompactRequest, DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
@@ -72,6 +72,16 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertIsInstance(first.request.input, list)
         self.assertEqual(first.request.input[0]["role"], "user")
         self.assertIsInstance(first.request.input[0]["content"], str)
+        first_content = first.request.input[0]["content"]
+        self.assertIn('"SystemPrompt"', first_content)
+        self.assertIn('"UserPrompt"', first_content)
+        self.assertIn('"memory_update_confirmation_rule"', first_content)
+        self.assertIn('"user_memory"', first_content)
+        self.assertIn('"topic_memory"', first_content)
+        self.assertIn('"process_contexts"', first_content)
+        self.assertIn('"session_history"', first_content)
+        self.assertNotIn('"node_memory"', first_content)
+        self.assertNotIn('"global_index"', first_content)
         second = gateway.requests[1]
         self.assertEqual(second.request.previous_response_id, "resp-tool-1")
         self.assertIsInstance(second.request.input, list)
@@ -133,7 +143,10 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             )
             service = AgentCapabilityService(workspace_root=tmp)
             result = service.execute_agent(service.build("node-real"))
-            self.assertIn("echo:node=node-real", result)
+            self.assertIn("echo:{", result)
+            self.assertIn('"SystemPrompt"', result)
+            self.assertIn('"UserPrompt"', result)
+            self.assertIn('"node_id": "node-real"', result)
 
     def test_priority_returns_true_for_non_empty_input(self) -> None:
         result = self.service.priority(["n1", "n2"], hint="hot-topic")
@@ -217,6 +230,49 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         )
         self.assertEqual(response.status, "succeeded")
         self.assertEqual(len(response.priority_plan), 2)
+
+    def test_compact_agent_returns_summary_and_pending_proposal_candidates(self) -> None:
+        service = AgentCapabilityService(gateway=_CompactGateway())
+        response = service.compact_agent(
+            CompactRequest(
+                node_id="node-compact",
+                processes=[
+                    CompactProcessInput(
+                        process={"id": "proc-1", "name": "Implement", "summary": {"legacy": "keep"}},
+                        uncompacted_session_ids=["session-1"],
+                    )
+                ],
+                context={
+                    "session_history": [
+                        {
+                            "session": {"id": "session-1"},
+                            "events": [{"seq": 1, "item_type": "message", "payload_json": {"text": "done"}}],
+                        }
+                    ]
+                },
+            )
+        )
+        self.assertEqual(response.status, "succeeded")
+        self.assertEqual(len(response.compacted), 1)
+        compacted = response.compacted[0]
+        self.assertEqual(compacted.process_id, "proc-1")
+        self.assertEqual(compacted.summary["legacy"], "keep")
+        self.assertIn("key_findings", compacted.summary)
+        self.assertEqual(len(compacted.memory_proposals), 1)
+        self.assertTrue(compacted.memory_proposals[0].propose_update)
+        self.assertEqual(compacted.memory_proposals[0].entries[0].key, "team_norm")
+
+    def test_compact_agent_returns_failed_on_invalid_output(self) -> None:
+        service = AgentCapabilityService(gateway=_BadCompactGateway())
+        response = service.compact_agent(
+            CompactRequest(
+                node_id="node-compact-fail",
+                processes=[CompactProcessInput(process={"id": "proc-1", "name": "Implement"}, uncompacted_session_ids=["s1"])],
+                context={"session_history": [{"session": {"id": "s1"}, "events": [{"seq": 1}]}]},
+            )
+        )
+        self.assertEqual(response.status, "failed")
+        self.assertIn("compact output is not valid JSON", response.error or "")
 
     def test_run_tool_write_read_query(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -736,6 +792,50 @@ class _EmptyDecomposeGateway:
             status=InvocationStatus.SUCCESS,
             response=None,
             output_text=json.dumps({"tasks": []}, ensure_ascii=False),
+            timing=InvocationTiming(),
+        )
+
+
+class _CompactGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        output = json.dumps(
+            {
+                "summary": {
+                    "key_findings": "implementation completed",
+                    "decisions": "use strict typing",
+                },
+                "memory_proposal": {
+                    "propose_update": True,
+                    "entries": [{"key": "team_norm", "value": "confirm before writing topic_memory"}],
+                    "evidence": ["explicitly repeated by user"],
+                    "confidence": 0.92,
+                    "reason": "stable cross-turn consensus",
+                },
+            },
+            ensure_ascii=False,
+        )
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=None,
+            output_text=output,
+            timing=InvocationTiming(),
+        )
+
+
+class _BadCompactGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=None,
+            output_text="not-json",
             timing=InvocationTiming(),
         )
 
