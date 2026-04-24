@@ -5,11 +5,19 @@ type ContextSessionHistory struct {
 	Events  []*SessionEvent `json:"events"`
 }
 
+type ProcessContext struct {
+	Name          string          `json:"name"`
+	Status        ProcessStatus   `json:"status"`
+	Memory        map[string]any  `json:"memory,omitempty"`
+	SessionEvents []*SessionEvent `json:"session_events,omitempty"`
+}
+
 type ContextSnapshot struct {
-	NodeID         string                  `json:"node_id"`
-	UserMemory     map[string]any          `json:"user_memory"`
-	TopicMemory    map[string]any          `json:"topic_memory"`
-	NodeMemory     map[string]any          `json:"node_memory"`
-	GlobalIndex    any                     `json:"global_index"`
-	SessionHistory []ContextSessionHistory `json:"session_history"`
+	NodeID          string                  `json:"node_id"`
+	UserMemory      map[string]any          `json:"user_memory"`
+	TopicMemory     map[string]any          `json:"topic_memory"`
+	NodeMemory      map[string]any          `json:"node_memory"`
+	GlobalIndex     any                     `json:"global_index"`
+	SessionHistory  []ContextSessionHistory `json:"session_history"`
+	ProcessContexts []ProcessContext        `json:"process_contexts"`
 }

@@ -820,7 +820,16 @@ func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
 	if raw == nil {
 		return []domain.ProcessItem{}
 	}
-	return slices.Clone(raw)
+	cloned := make([]domain.ProcessItem, len(raw))
+	for i, item := range raw {
+		cloned[i] = item
+		if item.SessionRange != nil {
+			sr := *item.SessionRange
+			cloned[i].SessionRange = &sr
+		}
+		cloned[i].Memory = cloneMapNil(item.Memory)
+	}
+	return cloned
 }
 
 func cloneStringPtr(raw *string) *string {

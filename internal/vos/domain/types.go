@@ -24,10 +24,23 @@ const (
 	ProcessStatusDone ProcessStatus = "done"
 )
 
+type SessionRange struct {
+	StartSessionID string `json:"start_session_id"`
+	EndSessionID   string `json:"end_session_id,omitempty"`
+	StartEventSeq  *int   `json:"start_event_seq,omitempty"`
+	EndEventSeq    *int   `json:"end_event_seq,omitempty"`
+}
+
 type ProcessItem struct {
-	Name      string        `json:"name"`
-	Status    ProcessStatus `json:"status"`
-	Timestamp time.Time     `json:"timestamp"`
+	Name         string        `json:"name"`
+	Status       ProcessStatus `json:"status"`
+	SessionRange *SessionRange `json:"session_range,omitempty"`
+	Memory       map[string]any `json:"memory,omitempty"`
+	Timestamp    time.Time     `json:"timestamp"`
+}
+
+func (sr *SessionRange) Closed() bool {
+	return sr.EndSessionID != ""
 }
 
 type Topic struct {
@@ -141,6 +154,18 @@ func (item *ProcessItem) Normalize(nodeUpdatedAt, nodeCreatedAt time.Time) {
 		}
 	} else {
 		item.Timestamp = item.Timestamp.UTC()
+	}
+	if item.SessionRange != nil {
+		item.SessionRange.Normalize()
+	}
+	if item.Memory == nil {
+		item.Memory = nil
+	}
+}
+
+func (sr *SessionRange) Normalize() {
+	if sr.EndSessionID == "" {
+		sr.EndSessionID = ""
 	}
 }
 

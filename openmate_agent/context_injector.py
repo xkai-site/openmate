@@ -28,6 +28,20 @@ class VosContextInjector(ContextInjector):
                 }
             )
 
+        process_contexts: list[dict[str, Any]] = []
+        for pc in snapshot.process_contexts:
+            entry: dict[str, Any] = {
+                "name": pc.name,
+                "status": pc.status,
+            }
+            if pc.memory is not None:
+                entry["memory"] = pc.memory
+            if pc.session_events:
+                entry["session_events"] = [
+                    event.model_dump(mode="json") for event in pc.session_events
+                ]
+            process_contexts.append(entry)
+
         payload: dict[str, Any] = {
             "SystemPrompt": {
                 "memory": {
@@ -35,7 +49,8 @@ class VosContextInjector(ContextInjector):
                     "topic_memory": snapshot.topic_memory,
                     "node_memory": snapshot.node_memory,
                     "global_index": snapshot.global_index,
-                }
+                },
+                "process_contexts": process_contexts,
             },
             "UserPrompt": {
                 "session": session_history,

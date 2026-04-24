@@ -989,13 +989,31 @@ func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
 		return []domain.ProcessItem{}
 	}
 	cloned := make([]domain.ProcessItem, len(raw))
-	copy(cloned, raw)
+	for i, item := range raw {
+		cloned[i] = item
+		if item.SessionRange != nil {
+			sr := *item.SessionRange
+			cloned[i].SessionRange = &sr
+		}
+		cloned[i].Memory = cloneMapNil(item.Memory)
+	}
 	return cloned
 }
 
 func cloneMapOrEmpty(raw map[string]any) map[string]any {
 	if raw == nil {
 		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(raw))
+	for key, value := range raw {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneMapNil(raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
 	}
 	cloned := make(map[string]any, len(raw))
 	for key, value := range raw {
