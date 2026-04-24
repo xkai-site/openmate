@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
+
+_LOGGER = logging.getLogger(__name__)
 
 from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
 
 from .interfaces import LlmGateway
 from .models import (
     Build,
+    CompactProcessInput,
+    CompactRequest,
+    CompactResponse,
+    CompactedProcess,
     DecomposeRequest,
     DecomposeResponse,
     DecomposeTask,
@@ -20,7 +27,7 @@ from .models import (
     PriorityResponse,
     ToolBundle,
 )
-from .orchestration import ExecutionOrchestrator
+from .orchestration import ContextTooLargeError, ExecutionOrchestrator
 from .pipeline import BuildPipeline
 
 _TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -146,11 +153,22 @@ class ExecutionAgentService:
     def run(self, build: Build) -> str:
         agent_input = self._build_pipeline.build(build.node_id)
         tools_payload = _build_openai_tools(agent_input.tools)
-        return self._execution_orchestrator.execute(
-            build=build,
-            agent_input=agent_input,
-            tools_payload=tools_payload,
-        )
+        try:
+            return self._execution_orchestrator.execute(
+                build=build,
+                agent_input=agent_input,
+                tools_payload=tools_payload,
+            )
+        except ContextTooLargeError:
+            # Context was compacted by the runner. Rebuild and retry once.
+            _LOGGER.info("ContextTooLargeError, rebuilding context and retrying for node=%s", build.node_id)
+            agent_input = self._build_pipeline.build(build.node_id)
+            tools_payload = _build_openai_tools(agent_input.tools)
+            return self._execution_orchestrator.execute(
+                build=build,
+                agent_input=agent_input,
+                tools_payload=tools_payload,
+            )
 
 
 class DecomposeAgentService:
@@ -414,3 +432,186 @@ def _tool_parameters_for_name(tool_name: str) -> dict[str, object]:
         "additionalProperties": True,
     }
     return _TOOL_PARAMETER_SCHEMAS.get(tool_name, default_schema)
+
+
+class CompactAgentService:
+    """Fixed-workflow agent that compresses session events into Process memory.
+
+    For each process with uncompacted session IDs, extracts the relevant
+    session events from the context snapshot and calls LLM to produce a
+    structured memory summary. Incrementally merges with existing memory.
+    """
+
+    def __init__(self, *, gateway: LlmGateway) -> None:
+        self._gateway = gateway
+
+    def run(self, request: CompactRequest) -> CompactResponse:
+        started = time.perf_counter()
+        try:
+            compacted = self._compact_processes(request)
+            return CompactResponse(
+                status="succeeded",
+                compacted=compacted,
+            )
+        except Exception as exc:
+            return CompactResponse(
+                status="failed",
+                error=str(exc),
+            )
+
+    def _compact_processes(self, request: CompactRequest) -> list[CompactedProcess]:
+        results: list[CompactedProcess] = []
+        session_map = _build_session_event_map(request.context) if request.context else {}
+
+        for proc_input in request.processes:
+            proc_name = proc_input.process.get("name", "")
+            if not proc_name:
+                continue
+
+            # Collect session events for uncompacted sessions
+            session_events: list[dict[str, Any]] = []
+            for sid in proc_input.uncompacted_session_ids:
+                events = session_map.get(sid, [])
+                for event in events:
+                    session_events.append(event)
+
+            if not session_events:
+                continue
+
+            # Call LLM to compress
+            memory = self._llm_compress(proc_name, session_events)
+
+            # Merge with existing process memory
+            existing_memory = proc_input.process.get("memory") or {}
+            if isinstance(existing_memory, dict):
+                merged = {**existing_memory, **memory}
+            else:
+                merged = memory
+
+            results.append(CompactedProcess(
+                name=proc_name,
+                memory=merged,
+                compacted_session_ids=proc_input.uncompacted_session_ids,
+            ))
+
+        return results
+
+    def _llm_compress(self, process_name: str, session_events: list[dict[str, Any]]) -> dict[str, Any]:
+        """Call LLM to compress session events into structured memory."""
+        events_text = json.dumps(session_events, ensure_ascii=False, indent=2)
+        prompt = (
+            "You are OpenMate Compact Agent.\n"
+            "Goal: compress the given session events into a structured memory summary for a Process item.\n"
+            "Hard rules:\n"
+            "1) Extract key decisions, outcomes, artifacts, and state changes.\n"
+            "2) Output a flat JSON object with string values only.\n"
+            "3) Keep values concise (1-3 sentences per field).\n"
+            "4) Return strict JSON only — no markdown fences, no explanation.\n\n"
+            f"process_name={process_name}\n"
+            f"session_events={events_text}\n\n"
+            'Return JSON schema:\n'
+            '{"key_findings": "...", "decisions": "...", "artifacts": "...", "next_steps": "..."}'
+        )
+
+        initial_input = [{"role": "user", "content": prompt}]
+        model_response = self._gateway.invoke(
+            InvokeRequest(
+                request_id=str(uuid4()),
+                node_id="",
+                request=OpenAIResponsesRequest(
+                    input=initial_input,
+                    temperature=0.2,
+                    text={"format": {"type": "json_object"}},
+                ),
+            )
+        )
+
+        raw_output = _extract_compact_response_text(model_response)
+        parsed = _parse_compact_memory(raw_output)
+        return parsed
+
+
+def _build_session_event_map(context: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Build a map of session_id -> events from the context snapshot."""
+    session_map: dict[str, list[dict[str, Any]]] = {}
+    history = context.get("session_history") or []
+    for entry in history:
+        session = entry.get("session") or {}
+        sid = session.get("id", "")
+        if not sid:
+            continue
+        events = entry.get("events") or []
+        session_map[sid] = list(events)
+    return session_map
+
+
+def _extract_compact_response_text(response: Any) -> str:
+    """Extract text from an LLM response."""
+    if response is None:
+        raise ValueError("compact model returned empty response")
+    status_value = getattr(response, "status", "")
+    status_text = str(getattr(status_value, "value", status_value)).lower()
+    if status_text == "failure":
+        error = getattr(response, "error", None)
+        if error is not None:
+            message = getattr(error, "message", "") or str(error)
+            raise ValueError(f"compact model invocation failed: {message}")
+        raise ValueError("compact model invocation failed")
+
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    response_payload = getattr(response, "response", None)
+    output_items = getattr(response_payload, "output", None)
+    if not isinstance(output_items, list):
+        raise ValueError("compact model returned empty output")
+
+    fragments: list[str] = []
+    for item in output_items:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for content_item in content:
+            if not isinstance(content_item, dict):
+                continue
+            if content_item.get("type") not in {"output_text", "text"}:
+                continue
+            text = content_item.get("text")
+            if isinstance(text, str) and text.strip():
+                fragments.append(text)
+    if not fragments:
+        raise ValueError("compact model returned empty output")
+    return "".join(fragments).strip()
+
+
+def _parse_compact_memory(raw_output: str) -> dict[str, Any]:
+    """Parse LLM JSON output into a memory dict."""
+    text = raw_output.strip()
+    # Strip code fences if present
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"compact output is not valid JSON: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("compact output must be a JSON object")
+
+    # Ensure all values are strings (truncate if needed)
+    result: dict[str, Any] = {}
+    for key, value in parsed.items():
+        if isinstance(value, str):
+            result[key] = value
+        else:
+            result[key] = json.dumps(value, ensure_ascii=False)
+    return result

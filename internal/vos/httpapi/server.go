@@ -471,6 +471,17 @@ func (server *Server) handleV1NodeRoutes(writer http.ResponseWriter, request *ht
 		server.handleV1NodeDecompose(writer, request, nodeID)
 		return
 	}
+	if strings.HasSuffix(path, "/compact") {
+		nodeID := strings.TrimSuffix(path, "/compact")
+		nodeID = strings.TrimSuffix(nodeID, "/")
+		if nodeID == "" || strings.Contains(nodeID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1NodeCompact(writer, request, nodeID)
+		return
+	}
+
 
 	if strings.HasSuffix(path, "/children") {
 		nodeID := strings.TrimSuffix(path, "/children")
@@ -664,6 +675,92 @@ func (server *Server) handleV1NodeDecompose(writer http.ResponseWriter, request 
 	}
 	server.writeV1Success(writer, result)
 }
+
+func (server *Server) handleV1NodeCompact(writer http.ResponseWriter, request *http.Request, nodeID string) {
+	if request.Method != http.MethodPost {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodPost)
+		return
+	}
+
+	node, err := server.service.GetNode(nodeID)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+
+	snapshot, err := server.service.GetContextSnapshot(nodeID)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+
+	// Build compact input: processes with uncompacted sessions
+	type procInput struct {
+		Process              domain.ProcessItem
+		UncompactedSessionIDs []string
+	}
+	var inputs []procInput
+	for _, proc := range node.Process {
+		if proc.SessionRange == nil || proc.SessionRange.StartSessionID == "" {
+			continue
+		}
+		uncompacted := findUncompactedSessions(proc, snapshot)
+		if len(uncompacted) == 0 {
+			continue
+		}
+		inputs = append(inputs, procInput{
+			Process:              proc,
+			UncompactedSessionIDs: uncompacted,
+		})
+	}
+
+	if len(inputs) == 0 {
+		server.writeV1Success(writer, map[string]any{
+			"status":  "skipped",
+			"message": "no processes with uncompacted sessions",
+		})
+		return
+	}
+
+	// Convert to CompactProcessInput
+	compactInputs := make([]service.CompactProcessInput, len(inputs))
+	for i, inp := range inputs {
+		compactInputs[i] = service.CompactProcessInput{
+			Process:               inp.Process,
+			UncompactedSessionIDs: inp.UncompactedSessionIDs,
+		}
+	}
+
+	runner := service.NewCommandCompactRunner()
+	result, err := server.service.CompactProcesses(runner, nodeID, compactInputs, snapshot)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+
+	// Update node processes with compaction results
+	for _, cp := range result.Compacted {
+		for i := range node.Process {
+			if node.Process[i].Name == cp.Name {
+				node.Process[i].Memory = cp.Memory
+				node.Process[i].CompactedSessionIDs = cp.CompactedSessionIDs
+				break
+			}
+		}
+	}
+
+	if _, err := server.service.UpdateNode(service.UpdateNodeInput{
+		NodeID:          node.ID,
+		ExpectedVersion: &node.Version,
+		Process:         node.Process,
+	}); err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+
+	server.writeV1Success(writer, result)
+}
+
 
 func (server *Server) handleV1TreeEntry(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, v1Prefix+"/tree")
@@ -996,6 +1093,7 @@ func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
 			cloned[i].SessionRange = &sr
 		}
 		cloned[i].Memory = cloneMapNil(item.Memory)
+			cloned[i].CompactedSessionIDs = cloneStringSlice(item.CompactedSessionIDs)
 	}
 	return cloned
 }
@@ -1009,6 +1107,31 @@ func cloneMapOrEmpty(raw map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func findUncompactedSessions(proc domain.ProcessItem, snapshot *domain.ContextSnapshot) []string {
+	compacted := make(map[string]bool)
+	for _, sid := range proc.CompactedSessionIDs {
+		compacted[sid] = true
+	}
+
+	var uncompacted []string
+	started := false
+	for _, sh := range snapshot.SessionHistory {
+		if sh.Session.ID == proc.SessionRange.StartSessionID {
+			started = true
+		}
+		if !started {
+			continue
+		}
+		if !compacted[sh.Session.ID] {
+			uncompacted = append(uncompacted, sh.Session.ID)
+		}
+		if proc.SessionRange.EndSessionID != "" && sh.Session.ID == proc.SessionRange.EndSessionID {
+			break
+		}
+	}
+	return uncompacted
 }
 
 func cloneMapNil(raw map[string]any) map[string]any {

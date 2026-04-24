@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 ToolName = Literal["read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"]
 GuardState = Literal["allow", "deny", "confirm"]
-AgentMode = Literal["execution", "decompose", "priority"]
+AgentMode = Literal["execution", "decompose", "priority", "compact"]
 
 
 class Build(BaseModel):
@@ -136,3 +136,29 @@ class PriorityResponse(BaseModel):
     error: str | None = None
     duration_ms: int = Field(default=0, ge=0)
     priority_plan: list[PriorityAssignment] = Field(default_factory=list)
+
+
+class CompactProcessInput(BaseModel):
+    """A single process and its uncompacted session IDs."""
+    process: dict[str, Any] = Field(default_factory=dict)
+    uncompacted_session_ids: list[str] = Field(default_factory=list)
+
+
+class CompactRequest(BaseModel):
+    request_id: str = ""
+    node_id: str = Field(min_length=1)
+    processes: list[CompactProcessInput] = Field(default_factory=list)
+    context: dict[str, Any] | None = None
+
+
+class CompactedProcess(BaseModel):
+    """Result of compacting a single process."""
+    name: str = ""
+    memory: dict[str, Any] = Field(default_factory=dict)
+    compacted_session_ids: list[str] = Field(default_factory=list)
+
+
+class CompactResponse(BaseModel):
+    status: Literal["succeeded", "failed"] = "succeeded"
+    compacted: list[CompactedProcess] = Field(default_factory=list)
+    error: str | None = None

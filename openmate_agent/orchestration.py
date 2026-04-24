@@ -1,15 +1,27 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
+from openmate_pool.errors import InvocationFailedError
 from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
 from pydantic import BaseModel, Field
 
 from .interfaces import LlmGateway, SessionEventWriter
 from .models import AgentInput, Build, ToolResult
 from .session_models import AppendSessionEventInput, SessionItemType, SessionRole, SessionStatus
+
+_LOGGER = logging.getLogger(__name__)
+
+# Error codes from the LLM provider that indicate context window overflow
+_CONTEXT_TOO_LARGE_CODES = frozenset({
+    "too_long",
+    "context_length_exceeded",
+    "request_too_large",
+    "max_context_length_exceeded",
+})
 
 
 class _ParsedFunctionCall(BaseModel):
@@ -35,8 +47,39 @@ class ExecutionRunner(Protocol):
     ) -> str: ...
 
 
+def _is_context_too_large_error(exc: InvocationFailedError) -> bool:
+    """Check if the gateway error indicates a context window overflow."""
+    if exc.response is None:
+        return False
+    error = exc.response.error
+    if error is None:
+        return False
+    code = (error.code or "").lower()
+    message = (error.message or "").lower()
+    if code in _CONTEXT_TOO_LARGE_CODES:
+        return True
+    # Also check the message for descriptive provider errors
+    for keyword in ("too long", "too large", "maximum context", "context length"):
+        if keyword in message:
+            return True
+    return False
+
+
+class ContextTooLargeError(RuntimeError):
+    """Raised when the LLM provider reports a context window overflow.
+    The caller should compact the node and retry."""
+
+    def __init__(self, node_id: str, error_code: str, message: str) -> None:
+        self.node_id = node_id
+        self.error_code = error_code
+        super().__init__(f"Context too large for node={node_id}: {error_code} - {message}")
+
+
 class ResponsesExecutionRunner:
     """Default execution loop based on OpenAI Responses tool-calling semantics."""
+
+    def __init__(self, compact_trigger: Callable[[str], None] | None = None) -> None:
+        self._compact_trigger = compact_trigger
 
     def run(
         self,
@@ -68,13 +111,28 @@ class ResponsesExecutionRunner:
                     parallel_tool_calls=False if previous_response_id is None and tools_payload else None,
                     previous_response_id=previous_response_id,
                 )
-                response = gateway.invoke(
-                    InvokeRequest(
-                        request_id=str(uuid4()),
-                        node_id=build.node_id,
-                        request=request,
+                try:
+                    response = gateway.invoke(
+                        InvokeRequest(
+                            request_id=str(uuid4()),
+                            node_id=build.node_id,
+                            request=request,
+                        )
                     )
-                )
+                except InvocationFailedError as exc:
+                    if self._compact_trigger is not None and _is_context_too_large_error(exc):
+                        _LOGGER.info(
+                            "Context too large for node=%s (code=%s), triggering compact and retry",
+                            build.node_id,
+                            exc.response.error.code if exc.response.error else "unknown",
+                        )
+                        self._compact_trigger(build.node_id)
+                        raise ContextTooLargeError(
+                            node_id=build.node_id,
+                            error_code=exc.response.error.code if exc.response.error else "unknown",
+                            message=str(exc),
+                        ) from exc
+                    raise
 
                 if response.response and response.response.id:
                     previous_response_id = response.response.id
@@ -357,8 +415,8 @@ class LangGraphExecutionRunner:
     service interfaces.
     """
 
-    def __init__(self, fallback: ExecutionRunner | None = None) -> None:
-        self._fallback = fallback or ResponsesExecutionRunner()
+    def __init__(self, fallback: ExecutionRunner | None = None, compact_trigger: Callable[[str], None] | None = None) -> None:
+        self._fallback = fallback or ResponsesExecutionRunner(compact_trigger=compact_trigger)
 
     def run(
         self,
@@ -388,11 +446,12 @@ class ExecutionOrchestrator:
         tool_executor: ToolExecutor,
         session_writer: SessionEventWriter | None = None,
         runner: ExecutionRunner | None = None,
+        compact_trigger: Callable[[str], None] | None = None,
     ) -> None:
         self._gateway = gateway
         self._tool_executor = tool_executor
         self._session_writer = session_writer
-        self._runner = runner or ResponsesExecutionRunner()
+        self._runner = runner or ResponsesExecutionRunner(compact_trigger=compact_trigger)
 
     def execute(
         self,

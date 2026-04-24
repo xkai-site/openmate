@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from .models import DecomposeRequest, PriorityRequest
+from .models import CompactRequest, DecomposeRequest, PriorityRequest
 from .service import AgentCapabilityService
 from .worker import WorkerExecuteRequest, execute_worker_request
 
@@ -160,6 +160,12 @@ def create_parser() -> argparse.ArgumentParser:
     priority_run.add_argument("--request-json", default="", help="Inline PriorityRequest JSON.")
     priority_run.add_argument("--request-file", default="", help="Path to PriorityRequest JSON file.")
 
+    compact_parser = subparsers.add_parser("compact", help="Execute compact agent action.")
+    compact_subparsers = compact_parser.add_subparsers(dest="compact_name", required=True)
+    compact_run = compact_subparsers.add_parser("run", help="Run one compact request (JSON in/out).")
+    compact_run.add_argument("--request-json", default="", help="Inline CompactRequest JSON.")
+    compact_run.add_argument("--request-file", default="", help="Path to CompactRequest JSON file.")
+
     return parser
 
 
@@ -306,6 +312,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"status": "failed", "error": f"invalid priority request json: {exc}"}))
             return 2
         response = service.priority_agent(request)
+        print(response.model_dump_json(indent=2))
+        return 0 if response.status == "succeeded" else 1
+
+    if args.command == "compact":
+        if args.compact_name != "run":
+            print(json.dumps({"status": "failed", "error": f"unknown compact command: {args.compact_name}"}))
+            return 2
+        if bool(args.request_json) == bool(args.request_file):
+            print(
+                json.dumps(
+                    {"status": "failed", "error": "compact run requires exactly one of --request-json or --request-file"}
+                )
+            )
+            return 2
+        raw = args.request_json
+        if args.request_file:
+            try:
+                raw = Path(args.request_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"status": "failed", "error": f"read request file failed: {exc}"}))
+                return 2
+        try:
+            request = CompactRequest.model_validate_json(raw)
+        except Exception as exc:
+            print(json.dumps({"status": "failed", "error": f"invalid compact request json: {exc}"}))
+            return 2
+        response = service.compact_agent(request)
         print(response.model_dump_json(indent=2))
         return 0 if response.status == "succeeded" else 1
 

@@ -9,12 +9,12 @@ from openmate_shared.runtime_paths import (
     resolve_workspace_root,
 )
 
-from .agent_services import DecomposeAgentService, ExecutionAgentService, PriorityAgentService
+from .agent_services import CompactAgentService, DecomposeAgentService, ExecutionAgentService, PriorityAgentService
 from .context_reader import VosContextReader
 from .context_injector import VosContextInjector
 from .defaults import DefaultAssembler, DefaultContextInjector, DefaultSkillInjector, DefaultToolInjector
 from .interfaces import Assembler, ContextInjector, LlmGateway, SessionEventWriter, SkillInjector, ToolInjector
-from .models import Build, DecomposeRequest, DecomposeResponse, PriorityRequest, PriorityResponse, ToolResult
+from .models import Build, CompactRequest, CompactResponse, DecomposeRequest, DecomposeResponse, PriorityRequest, PriorityResponse, ToolResult
 from .orchestration import ExecutionOrchestrator, ExecutionRunner
 from .pipeline import BuildPipeline
 from .session_writer import VosSessionWriter
@@ -46,6 +46,7 @@ class AgentCapabilityService:
         execution_agent: ExecutionAgentService | None = None,
         decompose_agent: DecomposeAgentService | None = None,
         priority_agent: PriorityAgentService | None = None,
+        compact_agent: CompactAgentService | None = None,
         tool_runtime: ToolRuntimeExecutor | None = None,
     ) -> None:
         self._workspace_root = resolve_workspace_root(workspace_root)
@@ -100,6 +101,9 @@ class AgentCapabilityService:
             gateway=self._gateway,
         )
         self._priority_agent = priority_agent or PriorityAgentService()
+        self._compact_agent = compact_agent or CompactAgentService(
+            gateway=self._gateway,
+        )
 
     def build(self, node_id: str, session_id: str | None = None) -> Build:
         return Build(node_id=node_id, session_id=session_id)
@@ -112,6 +116,9 @@ class AgentCapabilityService:
 
     def priority_agent(self, request: PriorityRequest) -> PriorityResponse:
         return self._priority_agent.run(request)
+
+    def compact_agent(self, request: CompactRequest) -> CompactResponse:
+        return self._compact_agent.run(request)
 
     def priority(self, node_ids: list[str], hint: str | None = None) -> bool:
         return self._priority_agent.legacy_gate(node_ids=node_ids, hint=hint)

@@ -41,6 +41,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(root.Output(), "  node    Node operations")
 		fmt.Fprintln(root.Output(), "  session Session operations")
 		fmt.Fprintln(root.Output(), "  context Context aggregation operations")
+	fmt.Fprintln(root.Output(), "  process Process operations")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Global flags:")
 		root.PrintDefaults()
@@ -95,6 +96,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		defer sessionStore.Close()
 		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
 		return runContext(svc, rest[1:], stdout, stderr)
+		case "process":
+			svc := service.New(store.NewJSONStateStore(*stateFile))
+			return runProcess(svc, *stateFile, resolvedSessionDBFile, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown resource: %s\n", rest[0])
 		root.Usage()

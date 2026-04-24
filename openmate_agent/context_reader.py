@@ -75,6 +75,18 @@ class VosContextReader:
         )
         return ContextSnapshotRecord.model_validate_json(stdout)
 
+    def compact_node(self, node_id: str) -> dict[str, Any]:
+        """Trigger compact for the given node. Returns the compact response JSON."""
+        stdout = self._run_command(
+            [
+                "process",
+                "compact",
+                "--node-id",
+                node_id,
+            ]
+        )
+        return json.loads(stdout)
+
     def _run_command(self, command: list[str]) -> str:
         binary = ensure_vos_binary(self._binary_path)
         result = subprocess.run(

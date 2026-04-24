@@ -828,6 +828,7 @@ func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
 			cloned[i].SessionRange = &sr
 		}
 		cloned[i].Memory = cloneMapNil(item.Memory)
+		cloned[i].CompactedSessionIDs = cloneStrings(item.CompactedSessionIDs)
 	}
 	return cloned
 }

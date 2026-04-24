@@ -53,6 +53,340 @@
    - Go：`go test ./...` 通过。
    - Python：`.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）。
 
+## 2026-04-24 CompactAgent + 三个压缩触发时机
+
+1. 新增 `ProcessItem.compacted_session_ids` 字段，记录已压缩的 Session ID，支持增量压缩追踪。
+
+2. **Process CLI（Go）**：
+   - `vos process list --node-id X`：列出 Node 的所有 Process 摘要。
+   - `vos process compact --node-id X`：触发压缩 Agent。
+   - 核心逻辑：`findUncompactedSessions()` 遍历 SessionHistory，找出未被 `compacted_session_ids` 覆盖的未压缩 Session。
+
+3. **CompactAgent Service（Go）**：
+   - `internal/vos/service/compact_service.go`：
+     - `CompactAgentRequest/CompactAgentResponse` 请求/响应模型。
+     - `CompactRunner` 接口 + `CommandCompactRunner` 实现（shell-out to `python -m openmate_agent.cli compact run`）。
+     - `Service.CompactProcesses()` 编排方法。
+   - `POST /api/v1/nodes/{id}/compact` HTTP 端点，遵循 `/decompose` 路由模式。
+
+4. **CompactAgent（Python 固定工作流）**：
+   - `openmate_agent/models.py`：新增 `CompactRequest/CompactResponse/CompactedProcess/CompactProcessInput` 模型。
+   - `openmate_agent/agent_services.py`：新增 `CompactAgentService`，遍历 processes 提取无压缩 Session 事件，调用 LLM 压缩为结构化 Memory。
+   - `openmate_agent/cli.py`：新增 `compact run` 子命令。
+   - `openmate_agent/service.py`：`AgentCapabilityService` 新增 `compact_agent()` 方法。
+
+5. **三个压缩触发时机**：
+   - **手动触发**：`POST /api/v1/nodes/{id}/compact` + `vos process compact --node-id X`。
+   - **上下文 >70% 自动触发**：`VosContextInjector.inject()` 检测 payload 超过 `compact_threshold_chars`（默认 180K），自动调 `VosContextReader.compact_node()` 再重新注入。
+   - **request_too_large 恢复**：`ResponsesExecutionRunner` 捕获 `InvocationFailedError` 并检测 `too_long/context_length_exceeded/request_too_large` 等错误码，调 `compact_trigger`，抛出 `ContextTooLargeError`，`ExecutionAgentService` 重建上下文后重试。
+
+6. 新增文件：
+   - `internal/vos/cli/process_cli.go`（CLI 命令）
+   - `internal/vos/service/compact_service.go`（Compact 服务 + Runner）
+
+7. 回归结果：
+   - Go：`go test ./internal/vos/...` 通过。
+   - Python：`python -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）。
+
+## 2026-04-24 CompactAgent + 三个压缩触发时机
+
+1. 新增  字段，记录已压缩的 Session ID，支持增量压缩追踪。
+
+2. **Process CLI（Go）**：
+   - ：列出 Node 的所有 Process 摘要。
+   - ：触发压缩 Agent。
+   - 核心逻辑： 遍历 SessionHistory，找出未被  覆盖的未压缩 Session。
+
+3. **CompactAgent Service（Go）**：
+   - ：
+     -  请求/响应模型。
+     -  接口 +  实现（shell-out to {"status": "failed", "error": "compact run requires exactly one of --request-json or --request-file"}）。
+     -  编排方法。
+   -  HTTP 端点，遵循  路由模式。
+
+4. **CompactAgent（Python 固定工作流）**：
+   - ：新增  模型。
+   - ：新增 ，遍历 processes 提取无压缩 Session 事件，调用 LLM 压缩为结构化 Memory。
+   - ：新增 
+ Áгö D:\XuKai\Project\openmate Ð¼ӵ½´ËĿ¼µÄÎļþ½«²»»áµõ½ѹËõ¡£
+
+
+ÔÚĿ¼ 1 ÏµÄ 0 ¸öÎļþÖУ¬ÓÐ
+0 ¸öÒѱ»ѹËõ£¬0 ¸öδѹËõ¡£
+×ܹ² 0 ×ֽÚÊý¾ݱ£´æÔÚ 0 ×ֽÚÖС£
+ѹËõÂÊΪ 1.0 µ½ 1¡£ 子命令。
+   - ： 新增  方法。
+
+5. **三个压缩触发时机**：
+   - **手动触发**： + 。
+   - **上下文 >70% 自动触发**： 检测 payload 超过 （默认 180K），自动调  再重新注入。
+   - **request_too_large 恢复**： 捕获  并检测  等错误码 → 调  → 抛出  →  重建上下文后重试。
+
+6. 新增文件：
+   - （CLI 命令）
+   - （Compact 服务 + Runner）
+
+7. 回归结果：
+   - Go：ok  	vos/internal/vos/cli	(cached)
+?   	vos/internal/vos/domain	[no test files]
+ok  	vos/internal/vos/httpapi	(cached)
+ok  	vos/internal/vos/service	(cached)
+ok  	vos/internal/vos/store	(cached) 通过。
+   - Python：usage: pool [--db-file DB_FILE] [--model-config MODEL_CONFIG] {invoke,cap,records,usage,sync} ...
+
+OpenMate LLM gateway CLI. All commands print JSON to stdout.
+{
+  "invocation_id": "bebd3928-3d87-18a9-bebd-3d87bebd3928",
+  "request_id": "req-node-fail",
+  "node_id": "node-fail",
+  "status": "failure",
+  "route": {
+    "api_id": "api-1",
+    "provider": "openai_compatible",
+    "model": "gpt-4.1"
+  },
+  "response": null,
+  "output_text": null,
+  "usage": null,
+  "timing": {
+    "started_at": "2026-04-24T08:26:21.2043226Z",
+    "finished_at": "2026-04-24T08:26:21.2201462Z",
+    "latency_ms": 15
+  },
+  "error": {
+    "code": "provider_http_error",
+    "message": "provider returned HTTP 500",
+    "retryable": false,
+    "provider_status_code": 500,
+    "details": {
+      "body": "{"error": {"message": "gateway failed"}}",
+      "path": "/v1/responses"
+    }
+  }
+}
+{
+  "invocation_id": "c34ce498-3d87-18a9-c34c-3d87c34ce498",
+  "request_id": "req-node-fail-2",
+  "node_id": "node-fail-2",
+  "status": "failure",
+  "route": {
+    "api_id": "api-1",
+    "provider": "openai_compatible",
+    "model": "gpt-4.1"
+  },
+  "response": null,
+  "output_text": null,
+  "usage": null,
+  "timing": {
+    "started_at": "2026-04-24T08:26:21.280847Z",
+    "finished_at": "2026-04-24T08:26:21.2997236Z",
+    "latency_ms": 18
+  },
+  "error": {
+    "code": "provider_http_error",
+    "message": "provider returned HTTP 500",
+    "retryable": false,
+    "provider_status_code": 500,
+    "details": {
+      "body": "{"error": {"message": "gateway failed"}}",
+      "path": "/v1/responses"
+    }
+  }
+}
+{
+  "invocation_id": "e6745e38-3d87-18a9-e674-3d87e6745e38",
+  "request_id": "req-node-1",
+  "node_id": "node-1",
+  "status": "success",
+  "route": {
+    "api_id": "api-1",
+    "provider": "openai_compatible",
+    "model": "gpt-4.1"
+  },
+  "response": {
+    "id": "resp-cli",
+    "model": "gpt-4.1",
+    "object": "response",
+    "output": [
+      {
+        "content": [
+          {
+            "text": "echo:hello-cli",
+            "type": "output_text"
+          }
+        ],
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+      }
+    ],
+    "status": "completed",
+    "usage": {
+      "input_tokens": 2,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 3,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 5
+    }
+  },
+  "output_text": "echo:hello-cli",
+  "usage": {
+    "input_tokens": 2,
+    "output_tokens": 3,
+    "total_tokens": 5,
+    "cached_input_tokens": 0,
+    "reasoning_tokens": 0,
+    "latency_ms": 19,
+    "cost_usd": null
+  },
+  "timing": {
+    "started_at": "2026-04-24T08:26:21.8706366Z",
+    "finished_at": "2026-04-24T08:26:21.8897456Z",
+    "latency_ms": 19
+  },
+  "error": null
+}
+[
+  {
+    "invocation_id": "e6745e38-3d87-18a9-e674-3d87e6745e38",
+    "request": {
+      "request_id": "req-node-1",
+      "node_id": "node-1",
+      "request": {
+        "input": "hello-cli"
+      },
+      "timeout_ms": null,
+      "route_policy": {
+        "api_id": null
+      }
+    },
+    "status": "success",
+    "route": {
+      "api_id": "api-1",
+      "provider": "openai_compatible",
+      "model": "gpt-4.1"
+    },
+    "response": {
+      "id": "resp-cli",
+      "model": "gpt-4.1",
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "text": "echo:hello-cli",
+              "type": "output_text"
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 2,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 3,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 5
+      }
+    },
+    "output_text": "echo:hello-cli",
+    "usage": {
+      "input_tokens": 2,
+      "output_tokens": 3,
+      "total_tokens": 5,
+      "cached_input_tokens": 0,
+      "reasoning_tokens": 0,
+      "latency_ms": 19,
+      "cost_usd": null
+    },
+    "timing": {
+      "started_at": "2026-04-24T08:26:21.8706366Z",
+      "finished_at": "2026-04-24T08:26:21.8897456Z",
+      "latency_ms": 19
+    },
+    "error": null,
+    "attempts": [
+      {
+        "attempt_id": "e6745e38-3d87-18a9-e674-3d87e6745e38",
+        "route": {
+          "api_id": "api-1",
+          "provider": "openai_compatible",
+          "model": "gpt-4.1"
+        },
+        "status": "success",
+        "timing": {
+          "started_at": "2026-04-24T08:26:21.8706366Z",
+          "finished_at": "2026-04-24T08:26:21.8897456Z",
+          "latency_ms": 19
+        },
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 3,
+          "total_tokens": 5,
+          "cached_input_tokens": 0,
+          "reasoning_tokens": 0,
+          "latency_ms": 19,
+          "cost_usd": null
+        },
+        "error": null
+      }
+    ]
+  }
+]
+{
+  "node_id": null,
+  "limit": null,
+  "invocation_count": 1,
+  "success_count": 1,
+  "failure_count": 0,
+  "attempt_count": 1,
+  "retry_count": 0,
+  "input_tokens": 2,
+  "output_tokens": 3,
+  "total_tokens": 5,
+  "cached_input_tokens": 0,
+  "reasoning_tokens": 0,
+  "total_cost_usd": null,
+  "avg_latency_ms": 19,
+  "max_latency_ms": 19,
+  "generated_at": "2026-04-24T08:26:22.0108519Z"
+}
+{
+  "total_apis": 1,
+  "total_slots": 1,
+  "available_slots": 1,
+  "leased_slots": 0,
+  "offline_apis": 0,
+  "throttled": false,
+  "updated_at": "2026-04-24T08:26:22.0812203Z"
+}
+{
+  "synced": true,
+  "capacity": {
+    "total_apis": 1,
+    "total_slots": 1,
+    "available_slots": 1,
+    "leased_slots": 0,
+    "offline_apis": 0,
+    "throttled": false,
+    "updated_at": "2026-04-24T08:26:22.1470642Z"
+  }
+}
+usage: pool [--db-file DB_FILE] [--model-config MODEL_CONFIG] {invoke,cap,records,usage,sync} ...
+
+OpenMate LLM gateway CLI. All commands print JSON to stdout. 通过（69 项）。
+
 ## 2026-04-22 去除 default-topic 特例，切换到独立 Topic 语义
 
 1. 服务层移除 `default-topic` 相关逻辑：
