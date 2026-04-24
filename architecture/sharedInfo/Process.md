@@ -18,6 +18,14 @@
    - `VosContextInjector._render_payload()` SystemPrompt 新增 `process_contexts` 节。
 5. 边界保证：CLI + JSON 契约自动兼容（新字段通过 JSON tag 反序列化）。
 
+## 2026-04-24 CompactAgent + 压缩触发
+
+1. `ProcessItem` 新增 `compacted_session_ids` 字段，追踪已压缩 Session，支持增量压缩。
+2. Go 侧新增 `internal/vos/service/compact_service.go` + `internal/vos/cli/process_cli.go`，含 `vos process list/compact` CLI + `POST /api/v1/nodes/{id}/compact` HTTP。
+3. Python 侧新增 `CompactAgentService`（固定工作流，遍历 processes 调 LLM 压缩）。
+4. 三个触发时机：手动、>70% 上下文自动、`request_too_large` 恢复。
+5. 回归：Go 测试 + Python 69 项全部通过。
+
 ## 2026-04-22 VOS Node 增加 process 对象（对话进度）
 
 1. `vos` 侧 `Node` 进度结构已收敛为新 `process` 列表字段（完全替换旧 `progress`）：

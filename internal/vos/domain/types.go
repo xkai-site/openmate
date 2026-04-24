@@ -32,11 +32,12 @@ type SessionRange struct {
 }
 
 type ProcessItem struct {
-	Name         string        `json:"name"`
-	Status       ProcessStatus `json:"status"`
-	SessionRange *SessionRange `json:"session_range,omitempty"`
-	Memory       map[string]any `json:"memory,omitempty"`
-	Timestamp    time.Time     `json:"timestamp"`
+	Name               string         `json:"name"`
+	Status             ProcessStatus  `json:"status"`
+	SessionRange       *SessionRange  `json:"session_range,omitempty"`
+	Memory             map[string]any `json:"memory,omitempty"`
+	CompactedSessionIDs []string      `json:"compacted_session_ids,omitempty"`
+	Timestamp          time.Time      `json:"timestamp"`
 }
 
 func (sr *SessionRange) Closed() bool {
@@ -160,6 +161,9 @@ func (item *ProcessItem) Normalize(nodeUpdatedAt, nodeCreatedAt time.Time) {
 	}
 	if item.Memory == nil {
 		item.Memory = nil
+	}
+	if item.CompactedSessionIDs == nil {
+		item.CompactedSessionIDs = []string{}
 	}
 }
 
