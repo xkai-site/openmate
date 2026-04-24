@@ -1,5 +1,52 @@
 # SharedInfo Process
 
+## 2026-04-24 VFS Process 驱动的上下文窗口改造
+
+1. VFS `ProcessItem` 已扩展为上下文窗口载体：
+   - 新增 `SessionRange`（`start_session_id / end_session_id / start_event_seq / end_event_seq`）。
+   - 新增 `ProcessItem.memory`（压缩记忆）和 `ProcessItem.session_range`（Session 区间）。
+2. `ContextSnapshot` 新增 `process_contexts` 字段：
+   - 已完成 Process → 注入其 `memory`（压缩态）。
+   - 进行中 Process → 注入其 `session_range` 内的完整 SessionEvent（详细态，当前焦点窗口）。
+3. 上下文注入分层策略：
+   - Layer 1: Topic.UserMemory + TopicMemory + GlobalIndex（持久记忆）
+   - Layer 2: parent.Memory via `_child_memory_cache`（父级记忆，保持现有机制）
+   - Layer 3: Process 记忆窗口（已完成=压缩，进行中=展开）
+   - Layer 4: node.Memory + node.Input（当前节点）
+4. Python Agent 侧同步：
+   - `ContextSnapshotRecord` 新增 `process_contexts` 字段。
+   - `VosContextInjector._render_payload()` SystemPrompt 新增 `process_contexts` 节。
+5. 边界保证：CLI + JSON 契约自动兼容（新字段通过 JSON tag 反序列化）。
+
+## 2026-04-22 VOS Node 增加 process 对象（对话进度）
+
+1. `vos` 侧 `Node` 进度结构已收敛为新 `process` 列表字段（完全替换旧 `progress`）：
+   - `name`
+   - `status`（`todo|done`）
+   - `timestamp`
+2. 旧字段处理：
+   - `progress` 与旧 `process(current/history/updated_at)` 已下线，不再作为读写契约。
+3. 接口变化：
+   - `vos node update` 新增 `--process-json`。
+   - `PATCH /api/v1/nodes/{id}` 支持 `process`。
+   - `GET /api/v1/nodes/{id}?include=process` 可按需读取 `process`。
+4. 验证结果：
+   - `go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+
+## 2026-04-22 master 初始化（不跑测试/不创分支，第四次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建新分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮按指令不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
 ## 2026-04-22 去除 default-topic 特例（首条对话独立 Topic）
 
 1. 已完成跨模块改造：移除 `default-topic` 兜底语义，统一改为“首条对话即独立 Topic”。

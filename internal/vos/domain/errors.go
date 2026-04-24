@@ -141,6 +141,15 @@ func ParseNodeStatus(raw string) (NodeStatus, error) {
 	}
 }
 
+func ParseProcessStatus(raw string) (ProcessStatus, error) {
+	switch ProcessStatus(raw) {
+	case ProcessStatusTodo, ProcessStatusDone:
+		return ProcessStatus(raw), nil
+	default:
+		return "", ValidationError{Message: fmt.Sprintf("invalid process status: %s", raw)}
+	}
+}
+
 func ParseSessionStatus(raw string) (SessionStatus, error) {
 	switch SessionStatus(raw) {
 	case SessionStatusActive, SessionStatusWaiting, SessionStatusCompleted, SessionStatusFailed:

@@ -1,5 +1,58 @@
 # 虚拟文件系统 Process
 
+## 2026-04-22 Node 新增 Process 对象（对话进度）
+
+1. VOS `Node` 数据结构收敛为新 `process` 列表（替换旧 `progress`）：
+   - `name`
+   - `status`（`todo|done`）
+   - `timestamp`
+2. 旧字段处理：
+   - 旧 `progress` 与旧 `process(current/history/updated_at)` 已移除。
+3. 更新入口扩展：
+   - CLI：`vos node update` 新增 `--process-json`（JSON array）。
+   - HTTP：`PATCH /api/v1/nodes/{id}` 新增 `process` 字段。
+   - HTTP 按需加载新增 `include=process`。
+4. 回归结果：
+   - `go test ./internal/vos/...` 通过（使用仓库内 `GOCACHE/GOMODCACHE`）。
+
+## 2026-04-24 Process 驱动的上下文窗口改造
+
+1. 扩展 `ProcessItem` 数据结构（`internal/vos/domain/types.go`）：
+   - 新增 `SessionRange` 结构体：`start_session_id / end_session_id / start_event_seq / end_event_seq`。
+   - `ProcessItem` 新增 `session_range`（`*SessionRange`，可选）和 `memory`（`map[string]any`，可选）。
+   - `SessionRange.Closed()` 方法：`EndSessionID != ""` 表示区间已收敛（已完成）。
+   - `Normalize()` 方法适配新字段。
+
+2. 扩展 `ContextSnapshot`（`internal/vos/domain/context.go`）：
+   - 新增 `ProcessContext` 结构体：`name / status / memory / session_events`。
+   - `ContextSnapshot` 新增 `process_contexts` 字段，承载每个 Process 的上下文片段。
+
+3. 改造 `GetContextSnapshot()`（`internal/vos/service/context_service.go`）：
+   - 新增 `buildProcessContexts()`：按 Process 分层组装上下文。
+     - 已完成 Process（有 `memory`）→ 注入其 Memory（压缩态）。
+     - 进行中 Process（`session_range` 未收敛）→ 注入 `session_range` 内的完整 SessionEvent（详细态）。
+   - 新增 `loadSessionRangeEvents()`：按 session_range 的 event_seq 区间过滤加载 Session 事件。
+   - `resolveContextNodeMemory()` 保持现有行为不变（父节点 Memory 读取）。
+
+4. 深拷贝适配：
+   - `service.cloneProcessItems()` 和 `httpapi.cloneProcessItems()` 改为逐项深拷贝（`SessionRange` 指针 + `Memory` map）。
+   - `httpapi.server.go` 新增 `cloneMapNil()` 辅助函数。
+
+5. Python Agent 层适配：
+   - `openmate_agent/context_reader.py`：
+     - 新增 `ProcessContextRecord` Pydantic 模型。
+     - `ContextSnapshotRecord` 新增 `process_contexts` 字段。
+   - `openmate_agent/context_injector.py`：
+     - `_render_payload()` 改为分层注入——SystemPrompt 新增 `process_contexts` 节。
+     - 已完成 Process 输出其 `memory`，进行中 Process 输出其 `session_events`。
+
+6. 架构文档同步：
+   - `architecture/虚拟文件系统/虚拟文件系统.md`：更新 `process` 字段语义，新增 5.8 Process 驱动的上下文窗口章节。
+
+7. 回归结果：
+   - Go：`go test ./...` 通过。
+   - Python：`.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）。
+
 ## 2026-04-22 去除 default-topic 特例，切换到独立 Topic 语义
 
 1. 服务层移除 `default-topic` 相关逻辑：

@@ -27,6 +27,15 @@ class ContextSessionHistoryRecord(BaseModel):
     events: list[SessionEventRecord] = Field(default_factory=list)
 
 
+class ProcessContextRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    status: str
+    memory: dict[str, Any] | None = None
+    session_events: list[SessionEventRecord] = Field(default_factory=list)
+
+
 class ContextSnapshotRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -36,6 +45,7 @@ class ContextSnapshotRecord(BaseModel):
     node_memory: dict[str, Any] | None = None
     global_index: Any | None = None
     session_history: list[ContextSessionHistoryRecord] = Field(default_factory=list)
+    process_contexts: list[ProcessContextRecord] = Field(default_factory=list)
 
 
 class VosContextReader:

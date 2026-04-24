@@ -44,13 +44,19 @@ func (service *Service) GetContextSnapshot(nodeID string) (*domain.ContextSnapsh
 		return nil, err
 	}
 
+	processContexts, err := service.buildProcessContexts(node)
+	if err != nil {
+		return nil, err
+	}
+
 	return &domain.ContextSnapshot{
-		NodeID:         node.ID,
-		UserMemory:     readMetadataObject(topic.Metadata, topicMetadataUserMemoryKey),
-		TopicMemory:    readMetadataObject(topic.Metadata, topicMetadataTopicMemoryKey),
-		NodeMemory:     nodeMemory,
-		GlobalIndex:    readMetadataValue(topic.Metadata, topicMetadataGlobalIndexKey),
-		SessionHistory: sessionHistory,
+		NodeID:          node.ID,
+		UserMemory:      readMetadataObject(topic.Metadata, topicMetadataUserMemoryKey),
+		TopicMemory:     readMetadataObject(topic.Metadata, topicMetadataTopicMemoryKey),
+		NodeMemory:      nodeMemory,
+		GlobalIndex:     readMetadataValue(topic.Metadata, topicMetadataGlobalIndexKey),
+		SessionHistory:  sessionHistory,
+		ProcessContexts: processContexts,
 	}, nil
 }
 
@@ -135,4 +141,53 @@ func readMetadataValue(metadata map[string]any, key string) any {
 		return nil
 	}
 	return value
+}
+
+func (service *Service) buildProcessContexts(node *domain.Node) ([]domain.ProcessContext, error) {
+	if len(node.Process) == 0 {
+		return nil, nil
+	}
+
+	ctxs := make([]domain.ProcessContext, 0, len(node.Process))
+	for _, item := range node.Process {
+		pc := domain.ProcessContext{
+			Name:   item.Name,
+			Status: item.Status,
+		}
+
+		if item.Memory != nil {
+			pc.Memory = cloneMap(item.Memory)
+		} else if item.SessionRange != nil && !item.SessionRange.Closed() {
+			events, err := service.loadSessionRangeEvents(item.SessionRange)
+			if err != nil {
+				return nil, err
+			}
+			if len(events) > 0 {
+				pc.SessionEvents = events
+			}
+		}
+
+		ctxs = append(ctxs, pc)
+	}
+	return ctxs, nil
+}
+
+func (service *Service) loadSessionRangeEvents(sr *domain.SessionRange) ([]*domain.SessionEvent, error) {
+	var events []*domain.SessionEvent
+
+	allEvents, err := service.listAllSessionEvents(sr.StartSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, evt := range allEvents {
+		if sr.StartEventSeq != nil && evt.Seq < *sr.StartEventSeq {
+			continue
+		}
+		if sr.EndEventSeq != nil && evt.Seq > *sr.EndEventSeq {
+			break
+		}
+		events = append(events, cloneSessionEvent(evt))
+	}
+	return events, nil
 }

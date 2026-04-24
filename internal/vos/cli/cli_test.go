@@ -58,7 +58,7 @@ func TestTopicAndNodeFlow(t *testing.T) {
 			"--expected-version", strconv.Itoa(node.Version),
 			"--name", "Node Prime",
 			"--session-id", "session-1",
-			"--progress", "created",
+			"--process-json", `[{"name":"created","status":"done"}]`,
 			"--memory-json", `{"summary":"ready"}`,
 		),
 		&bytes.Buffer{},
@@ -107,8 +107,14 @@ func TestTopicAndNodeFlow(t *testing.T) {
 	if len(updatedNode.Session) != 1 || updatedNode.Session[0] != "session-1" {
 		t.Fatalf("Session = %v, want [session-1]", updatedNode.Session)
 	}
-	if len(updatedNode.Progress) != 1 || updatedNode.Progress[0] != "created" {
-		t.Fatalf("Progress = %v, want [created]", updatedNode.Progress)
+	if len(updatedNode.Process) != 1 {
+		t.Fatalf("Process length = %d, want 1", len(updatedNode.Process))
+	}
+	if updatedNode.Process[0].Name != "created" || updatedNode.Process[0].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[0] = %+v, want name=created status=done", updatedNode.Process[0])
+	}
+	if updatedNode.Process[0].Timestamp.IsZero() {
+		t.Fatalf("Process[0].Timestamp should not be zero")
 	}
 	cache, ok := rootNode.Memory["_child_memory_cache"].(map[string]any)
 	if !ok {
@@ -419,7 +425,7 @@ func TestNodeUpdateVersionConflictReturnsUserError(t *testing.T) {
 
 	var stderr bytes.Buffer
 	code := cli.Run(
-		append(base, "node", "update", "--node-id", "node-1", "--expected-version", "99", "--progress", "created"),
+		append(base, "node", "update", "--node-id", "node-1", "--expected-version", "99", "--process-json", `[{"name":"created","status":"done"}]`),
 		&bytes.Buffer{},
 		&stderr,
 	)
@@ -428,6 +434,48 @@ func TestNodeUpdateVersionConflictReturnsUserError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "version conflict") {
 		t.Fatalf("stderr = %q, want version conflict", stderr.String())
+	}
+}
+
+func TestNodeUpdateWithProcessJSON(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	base := []string{"--state-file", stateFile}
+
+	if code := cli.Run(append(base, "topic", "create", "--topic-id", "topic-1", "--name", "Topic One"), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("topic create code = %d, want 0", code)
+	}
+	if code := cli.Run(append(base, "node", "create", "--topic-id", "topic-1", "--node-id", "node-1", "--name", "Node One"), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("node create code = %d, want 0", code)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(
+		append(
+			base,
+			"node", "update",
+			"--node-id", "node-1",
+			"--process-json", `[{"name":"queued","status":"todo"},{"name":"running","status":"done"}]`,
+		),
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("node update code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+
+	updated := domain.Node{}
+	if err := json.Unmarshal(stdout.Bytes(), &updated); err != nil {
+		t.Fatalf("json.Unmarshal(node update) error = %v", err)
+	}
+	if len(updated.Process) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	}
+	if updated.Process[0].Name != "queued" || updated.Process[0].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[0] = %+v, want queued/todo", updated.Process[0])
+	}
+	if updated.Process[1].Name != "running" || updated.Process[1].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[1] = %+v, want running/done", updated.Process[1])
 	}
 }
 

@@ -67,7 +67,7 @@ type UpdateNodeInput struct {
 	Input            map[string]any
 	Output           map[string]any
 	SessionIDs       []string
-	Progress         []string
+	Process          []domain.ProcessItem
 }
 
 type NodeListFilter struct {
@@ -142,7 +142,7 @@ func (service *Service) CreateTopic(input CreateTopicInput) (*domain.Topic, *dom
 		Memory:      nil,
 		Input:       map[string]any{},
 		Output:      map[string]any{},
-		Progress:    []string{},
+		Process:     []domain.ProcessItem{},
 		Status:      domain.NodeStatusReady,
 		Version:     1,
 		CreatedAt:   now,
@@ -371,7 +371,7 @@ func (service *Service) CreateNode(input CreateNodeInput) (*domain.Node, error) 
 		Memory:      cloneMapNil(input.Memory),
 		Input:       cloneMap(input.Input),
 		Output:      cloneMap(input.Output),
-		Progress:    []string{},
+		Process:     []domain.ProcessItem{},
 		Status:      input.Status,
 		Version:     1,
 		CreatedAt:   now,
@@ -561,6 +561,14 @@ func (service *Service) UpdateNode(input UpdateNodeInput) (*domain.Node, error) 
 			return nil, err
 		}
 	}
+	for _, item := range input.Process {
+		if strings.TrimSpace(item.Name) == "" {
+			return nil, domain.ValidationError{Message: "process.name cannot be empty"}
+		}
+		if _, err := domain.ParseProcessStatus(string(item.Status)); err != nil {
+			return nil, err
+		}
+	}
 	if !hasNodeChanges(input) {
 		return nil, domain.ValidationError{Message: "at least one node field must be updated"}
 	}
@@ -609,8 +617,8 @@ func (service *Service) UpdateNode(input UpdateNodeInput) (*domain.Node, error) 
 	if len(input.SessionIDs) > 0 {
 		node.Session = append(node.Session, input.SessionIDs...)
 	}
-	if len(input.Progress) > 0 {
-		node.Progress = append(node.Progress, input.Progress...)
+	if input.Process != nil {
+		node.Process = cloneProcessItems(input.Process)
 	}
 
 	touchNode(node)
@@ -704,7 +712,7 @@ func hasNodeChanges(input UpdateNodeInput) bool {
 		input.Input != nil ||
 		input.Output != nil ||
 		len(input.SessionIDs) > 0 ||
-		len(input.Progress) > 0
+		input.Process != nil
 }
 
 func matchesNodeFilter(node *domain.Node, filter NodeListFilter) bool {
@@ -804,8 +812,24 @@ func cloneNode(node *domain.Node) *domain.Node {
 	cloned.Memory = cloneMapNil(node.Memory)
 	cloned.Input = cloneMap(node.Input)
 	cloned.Output = cloneMap(node.Output)
-	cloned.Progress = cloneStrings(node.Progress)
+	cloned.Process = cloneProcessItems(node.Process)
 	return &cloned
+}
+
+func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
+	if raw == nil {
+		return []domain.ProcessItem{}
+	}
+	cloned := make([]domain.ProcessItem, len(raw))
+	for i, item := range raw {
+		cloned[i] = item
+		if item.SessionRange != nil {
+			sr := *item.SessionRange
+			cloned[i].SessionRange = &sr
+		}
+		cloned[i].Memory = cloneMapNil(item.Memory)
+	}
+	return cloned
 }
 
 func cloneStringPtr(raw *string) *string {

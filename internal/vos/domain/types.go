@@ -3,6 +3,7 @@ package domain
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,32 @@ const (
 	NodeStatusBlocked NodeStatus = "blocked"
 	NodeStatusDone    NodeStatus = "done"
 )
+
+type ProcessStatus string
+
+const (
+	ProcessStatusTodo ProcessStatus = "todo"
+	ProcessStatusDone ProcessStatus = "done"
+)
+
+type SessionRange struct {
+	StartSessionID string `json:"start_session_id"`
+	EndSessionID   string `json:"end_session_id,omitempty"`
+	StartEventSeq  *int   `json:"start_event_seq,omitempty"`
+	EndEventSeq    *int   `json:"end_event_seq,omitempty"`
+}
+
+type ProcessItem struct {
+	Name         string        `json:"name"`
+	Status       ProcessStatus `json:"status"`
+	SessionRange *SessionRange `json:"session_range,omitempty"`
+	Memory       map[string]any `json:"memory,omitempty"`
+	Timestamp    time.Time     `json:"timestamp"`
+}
+
+func (sr *SessionRange) Closed() bool {
+	return sr.EndSessionID != ""
+}
 
 type Topic struct {
 	ID          string         `json:"id"`
@@ -38,7 +65,7 @@ type Node struct {
 	Memory      map[string]any `json:"memory"`
 	Input       map[string]any `json:"input"`
 	Output      map[string]any `json:"output"`
-	Progress    []string       `json:"progress"`
+	Process     []ProcessItem  `json:"process"`
 	Status      NodeStatus     `json:"status"`
 	Version     int            `json:"version"`
 	CreatedAt   time.Time      `json:"created_at"`
@@ -100,14 +127,45 @@ func (node *Node) Normalize() {
 	if node.Output == nil {
 		node.Output = map[string]any{}
 	}
-	if node.Progress == nil {
-		node.Progress = []string{}
+	if node.Process == nil {
+		node.Process = []ProcessItem{}
+	}
+	for index := range node.Process {
+		node.Process[index].Normalize(node.UpdatedAt, node.CreatedAt)
 	}
 	if node.Version <= 0 {
 		node.Version = 1
 	}
 	if node.Status == "" {
 		node.Status = NodeStatusDraft
+	}
+}
+
+func (item *ProcessItem) Normalize(nodeUpdatedAt, nodeCreatedAt time.Time) {
+	item.Name = strings.TrimSpace(item.Name)
+	if item.Status != ProcessStatusDone {
+		item.Status = ProcessStatusTodo
+	}
+	if item.Timestamp.IsZero() {
+		if !nodeUpdatedAt.IsZero() {
+			item.Timestamp = nodeUpdatedAt.UTC()
+		} else if !nodeCreatedAt.IsZero() {
+			item.Timestamp = nodeCreatedAt.UTC()
+		}
+	} else {
+		item.Timestamp = item.Timestamp.UTC()
+	}
+	if item.SessionRange != nil {
+		item.SessionRange.Normalize()
+	}
+	if item.Memory == nil {
+		item.Memory = nil
+	}
+}
+
+func (sr *SessionRange) Normalize() {
+	if sr.EndSessionID == "" {
+		sr.EndSessionID = ""
 	}
 }
 
