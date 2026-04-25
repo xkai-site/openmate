@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from openmate_shared.runtime_paths import default_model_config_path, resolve_workspace_root
+
+from .orchestration import ChatExecutionRunner, ExecutionRunner, ResponsesExecutionRunner
 from .service import AgentCapabilityService
 
 
@@ -17,6 +22,7 @@ class WorkerAgentSpec(BaseModel):
     pool_db_file: str | None = None
     pool_model_config: str | None = None
     pool_binary: str | None = None
+    api_id: str | None = None
     vos_state_file: str | None = None
     vos_session_db: str | None = None
     vos_binary: str | None = None
@@ -110,6 +116,7 @@ def execute_worker_request(request: WorkerExecuteRequest) -> WorkerExecuteRespon
                 duration_ms=_duration_ms(started),
             )
 
+        api_id, api_mode = _resolve_agent_route(request.agent_spec)
         service = AgentCapabilityService(
             workspace_root=request.agent_spec.workspace_root,
             pool_db_path=request.agent_spec.pool_db_file,
@@ -118,8 +125,15 @@ def execute_worker_request(request: WorkerExecuteRequest) -> WorkerExecuteRespon
             vos_state_file=request.agent_spec.vos_state_file if request.agent_spec.use_session_event else None,
             vos_session_db_file=request.agent_spec.vos_session_db if request.agent_spec.use_session_event else None,
             vos_binary_path=request.agent_spec.vos_binary if request.agent_spec.use_session_event else None,
+            execution_runner=_build_execution_runner(api_mode),
         )
-        output = service.execute_agent(service.build(node_id=request.node_id, session_id=request.session_id))
+        output = service.execute_agent(
+            service.build(
+                node_id=request.node_id,
+                session_id=request.session_id,
+                api_id=api_id,
+            )
+        )
         return WorkerExecuteResponse(
             request_id=request.request_id,
             topic_id=request.topic_id,
@@ -181,3 +195,51 @@ def _build_priority_plan(candidates: list[WorkerCandidateNode]) -> list[WorkerPr
 
 def _duration_ms(started: float) -> int:
     return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _build_execution_runner(api_mode: str) -> ExecutionRunner:
+    if api_mode == "chat_completions":
+        return ChatExecutionRunner()
+    return ResponsesExecutionRunner()
+
+
+def _resolve_agent_route(spec: WorkerAgentSpec) -> tuple[str, str]:
+    workspace_root = resolve_workspace_root(spec.workspace_root)
+    model_config_path = (
+        Path(spec.pool_model_config).resolve()
+        if spec.pool_model_config is not None
+        else default_model_config_path(workspace_root)
+    )
+    payload = json.loads(model_config_path.read_text(encoding="utf-8"))
+    apis_raw = payload.get("apis")
+    if not isinstance(apis_raw, list):
+        raise ValueError("model config is invalid: apis must be an array")
+
+    enabled_apis: list[dict[str, object]] = []
+    for entry in apis_raw:
+        if not isinstance(entry, dict):
+            continue
+        enabled_raw = entry.get("enabled", True)
+        enabled = bool(enabled_raw) if isinstance(enabled_raw, bool) else True
+        if enabled:
+            enabled_apis.append(entry)
+
+    if len(enabled_apis) == 0:
+        raise ValueError("model config has no enabled api")
+
+    if spec.api_id:
+        target_api = next((item for item in enabled_apis if str(item.get("api_id", "")).strip() == spec.api_id), None)
+        if target_api is None:
+            raise ValueError(f"agent_spec.api_id is not found in enabled apis: {spec.api_id}")
+    else:
+        if len(enabled_apis) != 1:
+            raise ValueError("multiple enabled apis detected, agent_spec.api_id is required")
+        target_api = enabled_apis[0]
+
+    api_id = str(target_api.get("api_id", "")).strip()
+    if api_id == "":
+        raise ValueError("model config is invalid: api_id is required for enabled api")
+    api_mode_raw = str(target_api.get("api_mode", "responses")).strip() or "responses"
+    if api_mode_raw not in {"responses", "chat_completions"}:
+        raise ValueError(f"model config is invalid: api_mode is invalid for api_id={api_id}")
+    return api_id, api_mode_raw

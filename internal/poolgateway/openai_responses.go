@@ -39,12 +39,10 @@ func validateInvokeRequestForMode(request InvokeRequest, mode APIMode) error {
 	}
 	switch normalizeAPIMode(mode) {
 	case APIModeChatCompletions:
-		if hasChat {
-			return validateChatCompletionsInvokeRequest(request.ChatRequest)
+		if !hasChat {
+			return errors.New("chat_request is required for api_mode=chat_completions")
 		}
-		// Keep frontend payload stable: api_mode=chat_completions can still
-		// accept Responses-shaped request and convert internally.
-		return validateResponsesInvokeRequest(request.Request)
+		return validateChatCompletionsInvokeRequest(request.ChatRequest)
 	case APIModeResponses:
 		fallthrough
 	default:

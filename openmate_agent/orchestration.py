@@ -6,7 +6,12 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from openmate_pool.errors import InvocationFailedError
-from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
+from openmate_pool.models import (
+    InvokeRequest,
+    OpenAIChatCompletionsRequest,
+    OpenAIResponsesRequest,
+    RoutePolicy,
+)
 from pydantic import BaseModel, Field
 
 from .interfaces import LlmGateway, SessionEventWriter
@@ -47,6 +52,25 @@ class ExecutionRunner(Protocol):
     ) -> str: ...
 
 
+class ChatWindowBuilder(Protocol):
+    def build_initial_messages(self, prompt: str) -> list[dict[str, Any]]: ...
+
+    def append_assistant_tool_calls(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        function_calls: list["_ParsedFunctionCall"],
+    ) -> None: ...
+
+    def append_tool_result(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        call_id: str,
+        model_output: dict[str, Any],
+    ) -> None: ...
+
+
 def _is_context_too_large_error(exc: InvocationFailedError) -> bool:
     """Check if the gateway error indicates a context window overflow."""
     if exc.response is None:
@@ -73,6 +97,87 @@ class ContextTooLargeError(RuntimeError):
         self.node_id = node_id
         self.error_code = error_code
         super().__init__(f"Context too large for node={node_id}: {error_code} - {message}")
+
+
+class DefaultChatWindowBuilder:
+    """Baseline chat window builder for independent Chat Completions loop."""
+
+    def build_initial_messages(self, prompt: str) -> list[dict[str, Any]]:
+        parsed = self._parse_prompt(prompt)
+        system_prompt = parsed.get("SystemPrompt")
+        user_prompt = parsed.get("UserPrompt")
+
+        messages: list[dict[str, Any]] = []
+        if isinstance(system_prompt, dict):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": json.dumps(system_prompt, ensure_ascii=False, indent=2),
+                }
+            )
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    json.dumps(user_prompt, ensure_ascii=False, indent=2)
+                    if isinstance(user_prompt, dict)
+                    else prompt
+                ),
+            }
+        )
+        return messages
+
+    def append_assistant_tool_calls(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        function_calls: list[_ParsedFunctionCall],
+    ) -> None:
+        tool_calls: list[dict[str, Any]] = []
+        for function_call in function_calls:
+            tool_calls.append(
+                {
+                    "id": function_call.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": function_call.name,
+                        "arguments": json.dumps(function_call.arguments, ensure_ascii=False),
+                    },
+                }
+            )
+        if tool_calls:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls,
+                }
+            )
+
+    def append_tool_result(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        call_id: str,
+        model_output: dict[str, Any],
+    ) -> None:
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(model_output, ensure_ascii=False),
+            }
+        )
+
+    @staticmethod
+    def _parse_prompt(prompt: str) -> dict[str, Any]:
+        try:
+            value = json.loads(prompt)
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            pass
+        return {}
 
 
 class ResponsesExecutionRunner:
@@ -117,6 +222,7 @@ class ResponsesExecutionRunner:
                             request_id=str(uuid4()),
                             node_id=build.node_id,
                             request=request,
+                            route_policy=RoutePolicy(api_id=build.api_id),
                         )
                     )
                 except InvocationFailedError as exc:
@@ -404,6 +510,163 @@ class ResponsesExecutionRunner:
             chunks.append(text[index : index + chunk_size])
             index += chunk_size
         return chunks
+
+
+class ChatExecutionRunner:
+    """Independent execution loop based on OpenAI Chat Completions semantics."""
+
+    def __init__(self, *, window_builder: ChatWindowBuilder | None = None) -> None:
+        self._window_builder = window_builder or DefaultChatWindowBuilder()
+
+    def run(
+        self,
+        *,
+        build: Build,
+        agent_input: AgentInput,
+        tools_payload: list[dict[str, object]],
+        gateway: LlmGateway,
+        session_writer: SessionEventWriter | None,
+        tool_executor: ToolExecutor,
+    ) -> str:
+        messages = self._window_builder.build_initial_messages(agent_input.prompt)
+        session_id = build.session_id
+        session_started = False
+        last_call_id: str | None = None
+
+        try:
+            if session_writer is not None:
+                session_id = session_writer.ensure_session(node_id=build.node_id, session_id=session_id)
+                session_started = True
+
+            while True:
+                request = OpenAIChatCompletionsRequest(
+                    messages=messages,
+                    tools=tools_payload if tools_payload else None,
+                    tool_choice="auto" if tools_payload else None,
+                )
+                response = gateway.invoke(
+                    InvokeRequest(
+                        request_id=str(uuid4()),
+                        node_id=build.node_id,
+                        chat_request=request,
+                        route_policy=RoutePolicy(api_id=build.api_id),
+                    )
+                )
+                response_id = response.response.id if response.response and response.response.id else None
+                output_items = response.response.output if response.response else None
+                function_calls = ResponsesExecutionRunner._extract_function_calls(output_items)
+                if not function_calls:
+                    output_text = response.output_text or ResponsesExecutionRunner._extract_output_text(output_items)
+                    if output_text is None:
+                        raise RuntimeError(f"gateway returned empty output for node={build.node_id}")
+                    if session_started and session_writer and session_id:
+                        ResponsesExecutionRunner._append_assistant_deltas(
+                            session_writer=session_writer,
+                            session_id=session_id,
+                            output_text=output_text,
+                            response_id=response_id,
+                        )
+                        session_writer.append_event(
+                            AppendSessionEventInput(
+                                session_id=session_id,
+                                item_type=SessionItemType.MESSAGE,
+                                role=SessionRole.ASSISTANT,
+                                payload_json=ResponsesExecutionRunner._build_message_payload(
+                                    output_text=output_text,
+                                    output_items=output_items,
+                                    response_id=response_id,
+                                ),
+                                next_status=SessionStatus.COMPLETED,
+                            )
+                        )
+                    return output_text
+
+                self._window_builder.append_assistant_tool_calls(messages=messages, function_calls=function_calls)
+                for function_call in function_calls:
+                    last_call_id = function_call.call_id
+                    if session_started and session_writer and session_id:
+                        session_writer.append_event(
+                            AppendSessionEventInput(
+                                session_id=session_id,
+                                item_type=SessionItemType.FUNCTION_CALL,
+                                call_id=function_call.call_id,
+                                provider_item_id=function_call.provider_item_id,
+                                role=SessionRole.ASSISTANT,
+                                payload_json={
+                                    "name": function_call.name,
+                                    "arguments": function_call.arguments,
+                                    "role": SessionRole.ASSISTANT.value,
+                                },
+                                next_status=SessionStatus.WAITING,
+                            )
+                        )
+
+                    tool_result = tool_executor(build.node_id, function_call.name, function_call.arguments)
+                    tool_output_payload = ResponsesExecutionRunner._build_tool_output_payload(tool_result)
+                    if session_started and session_writer and session_id:
+                        session_writer.append_event(
+                            AppendSessionEventInput(
+                                session_id=session_id,
+                                item_type=SessionItemType.FUNCTION_CALL_OUTPUT,
+                                call_id=function_call.call_id,
+                                role=SessionRole.TOOL,
+                                payload_json=tool_output_payload,
+                                next_status=SessionStatus.ACTIVE,
+                            )
+                        )
+                    model_output = {
+                        "ok": tool_output_payload["ok"],
+                        "output": tool_output_payload["output"],
+                        "error": tool_output_payload["error"],
+                    }
+                    self._window_builder.append_tool_result(
+                        messages=messages,
+                        call_id=function_call.call_id,
+                        model_output=model_output,
+                    )
+        except Exception as exc:
+            if session_started and session_writer and session_id:
+                try:
+                    if last_call_id:
+                        session_writer.append_event(
+                            AppendSessionEventInput(
+                                session_id=session_id,
+                                item_type=SessionItemType.FUNCTION_CALL_OUTPUT,
+                                call_id=last_call_id,
+                                role=SessionRole.TOOL,
+                                payload_json={
+                                    "output": None,
+                                    "ok": False,
+                                    "error": {
+                                        "code": "AGENT_EXECUTION_FAILED",
+                                        "message": str(exc),
+                                        "retryable": False,
+                                    },
+                                    "role": SessionRole.TOOL.value,
+                                },
+                                next_status=SessionStatus.FAILED,
+                            )
+                        )
+                    else:
+                        session_writer.append_event(
+                            AppendSessionEventInput(
+                                session_id=session_id,
+                                item_type=SessionItemType.MESSAGE,
+                                role=SessionRole.SYSTEM,
+                                payload_json={
+                                    "role": SessionRole.SYSTEM.value,
+                                    "error": {
+                                        "code": "AGENT_EXECUTION_FAILED",
+                                        "message": str(exc),
+                                        "retryable": False,
+                                    },
+                                },
+                                next_status=SessionStatus.FAILED,
+                            )
+                        )
+                except Exception:
+                    pass
+            raise
 
 
 class LangGraphExecutionRunner:

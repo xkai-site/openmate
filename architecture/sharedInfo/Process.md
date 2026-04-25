@@ -1,5 +1,25 @@
 # SharedInfo Process
 
+## 2026-04-25 Node 旧 `process` 兼容字段下线
+
+1. VFS `Node` 已下线旧兼容字段 `process`，当前仅保留 `process_ids` 作为稳定引用面。
+2. `VfsState.Normalize()` 的旧数据迁移逻辑已删除，进入纯新结构运行阶段。
+3. 回归结果：`go test ./...` 通过。
+
+## 2026-04-25 master 初始化（不跑测试/不加分支，第六次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建/切换分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前指令，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
 ## 2026-04-24 VFS Process 主键化与引用化（Node.process_ids）
 
 1. VFS `Process` 已从 Node 内嵌列表升级为独立实体：

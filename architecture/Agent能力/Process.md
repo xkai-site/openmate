@@ -1,5 +1,21 @@
 # Process 记录
 
+## 2026-04-25 Chat 独立执行链路解耦（Responses 保持不变）
+
+1. `worker` 请求模型新增 `agent_spec.api_id`（可选），并在执行前基于 `model.json` 解析目标 `api_mode`：
+   - 单 enabled API：允许自动选择；
+   - 多 enabled API 且未传 `api_id`：直接失败并提示必须传 `agent_spec.api_id`；
+   - `api_id` 命中后由该 API 唯一决定 `api_mode`（`responses/chat_completions`）。
+2. 执行编排新增 `ChatExecutionRunner`，与 `ResponsesExecutionRunner` 独立：
+   - Chat 走原生 `chat_request` + 本地 `messages` 窗口回环；
+   - 不使用 `previous_response_id`；
+   - 工具回环按 Chat 语义维护 `assistant(tool_calls)` + `tool(tool_call_id)`。
+3. 在 `ChatExecutionRunner` 内新增 `WindowBuilder` 抽象与默认实现 `DefaultChatWindowBuilder`，本次先落“最小可用回环”窗口，后续可替换策略而不改 runner 主流程。
+4. `ResponsesExecutionRunner` 行为保持原样，仅补充 `route_policy.api_id` 透传，确保多模型路由确定性。
+5. 会话事件语义保持兼容：`function_call/function_call_output/message/failed` 路径与既有 VOS 消费口径不变。
+6. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_worker tests.test_pool -v` 通过（41 项）。
+
 ## 2026-04-24 执行链路注入封装重构（单消息内 SystemPrompt + UserPrompt）
 
 1. 执行链路保持单条 `OpenAIResponsesRequest.input`（`role=user`）不变，不改为 `system/user` 双消息。

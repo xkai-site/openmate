@@ -17,6 +17,7 @@ from openmate_pool.models import (
     OpenAIResponsesResponse,
 )
 from openmate_agent.service import AgentCapabilityService
+from openmate_agent.orchestration import ChatExecutionRunner
 from openmate_agent.session_models import AppendSessionEventInput
 from openmate_agent.models import CompactProcessInput, CompactRequest, DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest
 
@@ -93,6 +94,42 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(session_writer.events[0].next_status.value, "waiting")
         self.assertEqual(session_writer.events[1].item_type, "function_call_output")
         self.assertEqual(session_writer.events[1].next_status.value, "active")
+        self.assertIn("assistant_delta", [event.item_type for event in session_writer.events])
+        self.assertEqual(session_writer.events[-1].item_type, "message")
+        self.assertEqual(session_writer.events[-1].next_status.value, "completed")
+
+    def test_execute_agent_runs_chat_tool_loop_and_writes_session_events(self) -> None:
+        gateway = _ChatToolLoopGateway()
+        session_writer = _SpySessionWriter()
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(
+                gateway=gateway,
+                session_writer=session_writer,
+                workspace_root=tmp,
+                execution_runner=ChatExecutionRunner(),
+            )
+            result = service.execute_agent(service.build("node-chat-tool-loop", session_id="session-chat-1"))
+
+        self.assertEqual(result, "chat-tool-loop-finished")
+        self.assertEqual(session_writer.ensure_calls, [("node-chat-tool-loop", "session-chat-1")])
+        self.assertEqual(len(gateway.requests), 2)
+        first = gateway.requests[0]
+        self.assertIsNone(first.request)
+        self.assertIsNotNone(first.chat_request)
+        self.assertEqual(first.chat_request.tool_choice, "auto")
+        self.assertNotIn("previous_response_id", first.chat_request.model_dump(mode="json", exclude_none=True))
+        self.assertGreaterEqual(len(first.chat_request.messages), 2)
+        self.assertEqual(first.chat_request.messages[0]["role"], "system")
+        self.assertEqual(first.chat_request.messages[1]["role"], "user")
+        second = gateway.requests[1]
+        self.assertIsNotNone(second.chat_request)
+        self.assertGreaterEqual(len(second.chat_request.messages), 4)
+        self.assertEqual(second.chat_request.messages[-1]["role"], "tool")
+        self.assertEqual(second.chat_request.messages[-1]["tool_call_id"], "chat-call-1")
+
+        self.assertGreaterEqual(len(session_writer.events), 4)
+        self.assertEqual(session_writer.events[0].item_type, "function_call")
+        self.assertEqual(session_writer.events[1].item_type, "function_call_output")
         self.assertIn("assistant_delta", [event.item_type for event in session_writer.events])
         self.assertEqual(session_writer.events[-1].item_type, "message")
         self.assertEqual(session_writer.events[-1].next_status.value, "completed")
@@ -676,6 +713,56 @@ class _ToolLoopGateway:
             status=InvocationStatus.SUCCESS,
             response=OpenAIResponsesResponse.model_validate(payload),
             output_text="tool-loop-finished",
+            timing=InvocationTiming(),
+        )
+
+
+class _ChatToolLoopGateway:
+    def __init__(self) -> None:
+        self.requests: list[InvokeRequest] = []
+
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            payload = {
+                "id": "chat-resp-tool-1",
+                "object": "response",
+                "model": "gpt-4.1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "chat-item-call-1",
+                        "type": "function_call",
+                        "call_id": "chat-call-1",
+                        "name": "exec",
+                        "arguments": json.dumps({"command": [sys.executable, "-c", "print('chat-tool-loop-ok')"]}),
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            return InvokeResponse(
+                invocation_id=str(uuid4()),
+                request_id=request.request_id,
+                node_id=request.node_id,
+                status=InvocationStatus.SUCCESS,
+                response=OpenAIResponsesResponse.model_validate(payload),
+                output_text=None,
+                timing=InvocationTiming(),
+            )
+
+        payload = _response_payload_for_text("chat-tool-loop-finished")
+        payload["id"] = "chat-resp-tool-2"
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=OpenAIResponsesResponse.model_validate(payload),
+            output_text="chat-tool-loop-finished",
             timing=InvocationTiming(),
         )
 

@@ -13,6 +13,7 @@ AgentMode = Literal["execution", "decompose", "priority", "compact"]
 class Build(BaseModel):
     node_id: str = Field(min_length=1)
     session_id: str | None = None
+    api_id: str | None = None
 
 
 class ContextBundle(BaseModel):

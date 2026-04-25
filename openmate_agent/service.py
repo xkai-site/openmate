@@ -105,8 +105,8 @@ class AgentCapabilityService:
             gateway=self._gateway,
         )
 
-    def build(self, node_id: str, session_id: str | None = None) -> Build:
-        return Build(node_id=node_id, session_id=session_id)
+    def build(self, node_id: str, session_id: str | None = None, api_id: str | None = None) -> Build:
+        return Build(node_id=node_id, session_id=session_id, api_id=api_id)
 
     def execute_agent(self, build: Build) -> str:
         return self._execution_agent.run(build)

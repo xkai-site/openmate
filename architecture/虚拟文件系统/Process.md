@@ -1,5 +1,13 @@
 # 虚拟文件系统 Process
 
+## 2026-04-25 下线旧 `process` 兼容字段（仅保留 `process_ids`）
+
+1. `Node` 结构已删除兼容字段 `process`（`LegacyProcess`），仅保留 `process_ids` 引用关系。
+2. `VfsState.Normalize()` 中旧 `process[] -> process_ids/processes` 的迁移代码已移除（迁移阶段结束）。
+3. 同步删除无用辅助函数 `containsString` 与相关归一化分支。
+4. 回归结果：
+   - `go test ./...` 通过（使用仓库内 `GOCACHE/GOMODCACHE`）。
+
 ## 2026-04-24 Process 独立实体化（Node 改为 process_ids 引用）
 
 1. 数据结构升级：

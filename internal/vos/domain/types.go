@@ -94,7 +94,6 @@ type Node struct {
 	Input         map[string]any `json:"input"`
 	Output        map[string]any `json:"output"`
 	ProcessIDs    []string       `json:"process_ids"`
-	LegacyProcess []ProcessItem  `json:"process,omitempty"`
 	Status        NodeStatus     `json:"status"`
 	Version       int            `json:"version"`
 	CreatedAt     time.Time      `json:"created_at"`
@@ -137,23 +136,6 @@ func (state *VfsState) Normalize() {
 		}
 		node.Normalize()
 	}
-	for _, node := range state.Nodes {
-		if node == nil {
-			continue
-		}
-		for _, legacy := range node.LegacyProcess {
-			item := legacy
-			item.Normalize(node.UpdatedAt, node.CreatedAt)
-			if state.Processes[item.ID] == nil {
-				copyItem := item
-				state.Processes[item.ID] = &copyItem
-			}
-			if !containsString(node.ProcessIDs, item.ID) {
-				node.ProcessIDs = append(node.ProcessIDs, item.ID)
-			}
-		}
-		node.LegacyProcess = nil
-	}
 	for id, proc := range state.Processes {
 		if proc == nil {
 			delete(state.Processes, id)
@@ -191,24 +173,12 @@ func (node *Node) Normalize() {
 	if node.ProcessIDs == nil {
 		node.ProcessIDs = []string{}
 	}
-	if node.LegacyProcess == nil {
-		node.LegacyProcess = []ProcessItem{}
-	}
 	if node.Version <= 0 {
 		node.Version = 1
 	}
 	if node.Status == "" {
 		node.Status = NodeStatusDraft
 	}
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func (item *ProcessItem) Normalize(nodeUpdatedAt, nodeCreatedAt time.Time) {

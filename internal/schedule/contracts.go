@@ -17,6 +17,7 @@ type AgentSpec struct {
 	PoolDBFile      string `json:"pool_db_file,omitempty"`
 	PoolModelConfig string `json:"pool_model_config,omitempty"`
 	PoolBinary      string `json:"pool_binary,omitempty"`
+	APIID           string `json:"api_id,omitempty"`
 
 	VOSStateFile    string `json:"vos_state_file,omitempty"`
 	VOSSessionDB    string `json:"vos_session_db,omitempty"`
