@@ -1,4 +1,27 @@
-# SharedInfo Process
+﻿# SharedInfo Process
+## 2026-04-25 Agent Tool Mechanism Refactor (Registry + On-Demand Discovery)
+1. Agent tools switched to registry-driven runtime, loading built-in defaults plus JSON registrations from `.openmate/runtime/tool_registry.json`.
+2. Prompt injection now exposes only six default tools (`read/write/search/command/network/tool_query`) and adds discovery policy for extensions.
+3. Added threshold-based `tool_query` protocol (threshold=10): full details when small set, tag aggregation when large set, and by-tag drill-down.
+4. Permission gateway now evaluates by registry metadata (enabled/backend) and keeps dangerous command blocking.
+5. Added CLI management commands with `--help`: `openmate-agent tools list/register/update/enable/disable/validate`.
+6. Regression tests passed:
+   - `.\.venv\Scripts\python -m unittest tests.test_service tests.test_cli tests.test_pipeline_orchestration`
+   - `.\.venv\Scripts\python -m unittest tests.test_worker tests.test_context_injector`
+
+## 2026-04-25 master 初始化（不跑测试/不切分支，第七次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建/切换分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前指令，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
 
 ## 2026-04-25 Node 旧 `process` 兼容字段下线
 
@@ -320,3 +343,4 @@
    - `go test ./internal/vos/...` 通过
    - `go test ./...` 通过
    - `python -m unittest discover -s tests` 通过（71 项）
+

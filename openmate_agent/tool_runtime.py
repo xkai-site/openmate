@@ -4,23 +4,16 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from openmate_shared.runtime_paths import resolve_workspace_root
 
 from .models import ToolAction, ToolResult
 from .tooling import (
-    EditTool,
-    ExecTool,
     FileLockManager,
     FileTimeStore,
-    GlobTool,
-    GrepTool,
-    PatchTool,
     PermissionGateway,
-    QueryTool,
-    ReadTool,
-    ShellTool,
     ToolContext,
     ToolRegistry,
-    WriteTool,
+    load_tool_registry,
 )
 
 
@@ -34,11 +27,12 @@ class ToolRuntimeExecutor:
         file_time_store: FileTimeStore | None = None,
         lock_manager: FileLockManager | None = None,
     ) -> None:
-        self._workspace_root = workspace_root
-        self._file_time = file_time_store or FileTimeStore(workspace_root)
-        self._lock_manager = lock_manager or FileLockManager(workspace_root)
-        self._permission_gateway = permission_gateway or PermissionGateway()
-        self._tool_registry = tool_registry or build_default_registry()
+        self._workspace_root = resolve_workspace_root(workspace_root)
+        resolved_registry = tool_registry or load_tool_registry(workspace_root=self._workspace_root)
+        self._file_time = file_time_store or FileTimeStore(self._workspace_root)
+        self._lock_manager = lock_manager or FileLockManager(self._workspace_root)
+        self._permission_gateway = permission_gateway or PermissionGateway(tool_registry=resolved_registry)
+        self._tool_registry = resolved_registry
 
     def run_tool(
         self,
@@ -92,17 +86,4 @@ class ToolRuntimeExecutor:
 
 
 def build_default_registry() -> ToolRegistry:
-    return ToolRegistry(
-        tools=[
-            ReadTool(),
-            WriteTool(),
-            EditTool(),
-            PatchTool(),
-            QueryTool(),
-            GrepTool(),
-            GlobTool(),
-            ExecTool(),
-            ShellTool(),
-        ]
-    )
-
+    return load_tool_registry(workspace_root=Path.cwd())

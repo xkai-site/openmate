@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ToolName = Literal["read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"]
 GuardState = Literal["allow", "deny", "confirm"]
 AgentMode = Literal["execution", "decompose", "priority", "compact"]
 
@@ -22,8 +21,13 @@ class ContextBundle(BaseModel):
 
 
 class ToolSpec(BaseModel):
-    name: ToolName
+    name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    is_default: bool = False
+    primary_tag: str | None = None
+    secondary_tags: list[str] = Field(default_factory=list)
+    backend: str | None = None
+    parameters_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolBundle(BaseModel):
@@ -43,7 +47,7 @@ class SkillBundle(BaseModel):
 
 class ToolAction(BaseModel):
     node_id: str = Field(min_length=1)
-    tool_name: ToolName
+    tool_name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
     is_safe: bool = False
     is_read_only: bool = False

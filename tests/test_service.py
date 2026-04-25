@@ -68,6 +68,8 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(len(gateway.requests), 2)
         first = gateway.requests[0]
         self.assertIsNotNone(first.request.tools)
+        tool_names = [tool.get("name") for tool in (first.request.tools or []) if isinstance(tool, dict)]
+        self.assertEqual(tool_names, ["command", "network", "read", "search", "tool_query", "write"])
         self.assertEqual(first.request.tool_choice, "auto")
         self.assertEqual(first.request.parallel_tool_calls, False)
         self.assertIsInstance(first.request.input, list)
@@ -424,6 +426,94 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             self.assertFalse(bad_result.success)
             self.assertIn("stdout is not valid json", bad_result.error or "")
 
+    def test_run_tool_tool_query_threshold_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-tool-query",
+                tool_name="tool_query",
+                payload={},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            payload = json.loads(result.output)
+            self.assertEqual(payload.get("mode"), "tools")
+            self.assertGreaterEqual(payload.get("remaining_count", 0), 1)
+
+    def test_run_tool_tool_query_threshold_tags_when_over_limit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _write_tool_registry(
+                Path(tmp),
+                tools=[
+                    {
+                        "name": "cmd_extra_1",
+                        "description": "extra command 1",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "command_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/exec",
+                    },
+                    {
+                        "name": "cmd_extra_2",
+                        "description": "extra command 2",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "command_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/exec",
+                    },
+                    {
+                        "name": "cmd_extra_3",
+                        "description": "extra command 3",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "command_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/exec",
+                    },
+                    {
+                        "name": "net_extra_1",
+                        "description": "extra network 1",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "network_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/query",
+                    },
+                ],
+            )
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-tool-query-tags",
+                tool_name="tool_query",
+                payload={},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            payload = json.loads(result.output)
+            self.assertEqual(payload.get("mode"), "tags")
+            self.assertGreater(payload.get("remaining_count", 0), 10)
+            self.assertIsInstance(payload.get("tags"), list)
+
+    def test_run_tool_tool_query_by_tag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-tool-query-tag",
+                tool_name="tool_query",
+                payload={"by_tag": "command"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            payload = json.loads(result.output)
+            self.assertEqual(payload.get("mode"), "by_tag")
+            self.assertEqual(payload.get("tag"), "command")
+            self.assertGreaterEqual(payload.get("remaining_count", 0), 2)
+
     def test_run_tool_requires_confirmation_when_flags_are_default(self) -> None:
         service = AgentCapabilityService()
         result = service.run_tool(
@@ -598,6 +688,12 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             self.assertTrue(glob_result.success)
             self.assertIn("src", glob_result.output)
             self.assertNotIn("ignored.py", glob_result.output)
+
+
+def _write_tool_registry(workspace_root: Path, tools: list[dict[str, object]]) -> None:
+    path = workspace_root / ".openmate" / "runtime" / "tool_registry.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "tools": tools}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class _EchoHandler(BaseHTTPRequestHandler):

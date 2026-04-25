@@ -19,7 +19,7 @@ from .orchestration import ExecutionOrchestrator, ExecutionRunner
 from .pipeline import BuildPipeline
 from .session_writer import VosSessionWriter
 from .tool_runtime import ToolRuntimeExecutor
-from .tooling import PermissionGateway, ToolRegistry
+from .tooling import PermissionGateway, ToolRegistry, load_tool_registry
 
 
 class AgentCapabilityService:
@@ -50,13 +50,14 @@ class AgentCapabilityService:
         tool_runtime: ToolRuntimeExecutor | None = None,
     ) -> None:
         self._workspace_root = resolve_workspace_root(workspace_root)
+        resolved_tool_registry = tool_registry or load_tool_registry(workspace_root=self._workspace_root)
         self._context_injector = self._resolve_context_injector(
             context_injector=context_injector,
             vos_state_file=vos_state_file,
             vos_session_db_file=vos_session_db_file,
             vos_binary_path=vos_binary_path,
         )
-        self._tool_injector = tool_injector or DefaultToolInjector()
+        self._tool_injector = tool_injector or DefaultToolInjector(resolved_tool_registry)
         self._skill_injector = skill_injector or DefaultSkillInjector()
         self._assembler = assembler or DefaultAssembler()
         self._build_pipeline = build_pipeline or BuildPipeline(
@@ -83,8 +84,8 @@ class AgentCapabilityService:
         )
         self._tool_runtime = tool_runtime or ToolRuntimeExecutor(
             workspace_root=self._workspace_root,
-            permission_gateway=permission_gateway,
-            tool_registry=tool_registry,
+            permission_gateway=permission_gateway or PermissionGateway(tool_registry=resolved_tool_registry),
+            tool_registry=resolved_tool_registry,
         )
         self._execution_orchestrator = execution_orchestrator or ExecutionOrchestrator(
             gateway=self._gateway,

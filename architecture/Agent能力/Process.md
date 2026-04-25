@@ -1,4 +1,15 @@
-# Process 记录
+﻿# Process 记录
+## 2026-04-25 Tool Registry + Default-Only Injection
+1. Agent tool runtime migrated to registry-driven architecture with JSON persistence (`.openmate/runtime/tool_registry.json`).
+2. Default model-injected tools fixed to six: `read`, `write`, `search`, `command`, `network`, `tool_query`.
+3. Non-default tools (`edit/patch/grep/glob/exec/shell/query`) moved to extension set and discovered on demand via `tool_query`.
+4. `tool_query` now supports threshold mode (10): direct tool details when `<=10`, tag summary when `>10`, plus `by_tag` and `keyword` drill-down.
+5. `ToolName Literal` static constraint removed; runtime now validates tools by registry metadata.
+6. Permission policy changed from hardcoded whitelist to registry metadata + command risk rules.
+7. CLI expanded with `openmate-agent tools list/register/update/enable/disable/validate` and `--help` coverage.
+8. Verified by tests:
+   - `.\.venv\Scripts\python -m unittest tests.test_service tests.test_cli tests.test_pipeline_orchestration`
+   - `.\.venv\Scripts\python -m unittest tests.test_worker tests.test_context_injector`
 
 ## 2026-04-25 Chat 独立执行链路解耦（Responses 保持不变）
 
@@ -623,3 +634,4 @@
 4. 新增测试：
    - `tests/test_service.py`：compact 成功输出 summary+proposal、异常输出失败路径
 5. 回归：`python -m unittest discover -s tests` 通过（71 项）。
+

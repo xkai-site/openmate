@@ -30,121 +30,6 @@ from .models import (
 from .orchestration import ContextTooLargeError, ExecutionOrchestrator
 from .pipeline import BuildPipeline
 
-_TOOL_PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
-    "read": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "offset": {"type": "integer", "minimum": 0, "default": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
-        },
-        "required": ["path"],
-        "additionalProperties": False,
-    },
-    "write": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "content": {"type": "string", "default": ""},
-        },
-        "required": ["path"],
-        "additionalProperties": False,
-    },
-    "edit": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "old_string": {"type": "string"},
-            "new_string": {"type": "string", "default": ""},
-        },
-        "required": ["path", "old_string"],
-        "additionalProperties": False,
-    },
-    "patch": {
-        "type": "object",
-        "properties": {
-            "operations": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "enum": ["replace", "write"]},
-                        "path": {"type": "string"},
-                        "old_string": {"type": "string"},
-                        "new_string": {"type": "string"},
-                        "content": {"type": "string"},
-                    },
-                    "required": ["type", "path"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["operations"],
-        "additionalProperties": False,
-    },
-    "query": {
-        "type": "object",
-        "properties": {
-            "url": {"type": "string"},
-            "method": {"type": "string", "enum": ["GET", "POST"], "default": "GET"},
-            "params": {"type": "object", "default": {}},
-            "headers": {"type": "object", "default": {}},
-            "body": {"type": "object", "default": {}},
-            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 10},
-        },
-        "required": ["url"],
-        "additionalProperties": False,
-    },
-    "grep": {
-        "type": "object",
-        "properties": {
-            "pattern": {"type": "string"},
-            "scope": {"type": "string", "default": "."},
-            "max_results": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 100},
-            "file_glob": {"type": ["string", "null"], "default": None},
-        },
-        "required": ["pattern"],
-        "additionalProperties": False,
-    },
-    "glob": {
-        "type": "object",
-        "properties": {
-            "pattern": {"type": "string"},
-            "scope": {"type": "string", "default": "."},
-            "max_results": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 1000},
-        },
-        "required": ["pattern"],
-        "additionalProperties": False,
-    },
-    "exec": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1,
-            },
-            "cwd": {"type": ["string", "null"], "default": None},
-            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 30},
-            "expect_json": {"type": "boolean", "default": False},
-        },
-        "required": ["command"],
-        "additionalProperties": False,
-    },
-    "shell": {
-        "type": "object",
-        "properties": {
-            "command": {"type": "string"},
-            "cwd": {"type": ["string", "null"], "default": None},
-            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 30},
-        },
-        "required": ["command"],
-        "additionalProperties": False,
-    },
-}
-
-
 class ExecutionAgentService:
     def __init__(self, *, build_pipeline: BuildPipeline, execution_orchestrator: ExecutionOrchestrator) -> None:
         self._build_pipeline = build_pipeline
@@ -180,10 +65,15 @@ class ExecutionAgentService:
                 "你是 OpenMate Agent。保持输出可执行、可追踪、可回放；"
                 "优先利用工具与技能完成任务。"
             ),
-            "tool_management": [
-                {"name": tool.name, "description": tool.description}
-                for tool in agent_input.tools.tools
-            ],
+            "tool_management": {
+                "default_tools": [
+                    {"name": tool.name, "description": tool.description}
+                    for tool in agent_input.tools.tools
+                ],
+                "discovery_policy": (
+                    "Default tools are pre-injected only. Discover and drill down non-default tools via tool_query."
+                ),
+            },
             "skill_management": [
                 {"name": skill.name, "config": skill.config}
                 for skill in agent_input.skills.skills
@@ -483,19 +373,19 @@ def _build_openai_tools(bundle: ToolBundle) -> list[dict[str, object]]:
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": _tool_parameters_for_name(tool.name),
+                "parameters": tool.parameters_schema or _tool_parameters_for_name(tool.name),
             }
         )
     return payload
 
 
 def _tool_parameters_for_name(tool_name: str) -> dict[str, object]:
-    default_schema: dict[str, object] = {
+    _ = tool_name
+    return {
         "type": "object",
         "properties": {},
         "additionalProperties": True,
     }
-    return _TOOL_PARAMETER_SCHEMAS.get(tool_name, default_schema)
 
 
 class CompactAgentService:

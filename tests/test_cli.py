@@ -170,6 +170,10 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(tool_help.returncode, 0)
         self.assertIn("exec", tool_help.stdout)
         self.assertIn("patch", tool_help.stdout)
+        tools_help = self._run("tools", "--help")
+        self.assertEqual(tools_help.returncode, 0)
+        self.assertIn("register", tools_help.stdout)
+        self.assertIn("validate", tools_help.stdout)
 
     def test_tool_write_and_read(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -504,6 +508,49 @@ class AgentCliTests(unittest.TestCase):
             self.assertEqual(glob_result.returncode, 0)
             self.assertIn("src", glob_result.stdout)
             self.assertNotIn("ignored.py", glob_result.stdout)
+
+    def test_tools_registry_lifecycle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            validate_result = self._run("tools", "validate", cwd=tmp)
+            self.assertEqual(validate_result.returncode, 0)
+            self.assertIn('"success": true', validate_result.stdout.lower())
+
+            register_result = self._run(
+                "tools",
+                "register",
+                "--name",
+                "custom_exec_tool",
+                "--description",
+                "custom exec",
+                "--primary-tag",
+                "command_ext",
+                "--backend",
+                "builtin/exec",
+                "--enabled",
+                cwd=tmp,
+            )
+            self.assertEqual(register_result.returncode, 0, msg=register_result.stdout + register_result.stderr)
+
+            list_result = self._run("tools", "list", "--tag", "command_ext", cwd=tmp)
+            self.assertEqual(list_result.returncode, 0)
+            self.assertIn("custom_exec_tool", list_result.stdout)
+
+            disable_result = self._run("tools", "disable", "--name", "custom_exec_tool", cwd=tmp)
+            self.assertEqual(disable_result.returncode, 0)
+
+            enable_result = self._run("tools", "enable", "--name", "custom_exec_tool", cwd=tmp)
+            self.assertEqual(enable_result.returncode, 0)
+
+            update_result = self._run(
+                "tools",
+                "update",
+                "--name",
+                "custom_exec_tool",
+                "--description",
+                "custom exec updated",
+                cwd=tmp,
+            )
+            self.assertEqual(update_result.returncode, 0)
 
 
 class _EchoHandler(BaseHTTPRequestHandler):

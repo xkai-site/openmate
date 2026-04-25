@@ -20,3 +20,8 @@ def default_vos_state_path(workspace_root: str | Path | None = None) -> Path:
 def default_model_config_path(workspace_root: str | Path | None = None) -> Path:
     root = resolve_workspace_root(workspace_root)
     return (root / "model.json").resolve()
+
+
+def default_tool_registry_path(workspace_root: str | Path | None = None) -> Path:
+    root = resolve_workspace_root(workspace_root)
+    return (root / ".openmate" / "runtime" / "tool_registry.json").resolve()

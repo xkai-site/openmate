@@ -4,11 +4,12 @@ import difflib
 import fnmatch
 import json
 import py_compile
+import re
 import shutil
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Callable, Literal
 from urllib import parse, request
 
 from pydantic import BaseModel, Field, ValidationError
@@ -274,6 +275,141 @@ class QueryTool(Tool):
         encoded = parse.urlencode({str(k): str(v) for k, v in params.items()})
         separator = "&" if "?" in base_url else "?"
         return f"{base_url}{separator}{encoded}"
+
+
+class SearchPayload(BaseModel):
+    mode: Literal["content", "file"] = "content"
+    pattern: str = Field(min_length=1)
+    scope: str = "."
+    max_results: int = Field(default=100, ge=1, le=10000)
+    file_glob: str | None = None
+
+
+class SearchTool(Tool):
+    name = "search"
+    description = "Unified search tool for file content or file paths."
+
+    def __init__(self) -> None:
+        self._grep = GrepTool()
+        self._glob = GlobTool()
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        try:
+            args = SearchPayload.model_validate(payload)
+            if args.mode == "content":
+                return self._grep.run(
+                    context=context,
+                    payload={
+                        "pattern": args.pattern,
+                        "scope": args.scope,
+                        "max_results": min(args.max_results, 5000),
+                        "file_glob": args.file_glob,
+                    },
+                )
+            return self._glob.run(
+                context=context,
+                payload={
+                    "pattern": args.pattern,
+                    "scope": args.scope,
+                    "max_results": args.max_results,
+                },
+            )
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+
+
+class CommandPayload(BaseModel):
+    command: list[str] | None = None
+    shell_command: str | None = None
+    cwd: str | None = None
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    expect_json: bool = False
+
+
+class CommandTool(Tool):
+    name = "command"
+    description = "Run command with exec-first strategy and controlled shell fallback."
+
+    def __init__(self) -> None:
+        self._exec = ExecTool()
+        self._shell = ShellTool()
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        try:
+            args = CommandPayload.model_validate(payload)
+            has_exec = bool(args.command)
+            has_shell = bool((args.shell_command or "").strip())
+            if has_exec == has_shell:
+                return ToolResult(
+                    tool_name=self.name,
+                    success=False,
+                    error="provide exactly one of command (array) or shell_command (string)",
+                )
+
+            if has_exec:
+                return self._exec.run(
+                    context=context,
+                    payload={
+                        "command": args.command,
+                        "cwd": args.cwd,
+                        "timeout_seconds": args.timeout_seconds,
+                        "expect_json": args.expect_json,
+                    },
+                )
+
+            shell_command = str(args.shell_command or "").strip()
+            if not _needs_shell_features(shell_command):
+                return ToolResult(
+                    tool_name=self.name,
+                    success=False,
+                    error="shell_command requires shell syntax; use command array for plain commands",
+                )
+            return self._shell.run(
+                context=context,
+                payload={
+                    "command": shell_command,
+                    "cwd": args.cwd,
+                    "timeout_seconds": args.timeout_seconds,
+                },
+            )
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+
+
+class NetworkTool(Tool):
+    name = "network"
+    description = "Perform HTTP network request."
+
+    def __init__(self) -> None:
+        self._query = QueryTool()
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        return self._query.run(context=context, payload=payload)
+
+
+class ToolQueryPayload(BaseModel):
+    by_tag: str | None = None
+    keyword: str | None = None
+
+
+class ToolQueryTool(Tool):
+    name = "tool_query"
+    description = "Query non-default tool registry with threshold-aware discovery."
+
+    def __init__(self, registry_provider: Callable[[], Any]) -> None:
+        self._registry_provider = registry_provider
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        _ = context
+        try:
+            args = ToolQueryPayload.model_validate(payload)
+            registry = self._registry_provider()
+            result = registry.tool_query(by_tag=args.by_tag, keyword=args.keyword)
+            return ToolResult(tool_name=self.name, output=json.dumps(result, ensure_ascii=False, indent=2))
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+        except Exception as exc:
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
 
 
 class GrepPayload(BaseModel):
@@ -646,6 +782,13 @@ def _format_exec_output(
         lines.append("[stderr]")
         lines.append(stderr)
     return "\n".join(lines)
+
+
+_SHELL_META_PATTERN = re.compile(r"[|&;<>()$*?]")
+
+
+def _needs_shell_features(command: str) -> bool:
+    return bool(_SHELL_META_PATTERN.search(command))
 
 
 class _MatchResult(BaseModel):
