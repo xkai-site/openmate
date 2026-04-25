@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Input, Button, Avatar, Tooltip, Spin } from 'antd';
-import { SendOutlined, UserOutlined, RobotOutlined, CopyOutlined, ExperimentOutlined } from '@ant-design/icons';
+import { SendOutlined, UserOutlined, RobotOutlined, CopyOutlined, ExperimentOutlined, ShrinkOutlined } from '@ant-design/icons';
 import { message as antMessage } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
-import { getNode } from '@/services/api/nodes';
+import { compactNode, getNode } from '@/services/api/nodes';
+import { closeOpenCodeFences } from '@/utils/markdown';
 import type {
   ChatMessage,
   ChatResultResponse,
@@ -76,7 +77,9 @@ function ThinkingBubble({
         {streaming && <span className="chat-thinking-streaming-dot" />}
       </summary>
       <div className="chat-thinking-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{thinking}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {streaming ? closeOpenCodeFences(thinking) : thinking}
+        </ReactMarkdown>
       </div>
     </details>
   );
@@ -274,7 +277,9 @@ function StreamingArea({
       {streamingText && (
         <div className={`chat-stream-preview ${themeMode}`}>
           <div className="chat-md-content">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {closeOpenCodeFences(streamingText)}
+            </ReactMarkdown>
           </div>
         </div>
       )}
@@ -291,6 +296,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
   const [sessionLoading, setSessionLoading] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
   const [livePhase, setLivePhase] = useState<StreamPhase | null>(null);
   const [streamingText, setStreamingText] = useState('');
   const [thinkingText, setThinkingText] = useState('');
@@ -843,6 +849,34 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     [handleSend],
   );
 
+  const handleCompact = useCallback(async () => {
+    if (isCompacting || isLoading) return;
+    setIsCompacting(true);
+    const loadingMsg = antMessage.loading('正在压缩上下文…', 0);
+    try {
+      const result = await compactNode(nodeId);
+      if (result.status === 'skipped') {
+        loadingMsg();
+        antMessage.info(result.message || '当前没有需要压缩的上下文');
+        return;
+      }
+      if (result.status === 'failed') {
+        throw new Error(result.error || '压缩失败');
+      }
+      const compactedCount = result.compacted?.length ?? 0;
+      const updatedNode = await getNode(nodeId);
+      setNodeData(updatedNode);
+      onAIReply?.();
+      loadingMsg();
+      antMessage.success(`压缩完成，已处理 ${compactedCount} 个过程窗口`);
+    } catch (err) {
+      loadingMsg();
+      antMessage.error(err instanceof Error ? `压缩失败: ${err.message}` : '压缩失败，请重试');
+    } finally {
+      setIsCompacting(false);
+    }
+  }, [isCompacting, isLoading, nodeId, onAIReply]);
+
   const isEmpty = history.length === 0 && !sessionLoading;
 
   return (
@@ -895,17 +929,27 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
             onKeyDown={handleKeyDown}
             placeholder="输入消息，Enter 发送，Shift+Enter 换行…"
             autoSize={{ minRows: 1, maxRows: 6 }}
-            disabled={isLoading}
+            disabled={isLoading || isCompacting}
             name="workspace-chat-input"
             aria-label="对话输入框"
             className={`chat-textarea ${themeMode}`}
           />
           <Button
+            icon={<ShrinkOutlined />}
+            aria-label="压缩上下文"
+            onClick={() => void handleCompact()}
+            disabled={isLoading || isCompacting}
+            loading={isCompacting}
+            className="chat-compact-btn"
+          >
+            压缩
+          </Button>
+          <Button
             type="primary"
             icon={<SendOutlined />}
             aria-label="发送消息"
             onClick={handleSend}
-            disabled={!inputValue.trim()}
+            disabled={!inputValue.trim() || isCompacting}
             loading={isLoading}
             className="chat-send-btn"
           >
@@ -1335,6 +1379,11 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
           height: 36px;
           border-radius: 10px !important;
           transition: transform .06s ease, filter .08s ease !important;
+        }
+
+        .chat-compact-btn {
+          height: 36px;
+          border-radius: 10px !important;
         }
 
         .chat-send-btn:active {

@@ -1,5 +1,13 @@
 import { api } from '@/services/api';
-import type { ApiResponse, NodeCreate, NodeResponse, NodeUpdate, ProcessItem, SessionMessage } from '@/types/models';
+import type {
+  ApiResponse,
+  NodeCompactResponse,
+  NodeCreate,
+  NodeResponse,
+  NodeUpdate,
+  ProcessItem,
+  SessionMessage,
+} from '@/types/models';
 
 /**
  * 创建节点
@@ -84,4 +92,12 @@ export async function getNodeExecution(nodeId: string): Promise<{
   return {
     process: response.process,
   };
+}
+
+/**
+ * 压缩节点上下文（process memory）
+ */
+export async function compactNode(nodeId: string): Promise<NodeCompactResponse> {
+  const response = await api.post<ApiResponse<NodeCompactResponse>>(`/nodes/${nodeId}/compact`);
+  return response.data;
 }

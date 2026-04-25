@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, App } from 'antd';
-import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
 import { decomposeNode } from '@/services/api/tree';
-import { createNode, getNodeSession } from '@/services/api/nodes';
+import { compactNode, createNode, getNodeSession } from '@/services/api/nodes';
+import { closeOpenCodeFences } from '@/utils/markdown';
 import { getLocalWorkspace, isLocalFileBridgeAvailable, selectLocalWorkspace } from '@/services/localFile';
 import type {
   ChatStreamMethodCallEvent,
@@ -67,6 +68,7 @@ export default function HomePage() {
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isDecomposing, setIsDecomposing] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
   const [livePhase, setLivePhase] = useState<StreamPhase | null>(null);
   const [streamingText, setStreamingText] = useState('');
   const [liveMethodCalls, setLiveMethodCalls] = useState<ChatStreamMethodCallEvent[]>([]);
@@ -597,6 +599,36 @@ export default function HomePage() {
     }
   }, [isDecomposing, nodeId, message, navigate]);
 
+  const handleCompact = useCallback(async () => {
+    if (isCompacting || isSending) return;
+    if (!nodeId) {
+      message.info('当前暂无可压缩的会话上下文');
+      return;
+    }
+
+    setIsCompacting(true);
+    const loadingMsg = message.loading('正在压缩上下文…', 0);
+    try {
+      const result = await compactNode(nodeId);
+      loadingMsg();
+      if (result.status === 'skipped') {
+        message.info(result.message || '当前没有需要压缩的上下文');
+        return;
+      }
+      if (result.status === 'failed') {
+        throw new Error(result.error || '压缩失败');
+      }
+      const count = result.compacted?.length ?? 0;
+      message.success(`压缩完成，已处理 ${count} 个过程窗口`);
+    } catch (err) {
+      loadingMsg();
+      console.error('压缩上下文失败:', err);
+      message.error(err instanceof Error ? `压缩失败: ${err.message}` : '压缩失败，请重试');
+    } finally {
+      setIsCompacting(false);
+    }
+  }, [isCompacting, isSending, message, nodeId]);
+
   const handleStartNewConversation = useCallback(async () => {
     if (isSending || isDecomposing || isCreatingConversation) {
       return;
@@ -802,7 +834,7 @@ export default function HomePage() {
                       {streamingText ? (
                         <div className="home-md">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {streamingText}
+                            {closeOpenCodeFences(streamingText)}
                           </ReactMarkdown>
                         </div>
                       ) : (
@@ -846,12 +878,21 @@ export default function HomePage() {
                   placeholder="Message AITree…"
                   rows={1}
                   className="home-input"
-                  disabled={isSending || isDecomposing}
+                  disabled={isSending || isDecomposing || isCompacting}
                   aria-label="输入消息"
                 />
                 <button
+                  onClick={() => void handleCompact()}
+                  disabled={!nodeId || isSending || isDecomposing || isCompacting}
+                  className="home-compact-btn"
+                  aria-label="压缩上下文"
+                  title="压缩上下文"
+                >
+                  {isCompacting ? <LoadingOutlined /> : <ShrinkOutlined />}
+                </button>
+                <button
                   onClick={() => void handleSend()}
-                  disabled={!input.trim() || isSending || isDecomposing}
+                  disabled={!input.trim() || isSending || isDecomposing || isCompacting}
                   className="home-send-btn"
                   aria-label="发送消息"
                 >
@@ -1500,6 +1541,33 @@ export default function HomePage() {
           transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), 
                       opacity 0.15s ease,
                       box-shadow 0.15s ease;
+        }
+        .home-compact-btn {
+          width: 36px;
+          height: 36px;
+          border-radius: var(--home-radius-full);
+          border: 1px solid var(--home-border);
+          background: var(--home-bg-primary);
+          color: var(--home-text-tertiary);
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 14px;
+          flex-shrink: 0;
+          transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s ease, box-shadow 0.15s ease;
+        }
+        .home-compact-btn:not(:disabled):hover {
+          transform: scale(1.08);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+        }
+        .home-compact-btn:not(:disabled):active {
+          transform: scale(0.95);
+        }
+        .home-compact-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+        .home-compact-btn:focus-visible {
+          outline: 2px solid var(--home-accent);
+          outline-offset: 2px;
         }
         .home-send-btn:not(:disabled):hover {
           transform: scale(1.08);

@@ -1,5 +1,34 @@
 # Frontend Process
 
+## 2026-04-25 流式 Markdown 渲染修复（未闭合代码块容错）
+
+1. 新增工具函数 `frontend/src/utils/markdown.ts`：
+   - `closeOpenCodeFences(content)` 在检测到 ``` fence 数量为奇数时，临时补一个闭合 fence，避免流式中段 markdown 渲染异常。
+2. Home 流式渲染接入：
+   - `frontend/src/pages/Home/index.tsx` 对 `streamingText` 渲染前执行 `closeOpenCodeFences(...)`。
+3. Workspace 流式渲染接入：
+   - `frontend/src/pages/AITree/components/SessionPanel.tsx` 对流式 `streamingText` 执行同样预处理。
+   - 对流式 `thinking` 渲染也接入预处理，减少中途 markdown 半结构导致的 UI 抖动。
+4. 约束：该预处理仅用于流式阶段，历史完整消息渲染链路不变。
+5. 验证：`cd frontend && npm run build` 通过。
+
+## 2026-04-24 聊天页新增“压缩上下文”按钮（Home + Workspace）
+
+1. 前端新增节点压缩接口封装：`POST /api/v1/nodes/{id}/compact`（`frontend/src/services/api/nodes.ts`）。
+2. Home 聊天页输入区新增“压缩上下文”按钮：
+   - 无会话节点时禁用并提示。
+   - 支持 `skipped/failed/success` 三类结果提示。
+3. Workspace 聊天页（`SessionPanel`）输入区新增“压缩”按钮：
+   - 压缩成功后刷新当前 `node` 数据，并触发 `onAIReply` 以联动外部面板刷新。
+4. 类型契约补齐：`frontend/src/types/models.ts` 新增 `NodeCompactResponse / CompactedProcess`。
+5. 构建验证：`cd frontend && npm run build` 通过。
+
+## 2026-04-24 frontend 分支初始化（免测，不切分支）
+
+1. 按本轮要求在 `frontend` 分支直接初始化，不执行分支创建与切换。
+2. 已完成前端依赖初始化：`cd frontend && npm install`，结果为 `up to date in 2s`。
+3. 本轮未执行测试命令与构建命令，仅完成初始化准备。
+
 ## 2026-04-22 Home 新会话入口文案优化
 
 1. 左侧历史栏头部新建入口由图标语义强化为文字按钮：`开启新会话`。

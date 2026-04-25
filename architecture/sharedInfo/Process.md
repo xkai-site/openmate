@@ -1,5 +1,11 @@
 # SharedInfo Process
 
+## 2026-04-24 frontend 初始化（不跑测试/不切分支）
+
+1. 已按指令在 `frontend` 分支继续执行初始化，不创建、不切换分支。
+2. 前端初始化已完成：`cd frontend && npm install`，结果 `up to date in 2s`。
+3. 本轮仅做初始化沉淀，未执行单元测试与构建验证。
+
 ## 2026-04-24 VFS Process 驱动的上下文窗口改造
 
 1. VFS `ProcessItem` 已扩展为上下文窗口载体：

@@ -245,6 +245,19 @@ export interface NodeDecomposeResponse {
   created_nodes: DecomposeCreatedNode[];
 }
 
+export interface CompactedProcess {
+  name: string;
+  memory: Record<string, unknown>;
+  compacted_session_ids: string[];
+}
+
+export interface NodeCompactResponse {
+  status: 'success' | 'failed' | 'skipped' | string;
+  compacted?: CompactedProcess[];
+  error?: string;
+  message?: string;
+}
+
 export interface HealthResponse {
   status: string;
   timestamp: string;
