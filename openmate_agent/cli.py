@@ -190,6 +190,44 @@ def create_parser() -> argparse.ArgumentParser:
         help="Mark this tool call as read-only.",
     )
 
+    tool_node_process = tool_subparsers.add_parser(
+        "node_process",
+        help="Read or replace current node process list via vos CLI.",
+    )
+    tool_node_process.add_argument("node_id", help="Node identifier.")
+    tool_node_process.add_argument("--action", choices=["get", "replace"], default="get", help="Process action.")
+    tool_node_process.add_argument(
+        "--processes",
+        default="",
+        help='JSON array for replace action, e.g. [{"name":"design","status":"todo"}].',
+    )
+    tool_node_process.add_argument(
+        "--expected-version",
+        type=int,
+        default=None,
+        help="Optional node expected version for optimistic concurrency.",
+    )
+    tool_node_process.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_node_process.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tool_sibling_progress_board = tool_subparsers.add_parser(
+        "sibling_progress_board",
+        help="Read sibling node process id/name under current node parent.",
+    )
+    tool_sibling_progress_board.add_argument("node_id", help="Node identifier.")
+    tool_sibling_progress_board.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_sibling_progress_board.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
     tool_query_registry = tool_subparsers.add_parser("tool_query", help="Discover non-default tools.")
     tool_query_registry.add_argument("node_id", help="Node identifier.")
     tool_query_registry.add_argument("--by-tag", default=None, help="Filter non-default tools by primary tag.")
@@ -350,6 +388,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             except json.JSONDecodeError as exc:
                 print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
                 return 1
+        elif args.tool_name == "node_process":
+            payload["action"] = args.action
+            if args.expected_version is not None:
+                payload["expected_version"] = args.expected_version
+            if args.action == "replace":
+                if not args.processes:
+                    print(json.dumps({"success": False, "error": "--processes is required when --action replace"}))
+                    return 1
+                try:
+                    payload["processes"] = json.loads(args.processes)
+                except json.JSONDecodeError as exc:
+                    print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
+                    return 1
+        elif args.tool_name == "sibling_progress_board":
+            payload = {}
         elif args.tool_name == "tool_query":
             payload["by_tag"] = args.by_tag
             payload["keyword"] = args.keyword

@@ -7,6 +7,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 from uuid import uuid4
 
 from openmate_pool.models import (
@@ -69,7 +70,7 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         first = gateway.requests[0]
         self.assertIsNotNone(first.request.tools)
         tool_names = [tool.get("name") for tool in (first.request.tools or []) if isinstance(tool, dict)]
-        self.assertEqual(tool_names, ["command", "network", "read", "search", "tool_query", "write"])
+        self.assertEqual(tool_names, ["command", "network", "node_process", "read", "search", "tool_query", "write"])
         self.assertEqual(first.request.tool_choice, "auto")
         self.assertEqual(first.request.parallel_tool_calls, False)
         self.assertIsInstance(first.request.input, list)
@@ -513,6 +514,96 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             self.assertEqual(payload.get("mode"), "by_tag")
             self.assertEqual(payload.get("tag"), "command")
             self.assertGreaterEqual(payload.get("remaining_count", 0), 2)
+
+    def test_run_tool_node_process_get(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with (
+                mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime,
+                mock.patch("openmate_agent.tooling.tools.run_vos_cli") as vos_mock_tools,
+            ):
+                vos_mock_runtime.return_value = '{"id":"node-process","name":"ProcessNode","parent_id":"parent-1"}'
+                vos_mock_tools.return_value = '[{"id":"proc-1","name":"Design","status":"todo"}]'
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-process",
+                    tool_name="node_process",
+                    payload={"action": "get"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                payload = json.loads(result.output)
+                self.assertEqual(payload["node_id"], "node-process")
+                self.assertEqual(payload["action"], "get")
+                self.assertEqual(payload["processes"][0]["id"], "proc-1")
+
+    def test_run_tool_node_process_replace_requires_processes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-process",
+                tool_name="node_process",
+                payload={"action": "replace"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertFalse(result.success)
+            self.assertIn("processes is required", result.error or "")
+
+    def test_run_tool_sibling_progress_board_root_returns_empty_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with (
+                mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime,
+                mock.patch("openmate_agent.tooling.tools.run_vos_cli") as vos_mock_tools,
+            ):
+                vos_mock_runtime.return_value = '{"id":"node-root","name":"Root","parent_id":null}'
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-root",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                payload = json.loads(result.output)
+                self.assertEqual(payload["node_id"], "node-root")
+                self.assertEqual(payload["parent_id"], None)
+                self.assertEqual(payload["items"], [])
+
+    def test_runtime_registry_auto_registers_sibling_progress_board(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            _ = service
+            path = Path(tmp, ".openmate", "runtime", "tool_registry.json")
+            self.assertTrue(path.exists())
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            tools = payload.get("tools", [])
+            self.assertTrue(any(item.get("name") == "sibling_progress_board" for item in tools))
+
+    def test_run_tool_sibling_progress_board_non_root_returns_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with (
+                mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime,
+                mock.patch("openmate_agent.tooling.tools.run_vos_cli") as vos_mock_tools,
+            ):
+                vos_mock_runtime.return_value = '{"id":"node-1","name":"Child","parent_id":"parent-0"}'
+                vos_mock_tools.return_value = '[{"node_id":"node-1","node_name":"Child","processes":[{"id":"p-1","name":"Design","status":"done"}]}]'
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-1",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                payload = json.loads(result.output)
+                self.assertEqual(payload["node_id"], "node-1")
+                self.assertEqual(payload["parent_id"], "parent-0")
+                self.assertEqual(len(payload["items"]), 1)
+                self.assertEqual(payload["items"][0]["node_name"], "Child")
+                self.assertEqual(payload["items"][0]["process_name"], "Design")
 
     def test_run_tool_requires_confirmation_when_flags_are_default(self) -> None:
         service = AgentCapabilityService()

@@ -170,10 +170,36 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(tool_help.returncode, 0)
         self.assertIn("exec", tool_help.stdout)
         self.assertIn("patch", tool_help.stdout)
+        self.assertIn("node_process", tool_help.stdout)
+        self.assertIn("sibling_progress_board", tool_help.stdout)
         tools_help = self._run("tools", "--help")
         self.assertEqual(tools_help.returncode, 0)
         self.assertIn("register", tools_help.stdout)
         self.assertIn("validate", tools_help.stdout)
+
+    def test_tool_node_process_help(self) -> None:
+        result = self._run("tool", "node_process", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--action", result.stdout)
+        self.assertIn("--processes", result.stdout)
+
+    def test_tool_sibling_progress_board_help(self) -> None:
+        result = self._run("tool", "sibling_progress_board", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Node identifier", result.stdout)
+
+    def test_tool_node_process_replace_requires_processes(self) -> None:
+        result = self._run(
+            "tool",
+            "node_process",
+            "node-50",
+            "--action",
+            "replace",
+            "--is-safe",
+            "--is-read-only",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--processes is required", result.stdout)
 
     def test_tool_write_and_read(self) -> None:
         with TemporaryDirectory() as tmp:

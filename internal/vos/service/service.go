@@ -466,6 +466,38 @@ func (service *Service) ListChildren(nodeID string) ([]*domain.Node, error) {
 	return children, nil
 }
 
+// ChildProcessEntry holds one child node's id/name and its resolved process items.
+type ChildProcessEntry struct {
+	NodeID    string                `json:"node_id"`
+	NodeName  string                `json:"node_name"`
+	Processes []domain.ProcessItem  `json:"processes"`
+}
+
+func (service *Service) ListChildrenProcesses(parentID string) ([]ChildProcessEntry, error) {
+	state, err := service.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	parent, err := requireNode(state, parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]ChildProcessEntry, 0, len(parent.ChildrenIDs))
+	for _, childID := range parent.ChildrenIDs {
+		child, err := requireNode(state, childID)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, ChildProcessEntry{
+			NodeID:    child.ID,
+			NodeName:  child.Name,
+			Processes: resolveNodeProcesses(state, child),
+		})
+	}
+	return entries, nil
+}
+
 func (service *Service) MoveNode(nodeID, newParentID string) (*domain.Node, error) {
 	state, err := service.store.Load()
 	if err != nil {

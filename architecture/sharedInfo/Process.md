@@ -1,4 +1,13 @@
 ﻿# SharedInfo Process
+## 2026-04-25 Agent Process 工具能力新增（node_process + sibling_progress_board）
+1. Agent 默认工具集合新增 `node_process`，当前默认注入集合变更为：`read/write/search/command/network/node_process/tool_query`。
+2. 新增非默认注册工具 `sibling_progress_board`（`primary_tag=process`），用于读取同级节点进度板（父节点 children 的 process `id/name`）。
+3. 运行时在加载 registry 时会自动初始化 `.openmate/runtime/tool_registry.json`，确保包含 `sibling_progress_board` 注册项（`enabled=true`、`is_default=false`）。
+4. 行为约束：当当前 node 为根节点（`parent_id` 为空）时，`sibling_progress_board` 返回空列表 `items: []`。
+5. CLI 已新增：
+   - `openmate-agent tool node_process --help`
+   - `openmate-agent tool sibling_progress_board --help`
+
 ## 2026-04-25 Agent Tool Mechanism Refactor (Registry + On-Demand Discovery)
 1. Agent tools switched to registry-driven runtime, loading built-in defaults plus JSON registrations from `.openmate/runtime/tool_registry.json`.
 2. Prompt injection now exposes only six default tools (`read/write/search/command/network/tool_query`) and adds discovery policy for extensions.

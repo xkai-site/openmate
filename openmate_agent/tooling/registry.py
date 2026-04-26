@@ -19,11 +19,13 @@ from .tools import (
     GlobTool,
     GrepTool,
     NetworkTool,
+    NodeProcessTool,
     PatchTool,
     QueryTool,
     ReadTool,
     SearchTool,
     ShellTool,
+    SiblingProgressBoardTool,
     ToolQueryTool,
     WriteTool,
 )
@@ -36,6 +38,7 @@ DEFAULT_TOOL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("search", "Unified file/content search across workspace.", "builtin/search"),
     ("command", "Run commands, defaulting to structured exec with controlled shell fallback.", "builtin/command"),
     ("network", "Perform HTTP requests.", "builtin/network"),
+    ("node_process", "Read or replace current node process list via vos CLI.", "builtin/node_process"),
     ("tool_query", "Discover non-default tools by list/tag drill-down.", "builtin/tool_query"),
 )
 
@@ -45,6 +48,7 @@ ALLOWED_BACKENDS: dict[str, str] = {
     "builtin/search": "search",
     "builtin/command": "command",
     "builtin/network": "network",
+    "builtin/node_process": "node_process",
     "builtin/tool_query": "tool_query",
     "builtin/edit": "edit",
     "builtin/patch": "patch",
@@ -53,6 +57,7 @@ ALLOWED_BACKENDS: dict[str, str] = {
     "builtin/exec": "exec",
     "builtin/shell": "shell",
     "builtin/query": "query",
+    "builtin/sibling_progress_board": "sibling_progress_board",
 }
 
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -266,6 +271,9 @@ def load_tool_registry(*, workspace_root: Path, registry_path: Path | None = Non
     path = registry_path or default_tool_registry_path(workspace_root)
     builtin_specs = _builtin_specs()
     file_specs = _read_registry_file(path)
+    file_specs, should_persist = _with_required_json_defaults(file_specs)
+    if should_persist:
+        _write_registry_specs(path, file_specs)
 
     names: set[str] = set()
     for spec in [*builtin_specs, *file_specs]:
@@ -310,6 +318,36 @@ def _read_registry_file(path: Path) -> list[ToolRegistration]:
     for spec in data.tools:
         specs.append(spec.model_copy(update={"source": "json"}))
     return specs
+
+
+def _with_required_json_defaults(file_specs: list[ToolRegistration]) -> tuple[list[ToolRegistration], bool]:
+    by_name = {spec.name: spec for spec in file_specs}
+    changed = False
+    if "sibling_progress_board" not in by_name:
+        file_specs.append(
+            ToolRegistration(
+                name="sibling_progress_board",
+                description="Read sibling nodes process id/name from current parent.",
+                enabled=True,
+                is_default=False,
+                primary_tag="process",
+                secondary_tags=["sibling", "board"],
+                backend="builtin/sibling_progress_board",
+                parameters_schema=_schema_for_tool("sibling_progress_board"),
+                source="json",
+            )
+        )
+        changed = True
+    return file_specs, changed
+
+
+def _write_registry_specs(path: Path, specs: list[ToolRegistration]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "tools": [spec.model_dump_for_file() for spec in specs],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _builtin_specs() -> list[ToolRegistration]:
@@ -424,6 +462,8 @@ def _build_tool_for_backend(backend: str, *, registry: ToolRegistry) -> Tool:
         return CommandTool()
     if backend == "builtin/network":
         return NetworkTool()
+    if backend == "builtin/node_process":
+        return NodeProcessTool()
     if backend == "builtin/tool_query":
         return ToolQueryTool(registry_provider=lambda: registry)
     if backend == "builtin/edit":
@@ -440,6 +480,8 @@ def _build_tool_for_backend(backend: str, *, registry: ToolRegistry) -> Tool:
         return ShellTool()
     if backend == "builtin/query":
         return QueryTool()
+    if backend == "builtin/sibling_progress_board":
+        return SiblingProgressBoardTool()
     raise ValueError(f"invalid backend: {backend}")
 
 
@@ -513,6 +555,43 @@ def _schema_for_tool(tool_name: str) -> dict[str, Any]:
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 10},
             },
             "required": ["url"],
+            "additionalProperties": False,
+        }
+    if tool_name == "node_process":
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["get", "replace"], "default": "get"},
+                "processes": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "status": {"type": "string", "enum": ["todo", "done"]},
+                            "session_range": {
+                                "type": "object",
+                                "properties": {
+                                    "start_session_id": {"type": "string"},
+                                    "end_session_id": {"type": ["string", "null"]},
+                                    "start_event_seq": {"type": ["integer", "null"]},
+                                    "end_event_seq": {"type": ["integer", "null"]},
+                                },
+                                "required": ["start_session_id"],
+                                "additionalProperties": False,
+                            },
+                            "summary": {"type": ["object", "null"]},
+                            "compacted_session_ids": {"type": "array", "items": {"type": "string"}},
+                            "timestamp": {"type": "string"},
+                        },
+                        "required": ["name", "status"],
+                        "additionalProperties": False,
+                    },
+                    "default": None,
+                },
+                "expected_version": {"type": ["integer", "null"], "default": None},
+            },
             "additionalProperties": False,
         }
     if tool_name == "tool_query":
@@ -617,6 +696,12 @@ def _schema_for_tool(tool_name: str) -> dict[str, Any]:
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 30},
             },
             "required": ["command"],
+            "additionalProperties": False,
+        }
+    if tool_name == "sibling_progress_board":
+        return {
+            "type": "object",
+            "properties": {},
             "additionalProperties": False,
         }
     return {"type": "object", "properties": {}, "additionalProperties": True}

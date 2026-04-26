@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 from urllib import parse, request
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from openmate_agent.models import ToolResult
+from openmate_agent.vos_cli import VosCommandError, run_vos_cli
 
 from .base import Tool, ToolContext
 
@@ -39,6 +40,10 @@ BINARY_EXTENSIONS = {
 }
 
 
+class _VosCommandError(VosCommandError):
+    pass
+
+
 def _resolve_in_workspace(workspace_root: Path, raw_path: str) -> Path:
     path = Path(raw_path)
     candidate = path.resolve() if path.is_absolute() else (workspace_root / path).resolve()
@@ -54,6 +59,26 @@ def _looks_binary(path: Path) -> bool:
     except Exception:
         return False
     return b"\x00" in sample
+
+
+def _run_vos_command(context: ToolContext, command: list[str]) -> str:
+    return run_vos_cli(workspace_root=context.workspace_root, command=command)
+
+
+def _list_node_processes(context: ToolContext, node_id: str) -> list[dict[str, Any]]:
+    stdout = _run_vos_command(context, ["process", "list", "--node-id", node_id])
+    parsed = json.loads(stdout or "[]")
+    if not isinstance(parsed, list):
+        raise _VosCommandError("vos process list returned invalid payload")
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _list_children_processes(context: ToolContext, parent_id: str) -> list[dict[str, Any]]:
+    stdout = _run_vos_command(context, ["node", "children-processes", "--node-id", parent_id])
+    parsed = json.loads(stdout or "[]")
+    if not isinstance(parsed, list):
+        raise _VosCommandError("vos node children-processes returned invalid payload")
+    return [item for item in parsed if isinstance(item, dict)]
 
 
 class ReadPayload(BaseModel):
@@ -409,6 +434,167 @@ class ToolQueryTool(Tool):
         except ValidationError as exc:
             return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
         except Exception as exc:
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+
+
+class NodeProcessSessionRangePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_session_id: str = Field(min_length=1)
+    end_session_id: str | None = None
+    start_event_seq: int | None = None
+    end_event_seq: int | None = None
+
+
+class NodeProcessItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    name: str = Field(min_length=1)
+    status: Literal["todo", "done"]
+    session_range: NodeProcessSessionRangePayload | None = None
+    summary: dict[str, Any] | None = None
+    compacted_session_ids: list[str] = Field(default_factory=list)
+    timestamp: str | None = None
+
+
+class NodeProcessPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["get", "replace"] = "get"
+    processes: list[NodeProcessItemPayload] | None = None
+    expected_version: int | None = None
+
+
+class NodeProcessTool(Tool):
+    name = "node_process"
+    description = "Read or replace current node process list via vos CLI."
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        try:
+            args = NodeProcessPayload.model_validate(payload)
+            if args.action == "get":
+                processes = _list_node_processes(context=context, node_id=context.node_id)
+                return ToolResult(
+                    tool_name=self.name,
+                    output=json.dumps(
+                        {
+                            "node_id": context.node_id,
+                            "action": "get",
+                            "processes": processes,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+
+            if args.processes is None:
+                return ToolResult(tool_name=self.name, success=False, error="processes is required when action=replace")
+
+            process_payload = [item.model_dump(mode="json", exclude_none=True) for item in args.processes]
+            command = [
+                "node",
+                "update",
+                "--node-id",
+                context.node_id,
+                "--process-json",
+                json.dumps(process_payload, ensure_ascii=False),
+            ]
+            if args.expected_version is not None:
+                command.extend(["--expected-version", str(args.expected_version)])
+
+            updated_node = json.loads(_run_vos_command(context, command) or "{}")
+            processes = _list_node_processes(context=context, node_id=context.node_id)
+            return ToolResult(
+                tool_name=self.name,
+                output=json.dumps(
+                    {
+                        "node_id": context.node_id,
+                        "action": "replace",
+                        "node": updated_node if isinstance(updated_node, dict) else {},
+                        "processes": processes,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+        except _VosCommandError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+        except json.JSONDecodeError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid vos json: {exc}")
+        except Exception as exc:  # pragma: no cover
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+
+
+class SiblingProgressBoardPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SiblingProgressBoardTool(Tool):
+    name = "sibling_progress_board"
+    description = "Read sibling nodes' process id/name under current node parent."
+
+    def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
+        try:
+            _ = SiblingProgressBoardPayload.model_validate(payload)
+            parent_id = context.parent_id
+            if not isinstance(parent_id, str) or not parent_id.strip():
+                return ToolResult(
+                    tool_name=self.name,
+                    output=json.dumps(
+                        {"node_id": context.node_id, "parent_id": None, "items": []},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+
+            children = _list_children_processes(context=context, parent_id=parent_id)
+            items: list[dict[str, Any]] = []
+            for child in children:
+                node_id = str(child.get("node_id", "")).strip()
+                node_name = str(child.get("node_name", "")).strip()
+                if not node_id:
+                    continue
+                processes = child.get("processes", [])
+                if not isinstance(processes, list):
+                    continue
+                for process in processes:
+                    if not isinstance(process, dict):
+                        continue
+                    process_id = process.get("id")
+                    process_name = process.get("name")
+                    if not isinstance(process_name, str) or not process_name.strip():
+                        continue
+                    items.append(
+                        {
+                            "node_id": node_id,
+                            "node_name": node_name,
+                            "process_id": process_id,
+                            "process_name": process_name,
+                        }
+                    )
+
+            return ToolResult(
+                tool_name=self.name,
+                output=json.dumps(
+                    {
+                        "node_id": context.node_id,
+                        "parent_id": parent_id,
+                        "items": items,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        except ValidationError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+        except _VosCommandError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+        except json.JSONDecodeError as exc:
+            return ToolResult(tool_name=self.name, success=False, error=f"invalid vos json: {exc}")
+        except Exception as exc:  # pragma: no cover
             return ToolResult(tool_name=self.name, success=False, error=str(exc))
 
 

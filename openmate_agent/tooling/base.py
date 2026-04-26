@@ -13,6 +13,8 @@ from .file_state import FileLockManager, FileTimeStore
 
 class ToolContext(BaseModel):
     node_id: str = Field(min_length=1)
+    parent_id: str | None = None
+    node_name: str = ""
     workspace_root: Path
     file_time: FileTimeStore
     lock_manager: FileLockManager

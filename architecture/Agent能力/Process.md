@@ -1,4 +1,16 @@
 ﻿# Process 记录
+## 2026-04-25 Process 工具能力新增（node_process + sibling_progress_board）
+1. `openmate_agent` 新增 `node_process` 默认工具（内建后端 `builtin/node_process`），支持：
+   - `action=get`：读取当前 node 的 process 列表。
+   - `action=replace`：按传入 `processes` 全量替换当前 node process（可选 `expected_version`）。
+2. 新增 `sibling_progress_board` 非默认工具（内建后端 `builtin/sibling_progress_board`），用于读取当前 node 同级进度，输出项包含 `node_id / node_name / process_id / process_name`。
+3. 根节点行为约束：当前 node 无 `parent_id` 时，`sibling_progress_board` 返回 `items: []`。
+4. CLI 已扩展并支持帮助查询：
+   - `openmate-agent tool node_process --help`
+   - `openmate-agent tool sibling_progress_board --help`
+5. 运行时注册初始化：`load_tool_registry` 会自动确保 `.openmate/runtime/tool_registry.json` 至少包含 `sibling_progress_board` 注册项（`enabled=true`、`is_default=false`、`primary_tag=process`）。
+6. 本轮按要求仅完成实现与用例落地，不执行测试。
+
 ## 2026-04-25 Tool Registry + Default-Only Injection
 1. Agent tool runtime migrated to registry-driven architecture with JSON persistence (`.openmate/runtime/tool_registry.json`).
 2. Default model-injected tools fixed to six: `read`, `write`, `search`, `command`, `network`, `tool_query`.

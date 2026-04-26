@@ -15,6 +15,7 @@ from .tooling import (
     ToolRegistry,
     load_tool_registry,
 )
+from .vos_cli import resolve_node_context
 
 
 class ToolRuntimeExecutor:
@@ -67,8 +68,11 @@ class ToolRuntimeExecutor:
                 error=f"tool action blocked: {decision.decision} ({decision.reason})",
             )
 
+        parent_id, node_name = resolve_node_context(workspace_root=self._workspace_root, node_id=node_id)
         context = ToolContext(
             node_id=node_id,
+            parent_id=parent_id,
+            node_name=node_name,
             workspace_root=self._workspace_root,
             file_time=self._file_time,
             lock_manager=self._lock_manager,
