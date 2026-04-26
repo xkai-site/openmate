@@ -213,6 +213,7 @@ func (server *Server) registerRoutes() {
 
 	server.mux.HandleFunc(v1Prefix+"/chat", server.handleV1ChatEntry)
 	server.mux.HandleFunc(v1Prefix+"/chat/", server.handleV1ChatEntry)
+	server.mux.HandleFunc(v1Prefix+"/tools/monitor/", server.handleV1ToolMonitorRoutes)
 	server.mux.HandleFunc(v1Prefix+"/topic", server.handleV1Unimplemented)
 	server.mux.HandleFunc(v1Prefix+"/topic/", server.handleV1Unimplemented)
 	server.mux.HandleFunc(v1Prefix+"/planlist", server.handleV1Unimplemented)

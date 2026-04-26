@@ -9,6 +9,7 @@ from openmate_shared.runtime_paths import resolve_workspace_root
 
 from .models import CompactRequest, DecomposeRequest, PriorityRequest
 from .service import AgentCapabilityService
+from .tool_monitor import dump_events_json, ToolMonitorService
 from .tooling import ToolRegistration, load_tool_registry, save_registry_file, validate_registry_file
 from .worker import WorkerExecuteRequest, execute_worker_request
 
@@ -274,6 +275,51 @@ def create_parser() -> argparse.ArgumentParser:
 
     tools_subparsers.add_parser("validate", help="Validate tool registry configuration.")
 
+    tools_monitor = tools_subparsers.add_parser(
+        "monitor",
+        help="Query tool monitor events and summary.",
+        description="Query tool monitor events and aggregated statistics.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  openmate-agent tools monitor list --tool-name read --source cli --limit 20\n"
+            "  openmate-agent tools monitor summary --source model --window-minutes 60"
+        ),
+    )
+    tools_monitor_subparsers = tools_monitor.add_subparsers(dest="monitor_name", required=True)
+    monitor_list = tools_monitor_subparsers.add_parser(
+        "list",
+        help="List monitor events.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  openmate-agent tools monitor list --node-id node-1 --success true\n"
+            "  openmate-agent tools monitor list --tool-name write --source cli --limit 50"
+        ),
+    )
+    monitor_list.add_argument("--tool-name", default=None, help="Filter by tool name.")
+    monitor_list.add_argument("--node-id", default=None, help="Filter by node id.")
+    monitor_list.add_argument("--source", choices=["model", "cli", "http", "unknown"], default=None, help="Filter by call source.")
+    monitor_list.add_argument("--success", choices=["true", "false"], default=None, help="Filter by after-event success.")
+    monitor_list.add_argument("--limit", type=int, default=50, help="Max event count.")
+
+    monitor_summary = tools_monitor_subparsers.add_parser(
+        "summary",
+        help="Summarize monitor events by tool.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  openmate-agent tools monitor summary --window-minutes 30\n"
+            "  openmate-agent tools monitor summary --tool-name read --source model"
+        ),
+    )
+    monitor_summary.add_argument("--tool-name", default=None, help="Filter by tool name.")
+    monitor_summary.add_argument("--node-id", default=None, help="Filter by node id.")
+    monitor_summary.add_argument("--source", choices=["model", "cli", "http", "unknown"], default=None, help="Filter by call source.")
+    monitor_summary.add_argument("--success", choices=["true", "false"], default=None, help="Filter by success.")
+    monitor_summary.add_argument("--limit", type=int, default=100, help="Max tool rows.")
+    monitor_summary.add_argument("--window-minutes", type=int, default=60, help="Lookback window in minutes.")
+
     worker_parser = subparsers.add_parser("worker", help="Execute schedule worker action.")
     worker_subparsers = worker_parser.add_subparsers(dest="worker_name", required=True)
 
@@ -413,12 +459,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload=payload,
             is_safe=args.is_safe,
             is_read_only=args.is_read_only,
+            source="cli",
         )
         print(result.model_dump_json(indent=2))
         return 0 if result.success else 1
 
     if args.command == "tools":
         workspace_root = resolve_workspace_root(Path.cwd())
+        if args.tools_name == "monitor":
+            monitor_service = ToolMonitorService(workspace_root=workspace_root)
+            if args.monitor_name == "list":
+                success_value = None if args.success is None else args.success == "true"
+                events = monitor_service.list_events(
+                    tool_name=args.tool_name,
+                    node_id=args.node_id,
+                    source=args.source,
+                    success=success_value,
+                    limit=args.limit,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "success": True,
+                            "events": dump_events_json(events),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.monitor_name == "summary":
+                success_value = None if args.success is None else args.success == "true"
+                summary = monitor_service.summarize(
+                    tool_name=args.tool_name,
+                    node_id=args.node_id,
+                    source=args.source,
+                    success=success_value,
+                    limit=args.limit,
+                    window_minutes=args.window_minutes,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "success": True,
+                            "summary": summary,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+
         try:
             registry = load_tool_registry(workspace_root=workspace_root)
         except Exception as exc:

@@ -25,3 +25,8 @@ def default_model_config_path(workspace_root: str | Path | None = None) -> Path:
 def default_tool_registry_path(workspace_root: str | Path | None = None) -> Path:
     root = resolve_workspace_root(workspace_root)
     return (root / ".openmate" / "runtime" / "tool_registry.json").resolve()
+
+
+def default_tool_monitor_path(workspace_root: str | Path | None = None) -> Path:
+    root = resolve_workspace_root(workspace_root)
+    return (root / ".openmate" / "runtime" / "tool_monitor.jsonl").resolve()

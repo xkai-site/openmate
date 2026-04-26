@@ -454,7 +454,7 @@ class ResponsesExecutionRunner:
             "output": output_content,
             "ok": False,
             "error": {
-                "code": "TOOL_EXECUTION_FAILED",
+                "code": tool_result.error_code or "TOOL_EXECUTION_FAILED",
                 "message": tool_result.error or "tool execution failed",
                 "retryable": False,
             },

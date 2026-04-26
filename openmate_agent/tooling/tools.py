@@ -489,7 +489,12 @@ class NodeProcessTool(Tool):
                 )
 
             if args.processes is None:
-                return ToolResult(tool_name=self.name, success=False, error="processes is required when action=replace")
+                return ToolResult(
+                    tool_name=self.name,
+                    success=False,
+                    error_code="INVALID_ARGUMENT",
+                    error="processes is required when action=replace",
+                )
 
             process_payload = [item.model_dump(mode="json", exclude_none=True) for item in args.processes]
             command = [
@@ -519,13 +524,13 @@ class NodeProcessTool(Tool):
                 ),
             )
         except ValidationError as exc:
-            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+            return ToolResult(tool_name=self.name, success=False, error_code="INVALID_ARGUMENT", error=f"invalid payload: {exc.errors()}")
         except _VosCommandError as exc:
-            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+            return ToolResult(tool_name=self.name, success=False, error_code="VOS_COMMAND_FAILED", error=str(exc))
         except json.JSONDecodeError as exc:
-            return ToolResult(tool_name=self.name, success=False, error=f"invalid vos json: {exc}")
+            return ToolResult(tool_name=self.name, success=False, error_code="VOS_INVALID_PAYLOAD", error=f"invalid vos json: {exc}")
         except Exception as exc:  # pragma: no cover
-            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+            return ToolResult(tool_name=self.name, success=False, error_code="TOOL_RUNTIME_ERROR", error=str(exc))
 
 
 class SiblingProgressBoardPayload(BaseModel):
@@ -589,13 +594,13 @@ class SiblingProgressBoardTool(Tool):
                 ),
             )
         except ValidationError as exc:
-            return ToolResult(tool_name=self.name, success=False, error=f"invalid payload: {exc.errors()}")
+            return ToolResult(tool_name=self.name, success=False, error_code="INVALID_ARGUMENT", error=f"invalid payload: {exc.errors()}")
         except _VosCommandError as exc:
-            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+            return ToolResult(tool_name=self.name, success=False, error_code="VOS_COMMAND_FAILED", error=str(exc))
         except json.JSONDecodeError as exc:
-            return ToolResult(tool_name=self.name, success=False, error=f"invalid vos json: {exc}")
+            return ToolResult(tool_name=self.name, success=False, error_code="VOS_INVALID_PAYLOAD", error=f"invalid vos json: {exc}")
         except Exception as exc:  # pragma: no cover
-            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+            return ToolResult(tool_name=self.name, success=False, error_code="TOOL_RUNTIME_ERROR", error=str(exc))
 
 
 class GrepPayload(BaseModel):

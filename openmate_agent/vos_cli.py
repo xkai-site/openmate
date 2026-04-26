@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import json
-import logging
 import subprocess
 from pathlib import Path
 
 from openmate_agent.vos_binary import ensure_vos_binary
 from openmate_shared.runtime_paths import default_runtime_db_path, default_vos_state_path
 
-_LOGGER = logging.getLogger(__name__)
-
-
 class VosCommandError(RuntimeError):
+    pass
+
+
+class VosNodeNotFoundError(VosCommandError):
+    pass
+
+
+class VosUnavailableError(VosCommandError):
+    pass
+
+
+class VosInvalidPayloadError(VosCommandError):
     pass
 
 
@@ -51,11 +59,15 @@ def run_vos_cli(*, workspace_root: Path, command: list[str]) -> str:
 def resolve_node_context(*, workspace_root: Path, node_id: str) -> tuple[str | None, str]:
     try:
         stdout = run_vos_cli(workspace_root=workspace_root, command=["node", "get", "--node-id", node_id])
-        parsed = json.loads(stdout or "{}")
-        if isinstance(parsed, dict):
-            parent_id = parsed.get("parent_id")
-            name = str(parsed.get("name", "") or "")
-            return (parent_id if isinstance(parent_id, str) else None, name)
-    except Exception:
-        _LOGGER.debug("resolve_node_context failed for node=%s, using defaults", node_id, exc_info=True)
-    return (None, "")
+    except VosCommandError as exc:
+        message = str(exc).strip()
+        normalized = message.lower()
+        if "node not found" in normalized:
+            raise VosNodeNotFoundError(f"node_not_found: {message}") from exc
+        raise VosUnavailableError(f"vos_unavailable: {message}") from exc
+    parsed = json.loads(stdout or "{}")
+    if not isinstance(parsed, dict):
+        raise VosInvalidPayloadError("invalid_payload: vos node get returned invalid payload")
+    parent_id = parsed.get("parent_id")
+    name = str(parsed.get("name", "") or "")
+    return (parent_id if isinstance(parent_id, str) else None, name)

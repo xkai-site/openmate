@@ -131,6 +131,8 @@ class AgentCapabilityService:
         payload: dict[str, object] | None = None,
         is_safe: bool = False,
         is_read_only: bool = False,
+        source: str = "unknown",
+        request_id: str | None = None,
     ) -> ToolResult:
         return self._tool_runtime.run_tool(
             node_id=node_id,
@@ -138,6 +140,8 @@ class AgentCapabilityService:
             payload=payload,
             is_safe=is_safe,
             is_read_only=is_read_only,
+            source=source,
+            request_id=request_id,
         )
 
     def _resolve_context_injector(

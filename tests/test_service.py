@@ -18,9 +18,10 @@ from openmate_pool.models import (
     OpenAIResponsesResponse,
 )
 from openmate_agent.service import AgentCapabilityService
-from openmate_agent.orchestration import ChatExecutionRunner
+from openmate_agent.orchestration import ChatExecutionRunner, ResponsesExecutionRunner
 from openmate_agent.session_models import AppendSessionEventInput
-from openmate_agent.models import CompactProcessInput, CompactRequest, DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest
+from openmate_agent.models import CompactProcessInput, CompactRequest, DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest, ToolResult
+from openmate_agent.vos_cli import VosCommandError
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
@@ -314,6 +315,18 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(response.status, "failed")
         self.assertIn("compact output is not valid JSON", response.error or "")
 
+    def test_tool_output_payload_uses_structured_error_code(self) -> None:
+        failed = ToolResult(
+            tool_name="sibling_progress_board",
+            success=False,
+            error_code="VOS_NODE_NOT_FOUND",
+            error="node_not_found: node not found",
+        )
+        payload = ResponsesExecutionRunner._build_tool_output_payload(failed)
+        self.assertEqual(payload["ok"], False)
+        error = payload.get("error") or {}
+        self.assertEqual(error.get("code"), "VOS_NODE_NOT_FOUND")
+
     def test_run_tool_write_read_query(self) -> None:
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(workspace_root=tmp)
@@ -604,6 +617,55 @@ class AgentCapabilityServiceTests(unittest.TestCase):
                 self.assertEqual(len(payload["items"]), 1)
                 self.assertEqual(payload["items"][0]["node_name"], "Child")
                 self.assertEqual(payload["items"][0]["process_name"], "Design")
+
+    def test_run_tool_sibling_progress_board_invalid_node_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime:
+                vos_mock_runtime.side_effect = VosCommandError("node not found")
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-missing",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, "VOS_NODE_NOT_FOUND")
+                self.assertIn("node not found", result.error or "")
+                self.assertIn("node_not_found", result.error or "")
+
+    def test_run_tool_sibling_progress_board_vos_unavailable_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime:
+                vos_mock_runtime.side_effect = VosCommandError("vos CLI failed")
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-any",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, "VOS_UNAVAILABLE")
+                self.assertIn("vos_unavailable", result.error or "")
+
+    def test_run_tool_sibling_progress_board_invalid_payload_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime:
+                vos_mock_runtime.return_value = "[]"
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-any",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, "VOS_INVALID_PAYLOAD")
+                self.assertIn("invalid_payload", result.error or "")
 
     def test_run_tool_requires_confirmation_when_flags_are_default(self) -> None:
         service = AgentCapabilityService()
@@ -1191,4 +1253,3 @@ def _extract_input_text(value: object) -> str:
 
 if __name__ == "__main__":
     unittest.main()
-

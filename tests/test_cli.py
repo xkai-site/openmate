@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -577,6 +578,85 @@ class AgentCliTests(unittest.TestCase):
                 cwd=tmp,
             )
             self.assertEqual(update_result.returncode, 0)
+
+    def test_tools_monitor_help(self) -> None:
+        result = self._run("tools", "monitor", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("list", result.stdout)
+        self.assertIn("summary", result.stdout)
+        self.assertIn("Examples", result.stdout)
+
+    def test_tools_monitor_list_and_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            monitor_file = Path(tmp) / ".openmate" / "runtime" / "tool_monitor.jsonl"
+            monitor_file.parent.mkdir(parents=True, exist_ok=True)
+            monitor_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event_id": "1",
+                                "phase": "before",
+                                "ts": now,
+                                "node_id": "node-1",
+                                "tool_name": "read",
+                                "source": "cli",
+                                "is_safe": True,
+                                "is_read_only": True,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "event_id": "2",
+                                "phase": "after",
+                                "ts": now,
+                                "node_id": "node-1",
+                                "tool_name": "read",
+                                "source": "cli",
+                                "is_safe": True,
+                                "is_read_only": True,
+                                "success": True,
+                                "duration_ms": 12,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            list_result = self._run(
+                "tools",
+                "monitor",
+                "list",
+                "--tool-name",
+                "read",
+                "--source",
+                "cli",
+                "--success",
+                "true",
+                cwd=tmp,
+            )
+            self.assertEqual(list_result.returncode, 0)
+            self.assertIn('"events"', list_result.stdout)
+            self.assertIn('"tool_name": "read"', list_result.stdout)
+
+            summary_result = self._run(
+                "tools",
+                "monitor",
+                "summary",
+                "--tool-name",
+                "read",
+                "--source",
+                "cli",
+                "--window-minutes",
+                "120",
+                cwd=tmp,
+            )
+            self.assertEqual(summary_result.returncode, 0)
+            self.assertIn('"summary"', summary_result.stdout)
+            self.assertIn('"p95_duration_ms"', summary_result.stdout)
 
 
 class _EchoHandler(BaseHTTPRequestHandler):

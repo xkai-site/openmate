@@ -70,6 +70,7 @@ class ToolResult(BaseModel):
     tool_name: str = Field(min_length=1)
     success: bool = True
     output: str = ""
+    error_code: str | None = None
     error: str | None = None
 
 

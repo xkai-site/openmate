@@ -647,3 +647,21 @@
    - `tests/test_service.py`：compact 成功输出 summary+proposal、异常输出失败路径
 5. 回归：`python -m unittest discover -s tests` 通过（71 项）。
 
+
+## 2026-04-26 Tool Monitor 最小可插拔增强（AOP日志 + CLI monitor）
+
+1. `ToolRuntimeExecutor.run_tool` 已新增监控前后切面：
+   - `before`：记录 `node_id/tool_name/source/is_safe/is_read_only/request_id/ts`。
+   - `after`：统一覆盖 success/failure/blocked/invalid/上下文错误路径，记录 `success/error_code/duration_ms/ts`。
+2. 新增监控模块 `openmate_agent/tool_monitor.py`：
+   - `ToolMonitorEvent`（Pydantic 强类型）
+   - `ToolMonitorStore`（append-only JSONL）
+   - `ToolMonitorService`（list/summary 聚合，含 p95）
+   - 持久化文件：`.openmate/runtime/tool_monitor.jsonl`（UTF-8 JSONL）。
+3. 监控写入降级策略已落地：写失败不影响工具主流程（runtime 内部静默容错）。
+4. CLI 已新增 `openmate-agent tools monitor` 分组：
+   - `openmate-agent tools monitor list [--tool-name] [--node-id] [--source] [--success true|false] [--limit]`
+   - `openmate-agent tools monitor summary [--tool-name] [--node-id] [--source] [--success true|false] [--limit] [--window-minutes]`
+   - `--help` 已补参数说明与示例。
+5. 回归结果：
+   - `\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。

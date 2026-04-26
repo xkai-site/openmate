@@ -353,3 +353,17 @@
    - `go test ./...` 通过
    - `python -m unittest discover -s tests` 通过（71 项）
 
+
+## 2026-04-26 Tool Monitor 最小可插拔增强（Agent + VOS HTTP）
+
+1. Agent 工具运行时已新增旁路监控（AOP before/after），落盘 `.openmate/runtime/tool_monitor.jsonl`（UTF-8 JSONL，append-only）。
+2. Agent CLI 新增监控查询分组：
+   - `openmate-agent tools monitor list`
+   - `openmate-agent tools monitor summary`
+3. VOS HTTP v1 新增监控查询接口：
+   - `GET /api/v1/tools/monitor/events`
+   - `GET /api/v1/tools/monitor/summary`
+4. 监控设计边界：仅记录与查询，不参与权限裁决与工具执行判定；写监控失败不影响主链路。
+5. 验证结果：
+   - Python：`\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
+   - Go：`go test ./internal/vos/httpapi/...`、`go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
