@@ -1,5 +1,33 @@
 # Frontend Process
 
+## 2026-04-26 Topic 级 Workspace 绑定（客户端先行）
+
+1. 类型收敛：
+   - `frontend/src/types/models.ts` 新增 `TopicWorkspaceBinding`、`TopicWorkspaceUpdateRequest`。
+   - `NodeResponse` 补齐 `topic_id` 字段，支持由当前 node 反查所属 topic。
+2. 新增 Topic Workspace API（软依赖）：
+   - `frontend/src/services/api/topic.ts` 新增
+     - `GET /api/v1/topics/{topic_id}/workspace`
+     - `PUT /api/v1/topics/{topic_id}/workspace`
+   - 对 `404/501` 统一抛出 `TopicWorkspaceUnavailableError`，由上层按“后端未接入”warning处理，不阻塞主流程。
+3. Home 交互改造：
+   - 新增状态：`activeTopicId`、`backendTopicWorkspaceRoot`、`pendingWorkspaceRoot`（`sessionStorage` 持久化）。
+   - 点击“连接本地工作区”时：
+     - 有当前 topic：直接同步到 topic，若已有绑定且将覆盖，先二次确认。
+     - 无当前 topic：仅记录 pending，提示“下一个新 topic 自动绑定一次”。
+   - 首条消息触发新 topic 或“开启新会话”创建成功后，若存在 pending，自动执行一次绑定并清空 pending。
+   - 展示策略：有 topic 时按钮文案/提示优先按后端读取值；无 topic 时展示 pending 状态。
+4. 失败策略：
+   - Topic workspace 同步/读取失败仅 warning，不阻塞聊天与建 topic。
+5. 验证：
+   - `cd frontend && npm run build` 通过。
+
+## 2026-04-25 frontend 分支初始化（免测，不切分支）
+
+1. 已确认当前工作分支为 `frontend`（`git branch --show-current` 输出 `frontend`）。
+2. 已完成前端依赖初始化：`cd frontend && npm install`，结果为 `up to date in 1s`。
+3. 本轮按要求未执行测试命令，未创建或切换分支，仅完成初始化准备。
+
 ## 2026-04-25 流式 Markdown 渲染修复（未闭合代码块容错）
 
 1. 新增工具函数 `frontend/src/utils/markdown.ts`：

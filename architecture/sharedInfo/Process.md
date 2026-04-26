@@ -1,5 +1,19 @@
 # SharedInfo Process
 
+## 2026-04-26 前端先行接入 Topic-Workspace 绑定契约
+
+1. 前端已按新语义收敛为 `Topic -> Workspace(单值)`，并补齐 `NodeResponse.topic_id` 以支持从会话节点反查 topic。
+2. 新增前端软依赖接口：
+   - `GET /api/v1/topics/{topic_id}/workspace`
+   - `PUT /api/v1/topics/{topic_id}/workspace`
+3. 兼容策略：
+   - 后端未接入（`404/501`）时前端仅 warning，不阻塞聊天、建 topic、任务树链路。
+4. 交互策略：
+   - 无当前 topic 时使用 `pendingWorkspaceRoot`（`sessionStorage`）暂存；
+   - 下一个新 topic 创建成功后自动绑定一次并清空 pending；
+   - 已有绑定允许覆盖，但提交前必须二次确认。
+5. 验证：`frontend npm run build` 通过。
+
 ## 2026-04-24 frontend 初始化（不跑测试/不切分支）
 
 1. 已按指令在 `frontend` 分支继续执行初始化，不创建、不切换分支。

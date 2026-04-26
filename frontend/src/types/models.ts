@@ -77,6 +77,17 @@ export interface TopicStatusResponse {
   };
 }
 
+export interface TopicWorkspaceBinding {
+  topic_id: string;
+  workspace_root: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TopicWorkspaceUpdateRequest {
+  workspace_root: string;
+}
+
 export interface ExecutionResultResponse {
   success: boolean;
   task_id: string;
@@ -146,6 +157,7 @@ export interface ProcessItem {
 export interface NodeResponse {
   // 基础元数据（每次必返回）
   id: string;
+  topic_id?: string | null;
   name: string;
   parent_id?: string | null;
   children_ids: string[];

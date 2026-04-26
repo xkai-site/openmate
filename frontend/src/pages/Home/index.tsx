@@ -1,14 +1,19 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, App } from 'antd';
+import { Button, App, Modal } from 'antd';
 import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
 import { decomposeNode } from '@/services/api/tree';
-import { compactNode, createNode, getNodeSession } from '@/services/api/nodes';
+import { compactNode, createNode, getNode, getNodeSession } from '@/services/api/nodes';
+import {
+  getTopicWorkspaceBinding,
+  TopicWorkspaceUnavailableError,
+  updateTopicWorkspaceBinding,
+} from '@/services/api/topic';
 import { closeOpenCodeFences } from '@/utils/markdown';
-import { getLocalWorkspace, isLocalFileBridgeAvailable, selectLocalWorkspace } from '@/services/localFile';
+import { isLocalFileBridgeAvailable, selectLocalWorkspace } from '@/services/localFile';
 import type {
   ChatStreamMethodCallEvent,
   ChatStreamSummaryEvent,
@@ -18,6 +23,7 @@ import type {
   MethodTrace,
   StreamPhase,
   RootNodeSummary,
+  TopicWorkspaceBinding,
 } from '@/types/models';
 import ProjectPanel from './components/ProjectPanel';
 
@@ -62,6 +68,8 @@ function buildSummaryFromResult(result: ChatResultResponse): ChatStreamSummaryEv
   };
 }
 
+const pendingWorkspaceStorageKey = 'openmate.home.pending_workspace_root';
+
 export default function HomePage() {
   const [messages, setMessages] = useState<ChatBubble[]>(() => buildDefaultMessages());
   const [input, setInput] = useState('');
@@ -73,7 +81,9 @@ export default function HomePage() {
   const [streamingText, setStreamingText] = useState('');
   const [liveMethodCalls, setLiveMethodCalls] = useState<ChatStreamMethodCallEvent[]>([]);
   const [projectPanelKey, setProjectPanelKey] = useState(0);
-  const [localWorkspaceRoot, setLocalWorkspaceRoot] = useState<string | null>(null);
+  const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
+  const [backendTopicWorkspaceRoot, setBackendTopicWorkspaceRoot] = useState<string | null>(null);
+  const [pendingWorkspaceRoot, setPendingWorkspaceRoot] = useState<string | null>(null);
   const [selectingWorkspace, setSelectingWorkspace] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
 
@@ -81,6 +91,7 @@ export default function HomePage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const activeInvocationRef = useRef<string | null>(null);
+  const topicWorkspaceUnavailableRef = useRef(false);
 
   const navigate = useNavigate();
   const { message } = App.useApp();
@@ -88,27 +99,133 @@ export default function HomePage() {
   const localBridgeAvailable = isLocalFileBridgeAvailable();
 
   useEffect(() => {
-    if (!localBridgeAvailable) {
+    let raw = '';
+    try {
+      raw = sessionStorage.getItem(pendingWorkspaceStorageKey) ?? '';
+    } catch {
+      raw = '';
+    }
+    setPendingWorkspaceRoot(raw || null);
+  }, []);
+
+  const persistPendingWorkspace = useCallback((workspaceRoot: string | null) => {
+    if (workspaceRoot) {
+      try {
+        sessionStorage.setItem(pendingWorkspaceStorageKey, workspaceRoot);
+      } catch {
+        // ignore storage errors
+      }
+      setPendingWorkspaceRoot(workspaceRoot);
       return;
     }
+    try {
+      sessionStorage.removeItem(pendingWorkspaceStorageKey);
+    } catch {
+      // ignore storage errors
+    }
+    setPendingWorkspaceRoot(null);
+  }, []);
+
+  const fetchTopicWorkspace = useCallback(async (topicId: string) => {
+    const binding = await getTopicWorkspaceBinding(topicId);
+    setBackendTopicWorkspaceRoot(binding?.workspace_root ?? null);
+    topicWorkspaceUnavailableRef.current = false;
+    return binding;
+  }, []);
+
+  const resolveTopicIdByNode = useCallback(async (targetNodeId: string): Promise<string | null> => {
+    try {
+      const node = await getNode(targetNodeId);
+      return node.topic_id ?? null;
+    } catch (err) {
+      console.error('解析节点所属 topic 失败:', err);
+      return null;
+    }
+  }, []);
+
+  const syncWorkspaceToTopic = useCallback(async (
+    topicId: string,
+    workspaceRoot: string,
+    options?: { silentSuccess?: boolean },
+  ): Promise<TopicWorkspaceBinding | null> => {
+    try {
+      const binding = await updateTopicWorkspaceBinding(topicId, { workspace_root: workspaceRoot });
+      setBackendTopicWorkspaceRoot(binding?.workspace_root ?? workspaceRoot);
+      topicWorkspaceUnavailableRef.current = false;
+      if (!options?.silentSuccess) {
+        message.success(`已绑定 Topic 工作区: ${workspaceRoot}`);
+      }
+      return binding;
+    } catch (err) {
+      if (err instanceof TopicWorkspaceUnavailableError) {
+        if (!topicWorkspaceUnavailableRef.current) {
+          message.warning('Topic 工作区接口尚未接入后端，已跳过同步，不影响聊天。');
+          topicWorkspaceUnavailableRef.current = true;
+        }
+        return null;
+      }
+      const text = err instanceof Error ? err.message : 'Topic 工作区同步失败';
+      message.warning(`Topic 工作区同步失败：${text}`);
+      return null;
+    }
+  }, [message]);
+
+  const applyPendingWorkspaceToNodeTopic = useCallback(async (
+    targetNodeId: string,
+    workspaceRoot: string,
+  ) => {
+    const topicId = await resolveTopicIdByNode(targetNodeId);
+    if (topicId) {
+      await syncWorkspaceToTopic(topicId, workspaceRoot, { silentSuccess: true });
+    } else {
+      message.warning('无法解析新 Topic，已跳过本次自动工作区绑定。');
+    }
+    persistPendingWorkspace(null);
+  }, [message, persistPendingWorkspace, resolveTopicIdByNode, syncWorkspaceToTopic]);
+
+  useEffect(() => {
+    if (!nodeId) {
+      setActiveTopicId(null);
+      setBackendTopicWorkspaceRoot(null);
+      return;
+    }
+
     let cancelled = false;
-    const loadWorkspace = async () => {
+    const loadActiveTopic = async () => {
+      const topicId = await resolveTopicIdByNode(nodeId);
+      if (cancelled) {
+        return;
+      }
+      setActiveTopicId(topicId);
+      if (!topicId) {
+        setBackendTopicWorkspaceRoot(null);
+        return;
+      }
       try {
-        const workspace = await getLocalWorkspace();
-        if (!cancelled) {
-          setLocalWorkspaceRoot(workspace.root);
+        await fetchTopicWorkspace(topicId);
+      } catch (err) {
+        if (cancelled) {
+          return;
         }
-      } catch {
-        if (!cancelled) {
-          setLocalWorkspaceRoot(null);
+        if (err instanceof TopicWorkspaceUnavailableError) {
+          setBackendTopicWorkspaceRoot(null);
+          if (!topicWorkspaceUnavailableRef.current) {
+            message.warning('Topic 工作区接口尚未接入后端，已使用本地状态继续。');
+            topicWorkspaceUnavailableRef.current = true;
+          }
+          return;
         }
+        setBackendTopicWorkspaceRoot(null);
+        const text = err instanceof Error ? err.message : '读取 Topic 工作区失败';
+        message.warning(`读取 Topic 工作区失败：${text}`);
       }
     };
-    void loadWorkspace();
+
+    void loadActiveTopic();
     return () => {
       cancelled = true;
     };
-  }, [localBridgeAvailable]);
+  }, [fetchTopicWorkspace, message, nodeId, resolveTopicIdByNode]);
 
   // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -319,6 +436,8 @@ export default function HomePage() {
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || isSending) return;
+    const startedWithoutNode = !nodeId;
+    const pendingWorkspaceSnapshot = pendingWorkspaceRoot;
 
     clearPendingInvocation();
     setInput('');
@@ -340,6 +459,7 @@ export default function HomePage() {
       let assistantReply = '';
       let summary: ChatStreamSummaryEvent | null = null;
       let hasSummary = false;
+      let createdNodeId: string | null = null;
       const streamPayload: ChatStreamRequest = {
         node_id: nodeId ?? undefined,
         message: text,
@@ -375,6 +495,7 @@ export default function HomePage() {
               hasSummary = true;
               clearPendingInvocation();
               if (payload.node_id && !nodeId) {
+                createdNodeId = payload.node_id;
                 setNodeId(payload.node_id);
               }
               setProjectPanelKey((k) => k + 1);
@@ -405,6 +526,7 @@ export default function HomePage() {
             }
             clearPendingInvocation();
             if (result.node_id && !nodeId) {
+              createdNodeId = result.node_id;
               setNodeId(result.node_id);
             }
             setProjectPanelKey((k) => k + 1);
@@ -438,6 +560,7 @@ export default function HomePage() {
                   hasSummary = true;
                   clearPendingInvocation();
                   if (payload.node_id && !nodeId) {
+                    createdNodeId = payload.node_id;
                     setNodeId(payload.node_id);
                   }
                   setProjectPanelKey((k) => k + 1);
@@ -458,6 +581,7 @@ export default function HomePage() {
                 assistantReply = refreshed.reply || assistantReply;
                 clearPendingInvocation();
                 if (refreshed.node_id && !nodeId) {
+                  createdNodeId = refreshed.node_id;
                   setNodeId(refreshed.node_id);
                 }
                 setProjectPanelKey((k) => k + 1);
@@ -497,6 +621,7 @@ export default function HomePage() {
             status: 'success',
           };
           if (fallback.node_id && !nodeId) {
+            createdNodeId = fallback.node_id;
             setNodeId(fallback.node_id);
           }
           setProjectPanelKey((k) => k + 1);
@@ -511,6 +636,10 @@ export default function HomePage() {
           method_traces: summary?.method_traces ?? undefined,
         },
       ]);
+
+      if (startedWithoutNode && pendingWorkspaceSnapshot && createdNodeId) {
+        void applyPendingWorkspaceToNodeTopic(createdNodeId, pendingWorkspaceSnapshot);
+      }
     } catch (err) {
       console.error('发送消息失败:', err);
       message.error('发送失败，请重试');
@@ -523,7 +652,17 @@ export default function HomePage() {
       setStreamingText('');
       setLiveMethodCalls([]);
     }
-  }, [clearPendingInvocation, input, isSending, messages, nodeId, message, savePendingInvocation]);
+  }, [
+    applyPendingWorkspaceToNodeTopic,
+    clearPendingInvocation,
+    input,
+    isSending,
+    message,
+    messages,
+    nodeId,
+    pendingWorkspaceRoot,
+    savePendingInvocation,
+  ]);
 
   const buildMessagesFromSession = useCallback((sessionHistory: SessionMessage[]): ChatBubble[] => {
     const historyMessages: ChatBubble[] = sessionHistory
@@ -650,13 +789,24 @@ export default function HomePage() {
       setProjectPanelKey((k) => k + 1);
       inputRef.current?.focus();
       message.success('已开启新对话');
+      if (pendingWorkspaceRoot) {
+        void applyPendingWorkspaceToNodeTopic(created.id, pendingWorkspaceRoot);
+      }
     } catch (err) {
       console.error('开启新对话失败:', err);
       message.error(err instanceof Error ? `开启失败: ${err.message}` : '开启新对话失败');
     } finally {
       setIsCreatingConversation(false);
     }
-  }, [clearPendingInvocation, isCreatingConversation, isDecomposing, isSending, message]);
+  }, [
+    applyPendingWorkspaceToNodeTopic,
+    clearPendingInvocation,
+    isCreatingConversation,
+    isDecomposing,
+    isSending,
+    message,
+    pendingWorkspaceRoot,
+  ]);
 
   const handleSelectWorkspace = useCallback(async () => {
     if (!localBridgeAvailable || selectingWorkspace) {
@@ -665,15 +815,49 @@ export default function HomePage() {
     setSelectingWorkspace(true);
     try {
       const result = await selectLocalWorkspace();
-      setLocalWorkspaceRoot(result.root);
-      message.success(`已连接本地工作区: ${result.root}`);
+      const selectedRoot = result.root;
+
+      if (!activeTopicId) {
+        persistPendingWorkspace(selectedRoot);
+        message.info('已记录工作区，将在下一个新 Topic 创建后自动绑定一次。');
+        return;
+      }
+
+      if (
+        backendTopicWorkspaceRoot &&
+        backendTopicWorkspaceRoot !== selectedRoot
+      ) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          Modal.confirm({
+            title: '覆盖当前 Topic 的工作区绑定？',
+            content: `当前绑定为：${backendTopicWorkspaceRoot}\n新选择为：${selectedRoot}`,
+            okText: '覆盖绑定',
+            cancelText: '取消',
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      await syncWorkspaceToTopic(activeTopicId, selectedRoot);
     } catch (error) {
       const text = error instanceof Error ? error.message : '连接本地工作区失败';
       message.error(text);
     } finally {
       setSelectingWorkspace(false);
     }
-  }, [localBridgeAvailable, message, selectingWorkspace]);
+  }, [
+    activeTopicId,
+    backendTopicWorkspaceRoot,
+    localBridgeAvailable,
+    message,
+    persistPendingWorkspace,
+    selectingWorkspace,
+    syncWorkspaceToTopic,
+  ]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -683,6 +867,13 @@ export default function HomePage() {
   }, [handleSend]);
 
   const hasConversation = messages.length > 1;
+  const workspaceDisplayRoot = activeTopicId ? backendTopicWorkspaceRoot : pendingWorkspaceRoot;
+  const workspaceButtonTitle = activeTopicId
+    ? (workspaceDisplayRoot ? `当前 Topic 已绑定：${workspaceDisplayRoot}` : '当前 Topic 未绑定工作区')
+    : (workspaceDisplayRoot ? `待绑定到下一个新 Topic：${workspaceDisplayRoot}` : '未设置待绑定工作区');
+  const workspaceButtonLabel = activeTopicId
+    ? (workspaceDisplayRoot ? '已绑定 Topic 工作区' : '连接本地工作区')
+    : (workspaceDisplayRoot ? '待绑定下个 Topic' : '连接本地工作区');
 
   // 问候语和功能标签 - 仅在无对话时显示
   const showWelcome = !hasConversation;
@@ -712,9 +903,9 @@ export default function HomePage() {
                 loading={selectingWorkspace}
                 onClick={() => void handleSelectWorkspace()}
                 className="home-local-btn"
-                title={localWorkspaceRoot ?? '未连接本地工作区'}
+                title={workspaceButtonTitle}
               >
-                {localWorkspaceRoot ? '已连接本地工作区' : '连接本地工作区'}
+                {workspaceButtonLabel}
               </Button>
             )}
             {hasConversation && (
