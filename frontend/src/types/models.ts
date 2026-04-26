@@ -270,6 +270,40 @@ export interface NodeCompactResponse {
   message?: string;
 }
 
+export type ToolMonitorSource = 'model' | 'cli' | 'http' | 'unknown';
+
+export interface ToolMonitorEvent {
+  event_id: string;
+  phase: string;
+  ts: string;
+  node_id?: string;
+  tool_name?: string;
+  source?: ToolMonitorSource;
+  is_safe: boolean;
+  is_read_only: boolean;
+  request_id?: string;
+  success?: boolean;
+  error_code?: string;
+  duration_ms?: number;
+}
+
+export interface ToolMonitorSummaryItem {
+  tool_name: string;
+  count: number;
+  success_rate: number;
+  avg_duration_ms: number;
+  p95_duration_ms: number;
+}
+
+export interface ToolMonitorQuery {
+  tool_name?: string;
+  node_id?: string;
+  source?: ToolMonitorSource;
+  success?: boolean;
+  limit?: number;
+  window_minutes?: number;
+}
+
 export interface HealthResponse {
   status: string;
   timestamp: string;

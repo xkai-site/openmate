@@ -6,6 +6,8 @@ import { listRootNodes } from '@/services/api/tree';
 import { updateNode, deleteNode } from '@/services/api/nodes';
 import type { RootNodeSummary } from '@/types/models';
 
+export type HomePanelSection = 'history' | 'tool_monitor';
+
 const STATUS_COLORS: Record<string, string> = {
   pending: '#f59e0b',
   running: '#3b82f6',
@@ -254,6 +256,8 @@ interface ProjectPanelProps {
   onProjectSelect?: (project: RootNodeSummary) => void;
   onNewConversation?: () => void;
   creatingConversation?: boolean;
+  activeSection?: HomePanelSection;
+  onSectionChange?: (section: HomePanelSection) => void;
 }
 
 export default function ProjectPanel({
@@ -261,6 +265,8 @@ export default function ProjectPanel({
   onProjectSelect,
   onNewConversation,
   creatingConversation = false,
+  activeSection = 'history',
+  onSectionChange,
 }: ProjectPanelProps) {
   const [projects, setProjects] = useState<RootNodeSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -282,8 +288,11 @@ export default function ProjectPanel({
   }, []);
 
   useEffect(() => {
+    if (activeSection !== 'history') {
+      return;
+    }
     void fetchProjects();
-  }, [fetchProjects]);
+  }, [activeSection, fetchProjects]);
 
   const handleProjectClick = useCallback(
     (project: RootNodeSummary) => {
@@ -295,31 +304,54 @@ export default function ProjectPanel({
   return (
     <aside className="project-panel">
       <div className="project-panel-header">
-        <span className="project-panel-title">我的历史</span>
-        <div className="project-panel-actions">
+        <div className="project-panel-sections">
           <button
-            className="project-new-btn"
-            onClick={() => onNewConversation?.()}
-            disabled={creatingConversation}
-            aria-label="开启新会话"
-            title="开启新会话"
+            className={`project-section-tab ${activeSection === 'history' ? 'active' : ''}`}
+            onClick={() => onSectionChange?.('history')}
+            type="button"
           >
-            {creatingConversation ? <LoadingOutlined /> : <PlusOutlined />}
-            <span>开启新会话</span>
+            我的历史
           </button>
           <button
-            className="project-refresh-btn"
-            onClick={() => void fetchProjects()}
-            disabled={loading}
-            aria-label="刷新"
+            className={`project-section-tab ${activeSection === 'tool_monitor' ? 'active' : ''}`}
+            onClick={() => onSectionChange?.('tool_monitor')}
+            type="button"
           >
-            <ReloadOutlined spin={loading} />
+            工具监控
           </button>
         </div>
+        {activeSection === 'history' ? (
+          <div className="project-panel-actions">
+            <button
+              className="project-new-btn"
+              onClick={() => onNewConversation?.()}
+              disabled={creatingConversation}
+              aria-label="开启新会话"
+              title="开启新会话"
+            >
+              {creatingConversation ? <LoadingOutlined /> : <PlusOutlined />}
+              <span>开启新会话</span>
+            </button>
+            <button
+              className="project-refresh-btn"
+              onClick={() => void fetchProjects()}
+              disabled={loading}
+              aria-label="刷新"
+            >
+              <ReloadOutlined spin={loading} />
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="project-panel-content">
-        {loading && projects.length === 0 ? (
+        {activeSection !== 'history' ? (
+          <div className="project-empty">
+            <FolderOutlined className="project-empty-icon" />
+            <span>已切换到工具监控</span>
+            <span className="project-empty-hint">请在右侧主区域查看监控数据</span>
+          </div>
+        ) : loading && projects.length === 0 ? (
           <div className="project-loading">
             <Spin size="small" />
             <span>加载中...</span>
@@ -375,27 +407,51 @@ export default function ProjectPanel({
 
         /* Header section */
         .project-panel-header {
-          height: 56px;
+          min-height: 56px;
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: space-between;
-          padding: 0 16px;
+          padding: 10px 12px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.08);
           flex-shrink: 0;
+          gap: 8px;
         }
 
-        .project-panel-title {
-          font-size: 11px;
-          font-weight: 600;
-          color: rgba(255, 255, 255, 0.5);
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
+        .project-panel-sections {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+
+        .project-section-tab {
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background: transparent;
+          color: rgba(255, 255, 255, 0.65);
+          border-radius: 999px;
+          height: 30px;
+          padding: 0 10px;
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .project-section-tab:hover {
+          border-color: rgba(255, 255, 255, 0.4);
+          color: rgba(255, 255, 255, 0.95);
+        }
+
+        .project-section-tab.active {
+          background: rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.95);
+          border-color: rgba(255, 255, 255, 0.5);
         }
 
         .project-panel-actions {
           display: inline-flex;
           align-items: center;
           gap: 8px;
+          margin-left: auto;
         }
 
         .project-new-btn,

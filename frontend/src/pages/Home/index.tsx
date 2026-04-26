@@ -25,7 +25,8 @@ import type {
   RootNodeSummary,
   TopicWorkspaceBinding,
 } from '@/types/models';
-import ProjectPanel from './components/ProjectPanel';
+import ProjectPanel, { type HomePanelSection } from './components/ProjectPanel';
+import ToolMonitorPanel from './components/ToolMonitorPanel';
 
 interface ChatBubble {
   role: 'user' | 'assistant';
@@ -86,6 +87,7 @@ export default function HomePage() {
   const [pendingWorkspaceRoot, setPendingWorkspaceRoot] = useState<string | null>(null);
   const [selectingWorkspace, setSelectingWorkspace] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
+  const [activeSection, setActiveSection] = useState<HomePanelSection>('history');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -887,10 +889,14 @@ export default function HomePage() {
         onProjectSelect={handleProjectSelect}
         onNewConversation={() => void handleStartNewConversation()}
         creatingConversation={isCreatingConversation}
+        activeSection={activeSection}
+        onSectionChange={setActiveSection}
       />
 
       {/* 右侧主内容区 */}
       <div className="home-main">
+        {activeSection === 'history' ? (
+          <>
         {/* 顶部导航栏 */}
         <header className="home-header">
           <div className="home-logo">
@@ -1131,6 +1137,22 @@ export default function HomePage() {
             </div>
           </div>
         </main>
+          </>
+        ) : (
+          <>
+            <header className="home-header">
+              <div className="home-logo">
+                <span className="home-logo-text">AITree</span>
+              </div>
+              <div className="home-header-actions">
+                <span className="home-monitor-hint">工具监控（自动刷新 30s）</span>
+              </div>
+            </header>
+            <main className="home-monitor-main">
+              <ToolMonitorPanel />
+            </main>
+          </>
+        )}
       </div>
 
       <style>{`
@@ -1219,6 +1241,11 @@ export default function HomePage() {
           display: inline-flex;
           align-items: center;
           gap: 10px;
+        }
+
+        .home-monitor-hint {
+          font-size: 13px;
+          color: var(--home-text-secondary);
         }
 
         .home-logo {
@@ -1310,6 +1337,14 @@ export default function HomePage() {
           position: relative;
           z-index: 1;
           overflow: hidden;
+        }
+
+        .home-monitor-main {
+          flex: 1;
+          min-height: 0;
+          overflow: hidden;
+          position: relative;
+          z-index: 1;
         }
 
         .home-container {
