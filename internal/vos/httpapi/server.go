@@ -317,6 +317,16 @@ func (server *Server) handleV1TopicRoutes(writer http.ResponseWriter, request *h
 		server.handleV1TopicMemoryApply(writer, request, topicID)
 		return
 	}
+	if strings.HasSuffix(path, "/workspace") {
+		topicID := strings.TrimSuffix(path, "/workspace")
+		topicID = strings.TrimSuffix(topicID, "/")
+		if topicID == "" || strings.Contains(topicID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1TopicWorkspace(writer, request, topicID)
+		return
+	}
 
 	topicID := strings.TrimSuffix(path, "/")
 	if topicID == "" || strings.Contains(topicID, "/") {
@@ -450,6 +460,32 @@ func (server *Server) handleV1TopicMemoryApply(writer http.ResponseWriter, reque
 		return
 	}
 	server.writeV1Success(writer, result)
+}
+
+func (server *Server) handleV1TopicWorkspace(writer http.ResponseWriter, request *http.Request, topicID string) {
+	switch request.Method {
+	case http.MethodGet:
+		binding, err := server.service.GetTopicWorkspaceBinding(topicID)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, binding)
+	case http.MethodPut:
+		var payload v1TopicWorkspaceUpdatePayload
+		if err := decodeJSON(request.Body, &payload); err != nil {
+			server.writeV1Error(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		binding, err := server.service.UpdateTopicWorkspaceBinding(topicID, payload.Workspace)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, binding)
+	default:
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPut)
+	}
 }
 
 func (server *Server) handleV1Nodes(writer http.ResponseWriter, request *http.Request) {
@@ -1356,6 +1392,10 @@ type v1NodeDecomposePayload struct {
 type v1TopicMemoryApplyPayload struct {
 	ProposalID string `json:"proposal_id"`
 	Decision   string `json:"decision"`
+}
+
+type v1TopicWorkspaceUpdatePayload struct {
+	Workspace string `json:"workspace"`
 }
 
 type moveNodePayload struct {

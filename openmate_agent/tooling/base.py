@@ -15,7 +15,10 @@ class ToolContext(BaseModel):
     node_id: str = Field(min_length=1)
     parent_id: str | None = None
     node_name: str = ""
-    workspace_root: Path
+    topic_id: str | None = None
+    topic_workspace: Path | None = None
+    runtime_workspace: Path | None = None
+    workspace: Path
     file_time: FileTimeStore
     lock_manager: FileLockManager
 

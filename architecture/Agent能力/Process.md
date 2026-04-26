@@ -1,4 +1,42 @@
 ﻿# Process 记录
+## 2026-04-26 ToolContext 字段收敛 + 系统工具禁止回退
+
+1. `ToolContext` 字段已收敛为：`workspace/topic_workspace/runtime_workspace`，移除 `*_root` 版本字段。
+2. `resolve_node_tool_context` 解析字段改为消费 `topic_workspace`（来自 `vos node tool-context` 单命令联查）。
+3. 系统操作类工具（`read/write/edit/patch/exec/shell/grep/glob/search/command`）执行前强制校验 Topic workspace：
+   - 联查失败、未绑定、路径不存在或非目录，统一返回 `WORKSPACE_UNAVAILABLE`，不执行工具。
+   - 不再回退到仓库 workspace。
+4. VOS 管理类工具（`node_process/sibling_progress_board`）继续使用 `runtime_workspace`，不受 Topic workspace 阻断策略影响。
+5. Python 用例已补齐：
+   - 新增阻断场景（联查失败/未绑定/路径无效）。
+   - 新增 `resolve_node_tool_context` 新字段解析用例（`tests/test_vos_cli.py`）。
+
+## 2026-04-26 Tool workspace 联查收口（单命令）
+
+1. Agent 侧 esolve_node_tool_context 改为单次调用：os node tool-context --node-id ...。
+2. 不再走“先 
+ode get 再 	opic get”两段查询链路，避免双调用分叉和一致性问题。
+3. 保持兼容解析：若返回里含旧键 
+ame 也可读取为 
+ode_name，避免测试桩和灰度期间抖动。
+4. 回归验证通过：
+   - go test ./internal/vos/service ./internal/vos/cli
+   - python -m unittest tests.test_service tests.test_cli tests.test_tool_monitor -v（65 项）
+## 2026-04-26 Agent ToolContext 增强（消费 Topic.workspace）
+
+1. Tool 运行时新增 NodeToolContext 解析链：node -> topic -> topic.workspace（通过 vos node get + vos topic get）。
+2. ToolContext 新增字段：
+   - topic_id
+   - topic_workspace_root
+   - runtime_workspace_root
+3. 对系统操作类工具启用 workspace 优先级：
+   - 命中 Topic.workspace 且路径存在时，工具执行目录切到该 workspace。
+   - 解析失败或路径不可用时，回退到 Agent 启动 workspace（不阻断执行）。
+4. VOS 管理类工具（如 node_process/sibling_progress_board）继续使用 runtime_workspace_root 访问 VOS，避免被 Topic workspace 覆盖。
+5. 测试补充：
+   - 新增“优先使用 Topic.workspace”与“解析失败回退仓库 workspace”用例。
+   - 回归：python -m unittest tests.test_service tests.test_cli tests.test_tool_monitor -v 通过（65 项）。
+
 ## 2026-04-25 Process 工具能力新增（node_process + sibling_progress_board）
 1. `openmate_agent` 新增 `node_process` 默认工具（内建后端 `builtin/node_process`），支持：
    - `action=get`：读取当前 node 的 process 列表。
@@ -665,3 +703,7 @@
    - `--help` 已补参数说明与示例。
 5. 回归结果：
    - `\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
+
+
+
+

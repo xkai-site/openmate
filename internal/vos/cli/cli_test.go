@@ -172,6 +172,61 @@ func TestNodeCreateWithoutTopicCreatesIndependentTopic(t *testing.T) {
 	}
 }
 
+func TestNodeToolContextReturnsMergedNodeAndTopicWorkspace(t *testing.T) {
+	stateFile := t.TempDir() + "/vos_state.json"
+	base := []string{"--state-file", stateFile}
+
+	if code := cli.Run(append(base, "topic", "create", "--topic-id", "topic-ctx", "--name", "Topic Ctx"), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("topic create code = %d, want 0", code)
+	}
+	if code := cli.Run(
+		append(base, "topic", "update", "--topic-id", "topic-ctx", "--metadata-json", `{"owner":"agent"}`),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("topic update metadata code = %d, want 0", code)
+	}
+	svc := service.New(store.NewJSONStateStore(stateFile))
+	if _, err := svc.UpdateTopicWorkspaceBinding("topic-ctx", "D:/workspace/topic-ctx"); err != nil {
+		t.Fatalf("UpdateTopicWorkspaceBinding() error = %v", err)
+	}
+	if code := cli.Run(
+		append(base, "node", "create", "--topic-id", "topic-ctx", "--node-id", "node-ctx", "--name", "Node Ctx"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("node create code = %d, want 0", code)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run(append(base, "node", "tool-context", "--node-id", "node-ctx"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("node tool-context code = %d, want 0, stderr=%q", code, stderr.String())
+	}
+	var payload struct {
+		NodeID         string  `json:"node_id"`
+		NodeName       string  `json:"node_name"`
+		TopicID        string  `json:"topic_id"`
+		TopicWorkspace *string `json:"topic_workspace"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(node tool-context) error = %v", err)
+	}
+	if payload.NodeID != "node-ctx" {
+		t.Fatalf("node_id = %s, want node-ctx", payload.NodeID)
+	}
+	if payload.NodeName != "Node Ctx" {
+		t.Fatalf("node_name = %s, want Node Ctx", payload.NodeName)
+	}
+	if payload.TopicID != "topic-ctx" {
+		t.Fatalf("topic_id = %s, want topic-ctx", payload.TopicID)
+	}
+	if payload.TopicWorkspace == nil || *payload.TopicWorkspace != "D:/workspace/topic-ctx" {
+		t.Fatalf("topic_workspace = %v, want D:/workspace/topic-ctx", payload.TopicWorkspace)
+	}
+}
+
 func TestNodeDecomposeHelpAvailable(t *testing.T) {
 	stateFile := t.TempDir() + "/vos_state.json"
 	sessionDBFile := t.TempDir() + "/openmate.db"

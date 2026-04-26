@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, App, Modal } from 'antd';
 import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
@@ -128,7 +128,7 @@ export default function HomePage() {
 
   const fetchTopicWorkspace = useCallback(async (topicId: string) => {
     const binding = await getTopicWorkspaceBinding(topicId);
-    setBackendTopicWorkspaceRoot(binding?.workspace_root ?? null);
+    setBackendTopicWorkspaceRoot(binding?.workspace ?? null);
     topicWorkspaceUnavailableRef.current = false;
     return binding;
   }, []);
@@ -149,8 +149,8 @@ export default function HomePage() {
     options?: { silentSuccess?: boolean },
   ): Promise<TopicWorkspaceBinding | null> => {
     try {
-      const binding = await updateTopicWorkspaceBinding(topicId, { workspace_root: workspaceRoot });
-      setBackendTopicWorkspaceRoot(binding?.workspace_root ?? workspaceRoot);
+      const binding = await updateTopicWorkspaceBinding(topicId, { workspace: workspaceRoot });
+      setBackendTopicWorkspaceRoot(binding?.workspace ?? workspaceRoot);
       topicWorkspaceUnavailableRef.current = false;
       if (!options?.silentSuccess) {
         message.success(`已绑定 Topic 工作区: ${workspaceRoot}`);
@@ -2093,3 +2093,4 @@ export default function HomePage() {
     </div>
   );
 }
+

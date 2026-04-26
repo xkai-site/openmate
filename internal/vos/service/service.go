@@ -44,6 +44,13 @@ type DeleteTopicResult struct {
 	DeletedNodeIDs []string      `json:"deleted_node_ids"`
 }
 
+type TopicWorkspaceBinding struct {
+	TopicID   string    `json:"topic_id"`
+	Workspace string    `json:"workspace"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
 type CreateNodeInput struct {
 	TopicID     string
 	Name        string
@@ -265,6 +272,56 @@ func (service *Service) GetTopic(topicID string) (*domain.Topic, error) {
 	return cloneTopic(topic), nil
 }
 
+func (service *Service) GetTopicWorkspaceBinding(topicID string) (*TopicWorkspaceBinding, error) {
+	if strings.TrimSpace(topicID) == "" {
+		return nil, domain.ValidationError{Message: "topic ID is required"}
+	}
+
+	state, err := service.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	topic, err := requireTopic(state, topicID)
+	if err != nil {
+		return nil, err
+	}
+	return buildTopicWorkspaceBinding(topic), nil
+}
+
+func (service *Service) UpdateTopicWorkspaceBinding(topicID string, workspace string) (*TopicWorkspaceBinding, error) {
+	trimmedTopicID := strings.TrimSpace(topicID)
+	if trimmedTopicID == "" {
+		return nil, domain.ValidationError{Message: "topic ID is required"}
+	}
+	trimmedWorkspace := strings.TrimSpace(workspace)
+	if trimmedWorkspace == "" {
+		return nil, domain.ValidationError{Message: "workspace is required"}
+	}
+
+	state, err := service.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	topic, err := requireTopic(state, trimmedTopicID)
+	if err != nil {
+		return nil, err
+	}
+	current := ""
+	if topic.Workspace != nil {
+		current = strings.TrimSpace(*topic.Workspace)
+	}
+	if current == trimmedWorkspace {
+		return buildTopicWorkspaceBinding(topic), nil
+	}
+
+	topic.Workspace = &trimmedWorkspace
+	touchTopic(topic)
+	if err := service.store.Save(state); err != nil {
+		return nil, err
+	}
+	return buildTopicWorkspaceBinding(topic), nil
+}
+
 func (service *Service) ListDisplayRootNodes() ([]*domain.Node, error) {
 	state, err := service.store.Load()
 	if err != nil {
@@ -468,9 +525,17 @@ func (service *Service) ListChildren(nodeID string) ([]*domain.Node, error) {
 
 // ChildProcessEntry holds one child node's id/name and its resolved process items.
 type ChildProcessEntry struct {
-	NodeID    string                `json:"node_id"`
-	NodeName  string                `json:"node_name"`
-	Processes []domain.ProcessItem  `json:"processes"`
+	NodeID    string               `json:"node_id"`
+	NodeName  string               `json:"node_name"`
+	Processes []domain.ProcessItem `json:"processes"`
+}
+
+type NodeToolContext struct {
+	NodeID         string  `json:"node_id"`
+	ParentID       *string `json:"parent_id,omitempty"`
+	NodeName       string  `json:"node_name"`
+	TopicID        string  `json:"topic_id"`
+	TopicWorkspace *string `json:"topic_workspace,omitempty"`
 }
 
 func (service *Service) ListChildrenProcesses(parentID string) ([]ChildProcessEntry, error) {
@@ -496,6 +561,28 @@ func (service *Service) ListChildrenProcesses(parentID string) ([]ChildProcessEn
 		})
 	}
 	return entries, nil
+}
+
+func (service *Service) GetNodeToolContext(nodeID string) (*NodeToolContext, error) {
+	state, err := service.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	node, err := requireNode(state, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	topic, err := requireTopic(state, node.TopicID)
+	if err != nil {
+		return nil, err
+	}
+	return &NodeToolContext{
+		NodeID:         node.ID,
+		ParentID:       cloneStringPtr(node.ParentID),
+		NodeName:       node.Name,
+		TopicID:        node.TopicID,
+		TopicWorkspace: cloneStringPtr(topic.Workspace),
+	}, nil
 }
 
 func (service *Service) MoveNode(nodeID, newParentID string) (*domain.Node, error) {
@@ -840,10 +927,30 @@ func cloneTopic(topic *domain.Topic) *domain.Topic {
 		return nil
 	}
 	cloned := *topic
+	cloned.Workspace = cloneStringPtr(topic.Workspace)
 	cloned.Metadata = cloneMap(topic.Metadata)
 	cloned.Tags = cloneStrings(topic.Tags)
 	cloned.Description = cloneStringPtr(topic.Description)
 	return &cloned
+}
+
+func buildTopicWorkspaceBinding(topic *domain.Topic) *TopicWorkspaceBinding {
+	if topic == nil {
+		return nil
+	}
+	if topic.Workspace == nil {
+		return nil
+	}
+	workspace := strings.TrimSpace(*topic.Workspace)
+	if workspace == "" {
+		return nil
+	}
+	return &TopicWorkspaceBinding{
+		TopicID:   topic.ID,
+		Workspace: workspace,
+		CreatedAt: topic.CreatedAt,
+		UpdatedAt: topic.UpdatedAt,
+	}
 }
 
 func cloneNode(node *domain.Node) *domain.Node {

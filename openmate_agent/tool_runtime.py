@@ -18,7 +18,21 @@ from .tooling import (
     load_tool_registry,
 )
 from .vos_cli import VosCommandError, resolve_node_context
+from .vos_cli import resolve_node_tool_context
 from .vos_cli import VosInvalidPayloadError, VosNodeNotFoundError, VosUnavailableError
+
+WORKSPACE_AWARE_TOOLS: set[str] = {
+    "read",
+    "write",
+    "edit",
+    "patch",
+    "grep",
+    "glob",
+    "exec",
+    "shell",
+    "search",
+    "command",
+}
 
 
 class ToolRuntimeExecutor:
@@ -108,6 +122,9 @@ class ToolRuntimeExecutor:
 
         parent_id: str | None = None
         node_name = ""
+        topic_id: str | None = None
+        topic_workspace: Path | None = None
+        effective_workspace = self._workspace_root
         if action.tool_name == "sibling_progress_board":
             try:
                 parent_id, node_name = resolve_node_context(workspace_root=self._workspace_root, node_id=node_id)
@@ -147,11 +164,54 @@ class ToolRuntimeExecutor:
                         error=str(exc),
                     )
                 )
+        elif action.tool_name in WORKSPACE_AWARE_TOOLS:
+            try:
+                resolved = resolve_node_tool_context(workspace_root=self._workspace_root, node_id=node_id)
+                parent_id = resolved.parent_id
+                node_name = resolved.node_name
+                topic_id = resolved.topic_id
+                if not resolved.topic_workspace:
+                    return finalize(
+                        ToolResult(
+                            tool_name=action.tool_name,
+                            success=False,
+                            error_code="WORKSPACE_UNAVAILABLE",
+                            error="workspace_unavailable: topic workspace is not bound",
+                        )
+                    )
+                candidate = Path(resolved.topic_workspace)
+                if not candidate.is_absolute():
+                    candidate = (self._workspace_root / candidate).resolve()
+                else:
+                    candidate = candidate.resolve()
+                if not candidate.exists() or not candidate.is_dir():
+                    return finalize(
+                        ToolResult(
+                            tool_name=action.tool_name,
+                            success=False,
+                            error_code="WORKSPACE_UNAVAILABLE",
+                            error=f"workspace_unavailable: topic workspace is invalid: {candidate}",
+                        )
+                    )
+                topic_workspace = candidate
+                effective_workspace = candidate
+            except (VosCommandError, ValueError, OSError) as exc:
+                return finalize(
+                    ToolResult(
+                        tool_name=action.tool_name,
+                        success=False,
+                        error_code="WORKSPACE_UNAVAILABLE",
+                        error=f"workspace_unavailable: failed to resolve topic workspace: {exc}",
+                    )
+                )
         context = ToolContext(
             node_id=node_id,
             parent_id=parent_id,
             node_name=node_name,
-            workspace_root=self._workspace_root,
+            topic_id=topic_id,
+            topic_workspace=topic_workspace,
+            runtime_workspace=self._workspace_root,
+            workspace=effective_workspace,
             file_time=self._file_time,
             lock_manager=self._lock_manager,
         )

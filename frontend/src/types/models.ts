@@ -79,13 +79,13 @@ export interface TopicStatusResponse {
 
 export interface TopicWorkspaceBinding {
   topic_id: string;
-  workspace_root: string;
+  workspace: string;
   created_at?: string;
   updated_at?: string;
 }
 
 export interface TopicWorkspaceUpdateRequest {
-  workspace_root: string;
+  workspace: string;
 }
 
 export interface ExecutionResultResponse {

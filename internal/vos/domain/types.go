@@ -75,6 +75,7 @@ type Topic struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
 	RootNodeID  string         `json:"root_node_id"`
+	Workspace   *string        `json:"workspace,omitempty"`
 	Metadata    map[string]any `json:"metadata"`
 	Description *string        `json:"description"`
 	Tags        []string       `json:"tags"`
@@ -83,21 +84,21 @@ type Topic struct {
 }
 
 type Node struct {
-	ID            string         `json:"id"`
-	TopicID       string         `json:"topic_id"`
-	Name          string         `json:"name"`
-	Description   *string        `json:"description"`
-	ParentID      *string        `json:"parent_id"`
-	ChildrenIDs   []string       `json:"children_ids"`
-	Session       []string       `json:"session"`
-	Memory        map[string]any `json:"memory"`
-	Input         map[string]any `json:"input"`
-	Output        map[string]any `json:"output"`
-	ProcessIDs    []string       `json:"process_ids"`
-	Status        NodeStatus     `json:"status"`
-	Version       int            `json:"version"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ID          string         `json:"id"`
+	TopicID     string         `json:"topic_id"`
+	Name        string         `json:"name"`
+	Description *string        `json:"description"`
+	ParentID    *string        `json:"parent_id"`
+	ChildrenIDs []string       `json:"children_ids"`
+	Session     []string       `json:"session"`
+	Memory      map[string]any `json:"memory"`
+	Input       map[string]any `json:"input"`
+	Output      map[string]any `json:"output"`
+	ProcessIDs  []string       `json:"process_ids"`
+	Status      NodeStatus     `json:"status"`
+	Version     int            `json:"version"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
 type VfsState struct {
@@ -152,6 +153,24 @@ func (topic *Topic) Normalize() {
 	if topic.Metadata == nil {
 		topic.Metadata = map[string]any{}
 	}
+	// Backward compatibility: migrate legacy metadata.workspace_root to topic.workspace.
+	if topic.Workspace == nil {
+		if raw, ok := topic.Metadata["workspace_root"].(string); ok {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed != "" {
+				topic.Workspace = &trimmed
+			}
+		}
+	}
+	if topic.Workspace != nil {
+		trimmed := strings.TrimSpace(*topic.Workspace)
+		if trimmed == "" {
+			topic.Workspace = nil
+		} else {
+			topic.Workspace = &trimmed
+		}
+	}
+	delete(topic.Metadata, "workspace_root")
 	if topic.Tags == nil {
 		topic.Tags = []string{}
 	}

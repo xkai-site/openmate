@@ -7,7 +7,9 @@
 - Python 环境搭建，使用项目内环境搭建方式，已搭建项目内虚拟环境（.venv）。不使用 conda/docker 等外部环境管理。
   - 若需要新的 Python 依赖，更新 requirements.txt
   - 然后使用 pip install -r requirements.txt
-- Go 模块复用仓库根 `go.mod / go.sum`，若新增 Go 依赖，同时更新 `architecture/sharedInfo/Go依赖.md`
+- Go 模块
+   - 复用仓库根 `go.mod / go.sum`，若新增 Go 依赖，同时更新 `architecture/sharedInfo/Go依赖.md`
+   - 需要按仓库约定切到工作区内`GOCACHE/GOMODCACHE`，而不是本机 Go 缓存目录。
 - 开发规范：
    - 遵循 Git 提交信息规范（feat/fix/docs/...）
   - 单元测试完成后，才进行下一步操作

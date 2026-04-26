@@ -1,4 +1,56 @@
 ﻿# SharedInfo Process
+## 2026-04-26 Topic Workspace 语义硬切（VOS + Agent + Frontend）
+
+1. VOS HTTP `topics/{id}/workspace` 契约已切换为 `workspace`：
+   - PUT 入参：`workspace`
+   - GET/PUT 出参：`topic_id/workspace/created_at/updated_at`
+   - 旧字段 `workspace_root` 不再兼容。
+2. `vos node tool-context` 输出字段改为 `topic_workspace`（替换 `topic_workspace_root`）。
+3. Agent ToolContext 字段改为 `workspace/topic_workspace/runtime_workspace`，移除 `*_root` 字段。
+4. Agent 系统操作类工具执行策略调整为“禁止回退”：
+   - Topic workspace 联查失败、未绑定或路径无效时，返回 `WORKSPACE_UNAVAILABLE` 且不执行工具。
+   - `node_process/sibling_progress_board` 继续走 `runtime_workspace`。
+5. 前端 Topic workspace 类型与调用已同步到 `workspace` 字段，避免与后端硬切不一致。
+
+## 2026-04-26 Node->Topic workspace 联查命令（Agent 消费）
+
+1. 新增 VOS CLI 命令：os node tool-context --node-id <ID>，一次返回 parent_id/node_name/topic_id/topic_workspace_root。
+2. Agent Tool Runtime 改为消费该联查命令，不再拆成两次 VOS 查询。
+3. 该收口不涉及 schedule 路由改造，仅优化 Agent 工具侧上下文解析链路。
+## 2026-04-26 Topic.workspace 消费口径（Agent Tool Runtime）
+
+1. Topic.workspace 的消费落在 Agent Tool 运行时，不强耦合到 schedule。
+2. 消费策略：仅系统操作类工具读取 Topic.workspace 作为优先工作目录；失败回退仓库默认 workspace。
+3. VOS 读写类工具继续走 runtime workspace，确保状态读写路径稳定。
+4. 前端/后端接口契约保持不变，后续可在不改调度契约前提下迭代工具消费策略。
+## 2026-04-26 Topic.workspace 字段化（脱离 metadata）
+
+1. Topic 结构新增一级字段 workspace，不再以 metadata.workspace_root 作为主存储面。
+2. VFS 兼容迁移已落地：读取旧状态时若存在 metadata.workspace_root，自动迁移到 Topic.workspace。
+3. 迁移后会清理旧键：metadata.workspace_root 不再保留在 Topic metadata 中。
+4. 现有接口保持不变：
+   - GET /api/v1/topics/{topic_id}/workspace
+   - PUT /api/v1/topics/{topic_id}/workspace
+   - 返回结构仍为 topic_id/workspace_root/created_at/updated_at，前端无需改调用。
+5. 回归结果：
+   - go test ./internal/vos/service/... ./internal/vos/httpapi/... 通过（仓库内 GOCACHE/GOMODCACHE）。
+   - go test ./... 通过。
+## 2026-04-26 Topic-Workspace 绑定接口落地（VOS HTTP）
+
+1. 后端已补齐前端所需接口：
+   - GET /api/v1/topics/{topic_id}/workspace
+   - PUT /api/v1/topics/{topic_id}/workspace
+2. 数据语义：
+   - 绑定值落在 Topic.metadata.workspace_root（不新增独立存储）。
+   - GET 在未绑定时返回 data: null（HTTP 200）。
+   - PUT 要求 workspace_root 非空字符串，返回最新绑定结构。
+3. 服务层新增能力：
+   - Service.GetTopicWorkspaceBinding(topicID)
+   - Service.UpdateTopicWorkspaceBinding(topicID, workspaceRoot)
+4. HTTP 返回结构对齐前端契约：topic_id/workspace_root/created_at/updated_at。
+5. 回归结果：
+   - go test ./internal/vos/service/... ./internal/vos/httpapi/... 通过（仓库内 GOCACHE/GOMODCACHE）。
+   - go test ./... 通过。
 ## 2026-04-25 Agent Process 工具能力新增（node_process + sibling_progress_board）
 1. Agent 默认工具集合新增 `node_process`，当前默认注入集合变更为：`read/write/search/command/network/node_process/tool_query`。
 2. 新增非默认注册工具 `sibling_progress_board`（`primary_tag=process`），用于读取同级节点进度板（父节点 children 的 process `id/name`）。
@@ -387,3 +439,9 @@
 5. 验证结果：
    - Python：`\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
    - Go：`go test ./internal/vos/httpapi/...`、`go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+
+
+
+
+
+

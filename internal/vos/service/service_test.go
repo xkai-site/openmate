@@ -212,6 +212,99 @@ func TestUpdateAndDeleteTopic(t *testing.T) {
 	}
 }
 
+func TestTopicWorkspaceBindingLifecycle(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-workspace",
+		Name:    "Topic Workspace",
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	binding, err := svc.GetTopicWorkspaceBinding(topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopicWorkspaceBinding() error = %v", err)
+	}
+	if binding != nil {
+		t.Fatalf("GetTopicWorkspaceBinding() = %+v, want nil before binding", binding)
+	}
+
+	updated, err := svc.UpdateTopicWorkspaceBinding(topic.ID, "D:/workspace/demo")
+	if err != nil {
+		t.Fatalf("UpdateTopicWorkspaceBinding() error = %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("UpdateTopicWorkspaceBinding() = nil, want binding")
+	}
+	if updated.TopicID != topic.ID {
+		t.Fatalf("updated topic_id = %s, want %s", updated.TopicID, topic.ID)
+	}
+	if updated.Workspace != "D:/workspace/demo" {
+		t.Fatalf("updated workspace = %s, want D:/workspace/demo", updated.Workspace)
+	}
+
+	stored, err := svc.GetTopicWorkspaceBinding(topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopicWorkspaceBinding(after update) error = %v", err)
+	}
+	if stored == nil || stored.Workspace != "D:/workspace/demo" {
+		t.Fatalf("stored binding = %+v, want workspace D:/workspace/demo", stored)
+	}
+
+	storedTopic, err := svc.GetTopic(topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	if storedTopic.Workspace == nil || *storedTopic.Workspace != "D:/workspace/demo" {
+		t.Fatalf("topic.workspace = %v, want D:/workspace/demo", storedTopic.Workspace)
+	}
+	if _, exists := storedTopic.Metadata["workspace_root"]; exists {
+		t.Fatalf("topic.metadata should not contain workspace_root: %v", storedTopic.Metadata)
+	}
+}
+
+func TestTopicWorkspaceBindingMigratesFromLegacyMetadata(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-legacy-workspace",
+		Name:    "Topic Legacy Workspace",
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	_, err = svc.UpdateTopic(service.UpdateTopicInput{
+		TopicID:         topic.ID,
+		Metadata:        map[string]any{"workspace_root": "D:/legacy/workspace"},
+		ReplaceMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateTopic(metadata) error = %v", err)
+	}
+
+	binding, err := svc.GetTopicWorkspaceBinding(topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopicWorkspaceBinding() error = %v", err)
+	}
+	if binding == nil || binding.Workspace != "D:/legacy/workspace" {
+		t.Fatalf("binding = %+v, want workspace D:/legacy/workspace", binding)
+	}
+
+	storedTopic, err := svc.GetTopic(topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	if storedTopic.Workspace == nil || *storedTopic.Workspace != "D:/legacy/workspace" {
+		t.Fatalf("topic.workspace = %v, want D:/legacy/workspace", storedTopic.Workspace)
+	}
+	if _, exists := storedTopic.Metadata["workspace_root"]; exists {
+		t.Fatalf("topic.metadata should not contain workspace_root after migration: %v", storedTopic.Metadata)
+	}
+}
+
 func TestCreateMoveAndDeleteLeafNode(t *testing.T) {
 	svc := newTestService(t)
 
@@ -669,5 +762,46 @@ func TestListChildrenProcessesReturnsEmptyForLeafNode(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("entries = %d, want 0 for leaf node", len(entries))
+	}
+}
+
+func TestGetNodeToolContextReturnsTopicWorkspace(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-tool-context",
+		Name:    "Topic Tool Context",
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	_, err = svc.UpdateTopicWorkspaceBinding(topic.ID, "D:/workspace/topic-tool")
+	if err != nil {
+		t.Fatalf("UpdateTopicWorkspaceBinding() error = %v", err)
+	}
+	node, err := svc.CreateNode(service.CreateNodeInput{
+		TopicID: topic.ID,
+		NodeID:  "node-tool-context",
+		Name:    "Node Tool Context",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	ctx, err := svc.GetNodeToolContext(node.ID)
+	if err != nil {
+		t.Fatalf("GetNodeToolContext() error = %v", err)
+	}
+	if ctx.NodeID != node.ID {
+		t.Fatalf("NodeID = %s, want %s", ctx.NodeID, node.ID)
+	}
+	if ctx.NodeName != node.Name {
+		t.Fatalf("NodeName = %s, want %s", ctx.NodeName, node.Name)
+	}
+	if ctx.TopicID != topic.ID {
+		t.Fatalf("TopicID = %s, want %s", ctx.TopicID, topic.ID)
+	}
+	if ctx.TopicWorkspace == nil || *ctx.TopicWorkspace != "D:/workspace/topic-tool" {
+		t.Fatalf("TopicWorkspace = %v, want D:/workspace/topic-tool", ctx.TopicWorkspace)
 	}
 }

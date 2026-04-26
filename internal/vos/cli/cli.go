@@ -165,6 +165,8 @@ func runNode(svc *service.Service, stateFile string, sessionDBFile string, args 
 		return runNodeLeaf(svc, args[1:], stdout, stderr)
 	case "children-processes":
 		return runNodeChildrenProcesses(svc, args[1:], stdout, stderr)
+	case "tool-context":
+		return runNodeToolContext(svc, args[1:], stdout, stderr)
 	case "decompose":
 		return runNodeDecompose(svc, stateFile, sessionDBFile, args[1:], stdout, stderr)
 	default:
@@ -651,6 +653,27 @@ func runNodeChildrenProcesses(svc *service.Service, args []string, stdout, stder
 	return dumpJSON(entries, stdout, stderr)
 }
 
+func runNodeToolContext(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("vos node tool-context", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	nodeID := fs.String("node-id", "", "Node ID")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage:")
+		fmt.Fprintln(fs.Output(), "  vos node tool-context --node-id ID")
+		fmt.Fprintln(fs.Output())
+		fs.PrintDefaults()
+	}
+	if code := parseFlagSet(fs, args); code >= 0 {
+		return code
+	}
+
+	context, err := svc.GetNodeToolContext(*nodeID)
+	if err != nil {
+		return printError(err, stderr)
+	}
+	return dumpJSON(context, stdout, stderr)
+}
+
 func printTopicUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  vos topic <create|get|list|update|delete> [flags]")
@@ -658,7 +681,7 @@ func printTopicUsage(writer io.Writer) {
 
 func printNodeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
-	fmt.Fprintln(writer, "  vos node <create|get|list|children|children-processes|move|delete|update|leaf|decompose> [flags]")
+	fmt.Fprintln(writer, "  vos node <create|get|list|children|children-processes|tool-context|move|delete|update|leaf|decompose> [flags]")
 }
 
 func parseFlagSet(fs *flag.FlagSet, args []string) int {

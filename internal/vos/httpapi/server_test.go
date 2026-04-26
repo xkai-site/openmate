@@ -241,6 +241,104 @@ func TestServerV1TopicMemoryProposalListAndApply(t *testing.T) {
 	}
 }
 
+func TestServerV1TopicWorkspaceBindingGetAndPut(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	if _, _, err := server.service.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-workspace",
+		Name:    "Topic Workspace",
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	getBefore := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/topics/topic-workspace/workspace",
+		nil,
+		http.StatusOK,
+	)
+	if string(getBefore.Data) != "null" {
+		t.Fatalf("before binding data = %s, want null", string(getBefore.Data))
+	}
+
+	putEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodPut,
+		testServer.URL+"/api/v1/topics/topic-workspace/workspace",
+		map[string]any{
+			"workspace": "D:/workspace/client-app",
+		},
+		http.StatusOK,
+	)
+	binding := struct {
+		TopicID   string `json:"topic_id"`
+		Workspace string `json:"workspace"`
+	}{}
+	mustDecodeEnvelopeData(t, putEnv, &binding)
+	if binding.TopicID != "topic-workspace" {
+		t.Fatalf("topic_id = %s, want topic-workspace", binding.TopicID)
+	}
+	if binding.Workspace != "D:/workspace/client-app" {
+		t.Fatalf("workspace = %s, want D:/workspace/client-app", binding.Workspace)
+	}
+
+	getAfter := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/topics/topic-workspace/workspace",
+		nil,
+		http.StatusOK,
+	)
+	afterBinding := struct {
+		TopicID   string `json:"topic_id"`
+		Workspace string `json:"workspace"`
+	}{}
+	mustDecodeEnvelopeData(t, getAfter, &afterBinding)
+	if afterBinding.TopicID != "topic-workspace" {
+		t.Fatalf("topic_id = %s, want topic-workspace", afterBinding.TopicID)
+	}
+	if afterBinding.Workspace != "D:/workspace/client-app" {
+		t.Fatalf("workspace = %s, want D:/workspace/client-app", afterBinding.Workspace)
+	}
+}
+
+func TestServerV1TopicWorkspaceBindingRejectsLegacyWorkspaceRootField(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	if _, _, err := server.service.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-workspace-legacy",
+		Name:    "Topic Workspace Legacy",
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	putEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodPut,
+		testServer.URL+"/api/v1/topics/topic-workspace-legacy/workspace",
+		map[string]any{
+			"workspace_root": "D:/workspace/client-app",
+		},
+		http.StatusBadRequest,
+	)
+	if !strings.Contains(putEnv.Message, "unknown field") {
+		t.Fatalf("message = %q, want unknown field validation", putEnv.Message)
+	}
+}
+
 func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {

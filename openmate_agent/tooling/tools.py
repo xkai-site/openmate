@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import difflib
 import fnmatch
@@ -62,7 +62,8 @@ def _looks_binary(path: Path) -> bool:
 
 
 def _run_vos_command(context: ToolContext, command: list[str]) -> str:
-    return run_vos_cli(workspace_root=context.workspace_root, command=command)
+    workspace_root = context.runtime_workspace or context.workspace
+    return run_vos_cli(workspace_root=workspace_root, command=command)
 
 
 def _list_node_processes(context: ToolContext, node_id: str) -> list[dict[str, Any]]:
@@ -94,7 +95,7 @@ class ReadTool(Tool):
     def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
         try:
             args = ReadPayload.model_validate(payload)
-            target = _resolve_in_workspace(context.workspace_root, args.path)
+            target = _resolve_in_workspace(context.workspace, args.path)
             if not target.exists():
                 return ToolResult(tool_name=self.name, success=False, error="path does not exist")
 
@@ -173,7 +174,7 @@ class WriteTool(Tool):
     def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
         try:
             args = WritePayload.model_validate(payload)
-            file_path = _resolve_in_workspace(context.workspace_root, args.path)
+            file_path = _resolve_in_workspace(context.workspace, args.path)
             old_content = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
 
             with context.lock_manager.with_lock(file_path):
@@ -228,7 +229,7 @@ class EditTool(Tool):
     def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
         try:
             args = EditPayload.model_validate(payload)
-            file_path = _resolve_in_workspace(context.workspace_root, args.path)
+            file_path = _resolve_in_workspace(context.workspace, args.path)
             if not file_path.exists():
                 return ToolResult(tool_name=self.name, success=False, error="file does not exist")
 
@@ -620,7 +621,7 @@ class GrepTool(Tool):
             if shutil.which("rg") is None:
                 return ToolResult(tool_name=self.name, success=False, error="ripgrep (rg) is not installed")
 
-            scope_path = _resolve_in_workspace(context.workspace_root, args.scope)
+            scope_path = _resolve_in_workspace(context.workspace, args.scope)
             command = [
                 "rg",
                 "--line-number",
@@ -634,7 +635,7 @@ class GrepTool(Tool):
             ]
             if args.file_glob:
                 command.extend(["-g", args.file_glob])
-            command = _with_ignore_file(command=command, workspace_root=context.workspace_root)
+            command = _with_ignore_file(command=command, workspace_root=context.workspace)
 
             proc = subprocess.run(
                 command,
@@ -643,7 +644,7 @@ class GrepTool(Tool):
                 encoding="utf-8",
                 errors="replace",
                 check=False,
-                cwd=str(context.workspace_root),
+                cwd=str(context.workspace),
             )
             if proc.returncode in {0, 1}:
                 return ToolResult(tool_name=self.name, output=proc.stdout.strip())
@@ -670,13 +671,13 @@ class GlobTool(Tool):
             if shutil.which("rg") is None:
                 return ToolResult(tool_name=self.name, success=False, error="ripgrep (rg) is not installed")
 
-            scope_path = _resolve_in_workspace(context.workspace_root, args.scope)
+            scope_path = _resolve_in_workspace(context.workspace, args.scope)
             command = [
                 "rg",
                 "--files",
                 str(scope_path),
             ]
-            command = _with_ignore_file(command=command, workspace_root=context.workspace_root)
+            command = _with_ignore_file(command=command, workspace_root=context.workspace)
             proc = subprocess.run(
                 command,
                 capture_output=True,
@@ -684,7 +685,7 @@ class GlobTool(Tool):
                 encoding="utf-8",
                 errors="replace",
                 check=False,
-                cwd=str(context.workspace_root),
+                cwd=str(context.workspace),
             )
             if proc.returncode not in {0, 1}:
                 return ToolResult(tool_name=self.name, success=False, error=proc.stderr.strip() or "rg failed")
@@ -692,9 +693,9 @@ class GlobTool(Tool):
             raw_lines = [line for line in proc.stdout.splitlines() if line.strip()]
             matched: list[str] = []
             for line in raw_lines:
-                resolved = _resolve_rg_output_path(line=line, cwd=context.workspace_root)
+                resolved = _resolve_rg_output_path(line=line, cwd=context.workspace)
                 try:
-                    rel = resolved.relative_to(context.workspace_root).as_posix()
+                    rel = resolved.relative_to(context.workspace).as_posix()
                 except ValueError:
                     rel = resolved.as_posix()
                 if fnmatch.fnmatch(rel, args.pattern):
@@ -722,7 +723,7 @@ class ExecTool(Tool):
     def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
         try:
             args = ExecPayload.model_validate(payload)
-            cwd_path = context.workspace_root if args.cwd is None else _resolve_in_workspace(context.workspace_root, args.cwd)
+            cwd_path = context.workspace if args.cwd is None else _resolve_in_workspace(context.workspace, args.cwd)
             proc = subprocess.run(
                 args.command,
                 capture_output=True,
@@ -789,7 +790,7 @@ class ShellTool(Tool):
     def run(self, context: ToolContext, payload: dict[str, Any]) -> ToolResult:
         try:
             args = ShellPayload.model_validate(payload)
-            cwd_path = context.workspace_root if args.cwd is None else _resolve_in_workspace(context.workspace_root, args.cwd)
+            cwd_path = context.workspace if args.cwd is None else _resolve_in_workspace(context.workspace, args.cwd)
             command = ["powershell", "-NoProfile", "-Command", args.command]
             proc = subprocess.run(
                 command,
@@ -872,7 +873,7 @@ class PatchTool(Tool):
     def _prepare_states(context: ToolContext, operations: list[PatchOperation]) -> dict[Path, _PatchFileState]:
         file_states: dict[Path, _PatchFileState] = {}
         for operation in operations:
-            file_path = _resolve_in_workspace(context.workspace_root, operation.path)
+            file_path = _resolve_in_workspace(context.workspace, operation.path)
             if file_path not in file_states:
                 exists = file_path.exists()
                 original_content = file_path.read_text(encoding="utf-8") if exists else ""
@@ -904,7 +905,7 @@ class PatchTool(Tool):
         operations: list[PatchOperation],
     ) -> dict[Path, _PatchFileState]:
         for operation in operations:
-            target_path = _resolve_in_workspace(context.workspace_root, operation.path)
+            target_path = _resolve_in_workspace(context.workspace, operation.path)
             state = file_states[target_path]
             if isinstance(operation, PatchReplaceOperation):
                 if not state.exists:
@@ -1119,3 +1120,4 @@ def _resolve_rg_output_path(line: str, cwd: Path) -> Path:
     if candidate.is_absolute():
         return candidate.resolve()
     return (cwd / candidate).resolve()
+

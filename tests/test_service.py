@@ -330,36 +330,126 @@ class AgentCapabilityServiceTests(unittest.TestCase):
     def test_run_tool_write_read_query(self) -> None:
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(workspace_root=tmp)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Tool",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                write_result = service.run_tool(
+                    node_id="node-tool",
+                    tool_name="write",
+                    payload={"path": "notes/demo.txt", "content": "hello tool runtime"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(write_result.success)
+                self.assertTrue(Path(tmp, "notes", "demo.txt").exists())
 
-            write_result = service.run_tool(
-                node_id="node-tool",
-                tool_name="write",
-                payload={"path": "notes/demo.txt", "content": "hello tool runtime"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(write_result.success)
-            self.assertTrue(Path(tmp, "notes", "demo.txt").exists())
+                read_result = service.run_tool(
+                    node_id="node-tool",
+                    tool_name="read",
+                    payload={"path": "notes/demo.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(read_result.success)
+                self.assertIn("hello tool runtime", read_result.output)
 
-            read_result = service.run_tool(
-                node_id="node-tool",
-                tool_name="read",
-                payload={"path": "notes/demo.txt"},
-                is_safe=True,
-                is_read_only=True,
-            )
+                edit_result = service.run_tool(
+                    node_id="node-tool",
+                    tool_name="edit",
+                    payload={"path": "notes/demo.txt", "old_string": "hello tool runtime", "new_string": "hello edited"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(edit_result.success)
+                self.assertIn("edited:", edit_result.output)
+
+    def test_run_tool_prefers_topic_workspace_for_system_tools(self) -> None:
+        with TemporaryDirectory() as repo_root, TemporaryDirectory() as topic_workspace:
+            topic_file = Path(topic_workspace, "notes", "from-topic.txt")
+            topic_file.parent.mkdir(parents=True, exist_ok=True)
+            topic_file.write_text("topic-workspace-content", encoding="utf-8")
+            Path(repo_root, "notes").mkdir(parents=True, exist_ok=True)
+            Path(repo_root, "notes", "from-topic.txt").write_text("repo-content", encoding="utf-8")
+
+            service = AgentCapabilityService(workspace_root=repo_root)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Topic",
+                    topic_id="topic-1",
+                    topic_workspace=topic_workspace,
+                )
+                read_result = service.run_tool(
+                    node_id="node-topic-1",
+                    tool_name="read",
+                    payload={"path": "notes/from-topic.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
             self.assertTrue(read_result.success)
-            self.assertIn("hello tool runtime", read_result.output)
+            self.assertIn("topic-workspace-content", read_result.output)
+            self.assertNotIn("repo-content", read_result.output)
 
-            edit_result = service.run_tool(
-                node_id="node-tool",
-                tool_name="edit",
-                payload={"path": "notes/demo.txt", "old_string": "hello tool runtime", "new_string": "hello edited"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(edit_result.success)
-            self.assertIn("edited:", edit_result.output)
+    def test_run_tool_blocks_when_topic_workspace_lookup_fails(self) -> None:
+        with TemporaryDirectory() as repo_root:
+            service = AgentCapabilityService(workspace_root=repo_root)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.side_effect = VosCommandError("vos unavailable")
+                read_result = service.run_tool(
+                    node_id="node-repo-only",
+                    tool_name="read",
+                    payload={"path": "notes/repo-only.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+            self.assertFalse(read_result.success)
+            self.assertEqual(read_result.error_code, "WORKSPACE_UNAVAILABLE")
+
+    def test_run_tool_blocks_when_topic_workspace_not_bound(self) -> None:
+        with TemporaryDirectory() as repo_root:
+            service = AgentCapabilityService(workspace_root=repo_root)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Topic",
+                    topic_id="topic-1",
+                    topic_workspace=None,
+                )
+                read_result = service.run_tool(
+                    node_id="node-topic-unbound",
+                    tool_name="read",
+                    payload={"path": "notes/from-topic.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+            self.assertFalse(read_result.success)
+            self.assertEqual(read_result.error_code, "WORKSPACE_UNAVAILABLE")
+
+    def test_run_tool_blocks_when_topic_workspace_is_not_a_directory(self) -> None:
+        with TemporaryDirectory() as repo_root:
+            file_path = Path(repo_root, "topic-workspace.txt")
+            file_path.write_text("not-a-dir", encoding="utf-8")
+            service = AgentCapabilityService(workspace_root=repo_root)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Topic",
+                    topic_id="topic-1",
+                    topic_workspace=str(file_path),
+                )
+                read_result = service.run_tool(
+                    node_id="node-topic-invalid-workspace",
+                    tool_name="read",
+                    payload={"path": "notes/from-topic.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+            self.assertFalse(read_result.success)
+            self.assertEqual(read_result.error_code, "WORKSPACE_UNAVAILABLE")
 
     def test_run_tool_query_http(self) -> None:
         server, thread = _start_test_server()
@@ -389,56 +479,77 @@ class AgentCapabilityServiceTests(unittest.TestCase):
     def test_run_tool_shell(self) -> None:
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(workspace_root=tmp)
-            result = service.run_tool(
-                node_id="node-shell",
-                tool_name="shell",
-                payload={"command": "Write-Output shell-ok"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(result.success)
-            self.assertIn("shell-ok", result.output)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Shell",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                result = service.run_tool(
+                    node_id="node-shell",
+                    tool_name="shell",
+                    payload={"command": "Write-Output shell-ok"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                self.assertIn("shell-ok", result.output)
 
     def test_run_tool_exec(self) -> None:
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(workspace_root=tmp)
-            result = service.run_tool(
-                node_id="node-exec",
-                tool_name="exec",
-                payload={"command": [sys.executable, "-c", "print('exec-ok')"]},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(result.success)
-            self.assertIn("exec-ok", result.output)
-            self.assertIn("exit_code:0", result.output)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Exec",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                result = service.run_tool(
+                    node_id="node-exec",
+                    tool_name="exec",
+                    payload={"command": [sys.executable, "-c", "print('exec-ok')"]},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                self.assertIn("exec-ok", result.output)
+                self.assertIn("exit_code:0", result.output)
 
     def test_run_tool_exec_expect_json_requires_valid_stdout(self) -> None:
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(workspace_root=tmp)
-            ok_result = service.run_tool(
-                node_id="node-exec-json",
-                tool_name="exec",
-                payload={
-                    "command": [sys.executable, "-c", "import json; print(json.dumps({'ok': True}))"],
-                    "expect_json": True,
-                },
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(ok_result.success)
-            self.assertIn('"stdout_json"', ok_result.output)
-            self.assertIn('"ok": true', ok_result.output.lower())
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Exec JSON",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                ok_result = service.run_tool(
+                    node_id="node-exec-json",
+                    tool_name="exec",
+                    payload={
+                        "command": [sys.executable, "-c", "import json; print(json.dumps({'ok': True}))"],
+                        "expect_json": True,
+                    },
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(ok_result.success)
+                self.assertIn('"stdout_json"', ok_result.output)
+                self.assertIn('"ok": true', ok_result.output.lower())
 
-            bad_result = service.run_tool(
-                node_id="node-exec-json-bad",
-                tool_name="exec",
-                payload={"command": [sys.executable, "-c", "print('not-json')"], "expect_json": True},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertFalse(bad_result.success)
-            self.assertIn("stdout is not valid json", bad_result.error or "")
+                bad_result = service.run_tool(
+                    node_id="node-exec-json-bad",
+                    tool_name="exec",
+                    payload={"command": [sys.executable, "-c", "print('not-json')"], "expect_json": True},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(bad_result.success)
+                self.assertIn("stdout is not valid json", bad_result.error or "")
 
     def test_run_tool_tool_query_threshold_default(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -682,25 +793,32 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             service = AgentCapabilityService(workspace_root=tmp)
             target = Path(tmp, "a.txt")
             target.write_text("v1", encoding="utf-8")
-            read_result = service.run_tool(
-                node_id="node-conflict",
-                tool_name="read",
-                payload={"path": "a.txt"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(read_result.success)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Conflict",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                read_result = service.run_tool(
+                    node_id="node-conflict",
+                    tool_name="read",
+                    payload={"path": "a.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(read_result.success)
 
-            target.write_text("v2-external", encoding="utf-8")
-            write_result = service.run_tool(
-                node_id="node-conflict",
-                tool_name="write",
-                payload={"path": "a.txt", "content": "v3"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertFalse(write_result.success)
-            self.assertIn("modified externally", write_result.error or "")
+                target.write_text("v2-external", encoding="utf-8")
+                write_result = service.run_tool(
+                    node_id="node-conflict",
+                    tool_name="write",
+                    payload={"path": "a.txt", "content": "v3"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(write_result.success)
+                self.assertIn("modified externally", write_result.error or "")
 
     def test_run_tool_patch_updates_multiple_files(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -712,49 +830,56 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             second.parent.mkdir(parents=True, exist_ok=True)
             second.write_text("VALUE = 1\n", encoding="utf-8")
 
-            read_first = service.run_tool(
-                node_id="node-patch",
-                tool_name="read",
-                payload={"path": "a.txt"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            read_second = service.run_tool(
-                node_id="node-patch",
-                tool_name="read",
-                payload={"path": "pkg/module.py"},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(read_first.success)
-            self.assertTrue(read_second.success)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Patch",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                read_first = service.run_tool(
+                    node_id="node-patch",
+                    tool_name="read",
+                    payload={"path": "a.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                read_second = service.run_tool(
+                    node_id="node-patch",
+                    tool_name="read",
+                    payload={"path": "pkg/module.py"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(read_first.success)
+                self.assertTrue(read_second.success)
 
-            patch_result = service.run_tool(
-                node_id="node-patch",
-                tool_name="patch",
-                payload={
-                    "operations": [
-                        {
-                            "type": "replace",
-                            "path": "a.txt",
-                            "old_string": "beta",
-                            "new_string": "gamma",
-                        },
-                        {
-                            "type": "replace",
-                            "path": "pkg/module.py",
-                            "old_string": "VALUE = 1",
-                            "new_string": "VALUE = 2",
-                        },
-                    ]
-                },
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(patch_result.success)
-            self.assertIn("patched:2 files, 2 operations", patch_result.output)
-            self.assertEqual(first.read_text(encoding="utf-8"), "alpha\ngamma\n")
-            self.assertEqual(second.read_text(encoding="utf-8"), "VALUE = 2\n")
+                patch_result = service.run_tool(
+                    node_id="node-patch",
+                    tool_name="patch",
+                    payload={
+                        "operations": [
+                            {
+                                "type": "replace",
+                                "path": "a.txt",
+                                "old_string": "beta",
+                                "new_string": "gamma",
+                            },
+                            {
+                                "type": "replace",
+                                "path": "pkg/module.py",
+                                "old_string": "VALUE = 1",
+                                "new_string": "VALUE = 2",
+                            },
+                        ]
+                    },
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(patch_result.success)
+                self.assertIn("patched:2 files, 2 operations", patch_result.output)
+                self.assertEqual(first.read_text(encoding="utf-8"), "alpha\ngamma\n")
+                self.assertEqual(second.read_text(encoding="utf-8"), "VALUE = 2\n")
 
     def test_run_tool_patch_is_atomic_when_operation_fails(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -765,50 +890,57 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             first.write_text("one\n", encoding="utf-8")
             second.write_text("two\n", encoding="utf-8")
 
-            self.assertTrue(
-                service.run_tool(
-                    node_id="node-patch-atomic",
-                    tool_name="read",
-                    payload={"path": "a.txt"},
-                    is_safe=True,
-                    is_read_only=True,
-                ).success
-            )
-            self.assertTrue(
-                service.run_tool(
-                    node_id="node-patch-atomic",
-                    tool_name="read",
-                    payload={"path": "b.txt"},
-                    is_safe=True,
-                    is_read_only=True,
-                ).success
-            )
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Patch Atomic",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                self.assertTrue(
+                    service.run_tool(
+                        node_id="node-patch-atomic",
+                        tool_name="read",
+                        payload={"path": "a.txt"},
+                        is_safe=True,
+                        is_read_only=True,
+                    ).success
+                )
+                self.assertTrue(
+                    service.run_tool(
+                        node_id="node-patch-atomic",
+                        tool_name="read",
+                        payload={"path": "b.txt"},
+                        is_safe=True,
+                        is_read_only=True,
+                    ).success
+                )
 
-            patch_result = service.run_tool(
-                node_id="node-patch-atomic",
-                tool_name="patch",
-                payload={
-                    "operations": [
-                        {
-                            "type": "replace",
-                            "path": "a.txt",
-                            "old_string": "one",
-                            "new_string": "changed",
-                        },
-                        {
-                            "type": "replace",
-                            "path": "b.txt",
-                            "old_string": "missing",
-                            "new_string": "boom",
-                        },
-                    ]
-                },
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertFalse(patch_result.success)
-            self.assertEqual(first.read_text(encoding="utf-8"), "one\n")
-            self.assertEqual(second.read_text(encoding="utf-8"), "two\n")
+                patch_result = service.run_tool(
+                    node_id="node-patch-atomic",
+                    tool_name="patch",
+                    payload={
+                        "operations": [
+                            {
+                                "type": "replace",
+                                "path": "a.txt",
+                                "old_string": "one",
+                                "new_string": "changed",
+                            },
+                            {
+                                "type": "replace",
+                                "path": "b.txt",
+                                "old_string": "missing",
+                                "new_string": "boom",
+                            },
+                        ]
+                    },
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(patch_result.success)
+                self.assertEqual(first.read_text(encoding="utf-8"), "one\n")
+                self.assertEqual(second.read_text(encoding="utf-8"), "two\n")
 
     def test_run_tool_grep_and_glob(self) -> None:
         if shutil.which("rg") is None:
@@ -820,27 +952,33 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             (base / "src" / "a.py").write_text("def hello_tool():\n    return 1\n", encoding="utf-8")
             (base / "ignored.py").write_text("def hidden():\n    pass\n", encoding="utf-8")
             service = AgentCapabilityService(workspace_root=tmp)
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Search",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                grep_result = service.run_tool(
+                    node_id="node-search",
+                    tool_name="grep",
+                    payload={"pattern": "hello_.*", "scope": "."},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(grep_result.success)
+                self.assertIn("a.py", grep_result.output)
 
-            grep_result = service.run_tool(
-                node_id="node-search",
-                tool_name="grep",
-                payload={"pattern": "hello_.*", "scope": "."},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(grep_result.success)
-            self.assertIn("a.py", grep_result.output)
-
-            glob_result = service.run_tool(
-                node_id="node-search",
-                tool_name="glob",
-                payload={"pattern": "**/*.py", "scope": "."},
-                is_safe=True,
-                is_read_only=True,
-            )
-            self.assertTrue(glob_result.success)
-            self.assertIn("src", glob_result.output)
-            self.assertNotIn("ignored.py", glob_result.output)
+                glob_result = service.run_tool(
+                    node_id="node-search",
+                    tool_name="glob",
+                    payload={"pattern": "**/*.py", "scope": "."},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(glob_result.success)
+                self.assertIn("src", glob_result.output)
+                self.assertNotIn("ignored.py", glob_result.output)
 
 
 def _write_tool_registry(workspace_root: Path, tools: list[dict[str, object]]) -> None:
