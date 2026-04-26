@@ -1,5 +1,42 @@
 # Frontend Process
 
+## 2026-04-26 Home 内嵌工具监控页（左栏入口切换）
+
+1. 类型与 API：
+   - `frontend/src/types/models.ts` 新增 `ToolMonitorSource`、`ToolMonitorEvent`、`ToolMonitorSummaryItem`、`ToolMonitorQuery`。
+   - 新增 `frontend/src/services/api/toolMonitor.ts`：
+     - `listToolMonitorEvents(query?)`
+     - `listToolMonitorSummary(query?)`
+   - 新增正整数前置校验：`limit/window_minutes` 非正整数时前端直接抛错阻断请求。
+   - `frontend/src/services/api/index.ts` 增加 `toolMonitor` 导出。
+2. Home 左栏双入口：
+   - `frontend/src/pages/Home/components/ProjectPanel.tsx` 扩展为 `history/tool_monitor` 两个入口。
+   - 新增受控参数 `activeSection`、`onSectionChange`，由 Home 维护当前 section。
+   - 选中 `tool_monitor` 时左栏显示“右侧查看监控”提示；`history` 保持原历史会话列表行为。
+3. Home 主区视图切换：
+   - `frontend/src/pages/Home/index.tsx` 新增 `activeSection` 状态并传入 `ProjectPanel`。
+   - `activeSection='history'` 保持原聊天页面能力不变。
+   - `activeSection='tool_monitor'` 时主区渲染 `ToolMonitorPanel`，不新增路由。
+4. 监控面板实现：
+   - 新增 `frontend/src/pages/Home/components/ToolMonitorPanel.tsx`。
+   - 筛选项：`tool_name/node_id/source/success/limit/window_minutes`。
+   - `window_minutes` 支持预设按钮（15/60/1440）+ 自定义输入。
+   - 支持手动刷新、默认 30s 自动刷新、默认窗口 60 分钟。
+   - 使用 `Tabs` 展示“汇总表/事件表”。
+   - 展示规则：
+     - `before` 阶段的 `success/error_code/duration_ms` 显示 `-`。
+     - `ts` 本地化显示，原值通过 tooltip 展示。
+     - `success_rate` 按百分比渲染。
+5. 验证：
+   - `cd frontend && npm run build` 通过。
+
+## 2026-04-26 frontend 分支初始化（安装 + 构建校验）
+
+1. 已确认当前工作分支为 `frontend`（`git branch --show-current` 输出 `frontend`）。
+2. 已完成前端依赖初始化：`cd frontend && npm install`，结果 `up to date in 3s`。
+3. 已执行前端构建校验：`cd frontend && npm run build`，构建通过并产出 `frontend/dist`。
+4. 构建过程中存在既有体积告警：`vendor-antd` chunk 超过 700 kB 阈值（warning），不影响本次初始化完成。
+
 ## 2026-04-26 Topic 级 Workspace 绑定（客户端先行）
 
 1. 类型收敛：

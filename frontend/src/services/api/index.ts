@@ -4,3 +4,4 @@ export * from './stats';
 export * from './nodes';
 export * from './tree';
 export * from './chat';
+export * from './toolMonitor';
