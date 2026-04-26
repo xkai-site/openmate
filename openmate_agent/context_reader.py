@@ -32,7 +32,7 @@ class ProcessContextRecord(BaseModel):
 
     name: str
     status: str
-    memory: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
     session_events: list[SessionEventRecord] = Field(default_factory=list)
 
 

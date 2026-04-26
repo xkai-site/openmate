@@ -107,13 +107,17 @@ func TestTopicAndNodeFlow(t *testing.T) {
 	if len(updatedNode.Session) != 1 || updatedNode.Session[0] != "session-1" {
 		t.Fatalf("Session = %v, want [session-1]", updatedNode.Session)
 	}
-	if len(updatedNode.Process) != 1 {
-		t.Fatalf("Process length = %d, want 1", len(updatedNode.Process))
+	processes, err := svc.ListNodeProcesses("node-1")
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
 	}
-	if updatedNode.Process[0].Name != "created" || updatedNode.Process[0].Status != domain.ProcessStatusDone {
-		t.Fatalf("Process[0] = %+v, want name=created status=done", updatedNode.Process[0])
+	if len(processes) != 1 {
+		t.Fatalf("Process length = %d, want 1", len(processes))
 	}
-	if updatedNode.Process[0].Timestamp.IsZero() {
+	if processes[0].Name != "created" || processes[0].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[0] = %+v, want name=created status=done", processes[0])
+	}
+	if processes[0].Timestamp.IsZero() {
 		t.Fatalf("Process[0].Timestamp should not be zero")
 	}
 	cache, ok := rootNode.Memory["_child_memory_cache"].(map[string]any)
@@ -468,14 +472,19 @@ func TestNodeUpdateWithProcessJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &updated); err != nil {
 		t.Fatalf("json.Unmarshal(node update) error = %v", err)
 	}
-	if len(updated.Process) != 2 {
-		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	svc := service.New(store.NewJSONStateStore(stateFile))
+	processes, err := svc.ListNodeProcesses(updated.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
 	}
-	if updated.Process[0].Name != "queued" || updated.Process[0].Status != domain.ProcessStatusTodo {
-		t.Fatalf("Process[0] = %+v, want queued/todo", updated.Process[0])
+	if len(processes) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(processes))
 	}
-	if updated.Process[1].Name != "running" || updated.Process[1].Status != domain.ProcessStatusDone {
-		t.Fatalf("Process[1] = %+v, want running/done", updated.Process[1])
+	if processes[0].Name != "queued" || processes[0].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[0] = %+v, want queued/todo", processes[0])
+	}
+	if processes[1].Name != "running" || processes[1].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[1] = %+v, want running/done", processes[1])
 	}
 }
 

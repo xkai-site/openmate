@@ -19,7 +19,7 @@ from .orchestration import ExecutionOrchestrator, ExecutionRunner
 from .pipeline import BuildPipeline
 from .session_writer import VosSessionWriter
 from .tool_runtime import ToolRuntimeExecutor
-from .tooling import PermissionGateway, ToolRegistry
+from .tooling import PermissionGateway, ToolRegistry, load_tool_registry
 
 
 class AgentCapabilityService:
@@ -50,13 +50,14 @@ class AgentCapabilityService:
         tool_runtime: ToolRuntimeExecutor | None = None,
     ) -> None:
         self._workspace_root = resolve_workspace_root(workspace_root)
+        resolved_tool_registry = tool_registry or load_tool_registry(workspace_root=self._workspace_root)
         self._context_injector = self._resolve_context_injector(
             context_injector=context_injector,
             vos_state_file=vos_state_file,
             vos_session_db_file=vos_session_db_file,
             vos_binary_path=vos_binary_path,
         )
-        self._tool_injector = tool_injector or DefaultToolInjector()
+        self._tool_injector = tool_injector or DefaultToolInjector(resolved_tool_registry)
         self._skill_injector = skill_injector or DefaultSkillInjector()
         self._assembler = assembler or DefaultAssembler()
         self._build_pipeline = build_pipeline or BuildPipeline(
@@ -83,8 +84,8 @@ class AgentCapabilityService:
         )
         self._tool_runtime = tool_runtime or ToolRuntimeExecutor(
             workspace_root=self._workspace_root,
-            permission_gateway=permission_gateway,
-            tool_registry=tool_registry,
+            permission_gateway=permission_gateway or PermissionGateway(tool_registry=resolved_tool_registry),
+            tool_registry=resolved_tool_registry,
         )
         self._execution_orchestrator = execution_orchestrator or ExecutionOrchestrator(
             gateway=self._gateway,
@@ -105,8 +106,8 @@ class AgentCapabilityService:
             gateway=self._gateway,
         )
 
-    def build(self, node_id: str, session_id: str | None = None) -> Build:
-        return Build(node_id=node_id, session_id=session_id)
+    def build(self, node_id: str, session_id: str | None = None, api_id: str | None = None) -> Build:
+        return Build(node_id=node_id, session_id=session_id, api_id=api_id)
 
     def execute_agent(self, build: Build) -> str:
         return self._execution_agent.run(build)
@@ -130,6 +131,8 @@ class AgentCapabilityService:
         payload: dict[str, object] | None = None,
         is_safe: bool = False,
         is_read_only: bool = False,
+        source: str = "unknown",
+        request_id: str | None = None,
     ) -> ToolResult:
         return self._tool_runtime.run_tool(
             node_id=node_id,
@@ -137,6 +140,8 @@ class AgentCapabilityService:
             payload=payload,
             is_safe=is_safe,
             is_read_only=is_read_only,
+            source=source,
+            request_id=request_id,
         )
 
     def _resolve_context_injector(

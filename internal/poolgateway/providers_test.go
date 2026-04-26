@@ -199,96 +199,32 @@ func TestOpenAICompatibleProviderUsesChatCompletionsWhenAPIModeConfigured(t *tes
 	}
 }
 
-func TestOpenAICompatibleProviderUsesResponsesPayloadWhenChatModeConfigured(t *testing.T) {
+func TestOpenAICompatibleProviderRejectsResponsesPayloadWhenChatModeConfigured(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/chat/completions" {
-			http.NotFound(writer, request)
-			return
-		}
-		var payload map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if payload["model"] != "gpt-4.1" {
-			t.Fatalf("unexpected model: %+v", payload["model"])
-		}
-		messages, ok := payload["messages"].([]any)
-		if !ok || len(messages) != 2 {
-			t.Fatalf("unexpected messages: %+v", payload["messages"])
-		}
-		systemMessage, ok := messages[0].(map[string]any)
-		if !ok || systemMessage["role"] != "system" || systemMessage["content"] != "system instruction" {
-			t.Fatalf("unexpected system message payload: %+v", messages[0])
-		}
-		userMessage, ok := messages[1].(map[string]any)
-		if !ok || userMessage["role"] != "user" || userMessage["content"] != "你好" {
-			t.Fatalf("unexpected user message payload: %+v", messages[1])
-		}
-		tools, ok := payload["tools"].([]any)
-		if !ok || len(tools) != 1 {
-			t.Fatalf("unexpected tools payload: %+v", payload["tools"])
-		}
-		tool, ok := tools[0].(map[string]any)
-		if !ok {
-			t.Fatalf("unexpected tool payload: %+v", tools[0])
-		}
-		if tool["type"] != "function" {
-			t.Fatalf("unexpected tool type: %+v", tool["type"])
-		}
-		functionDef, ok := tool["function"].(map[string]any)
-		if !ok {
-			t.Fatalf("unexpected function payload: %+v", tool["function"])
-		}
-		if functionDef["name"] != "read" {
-			t.Fatalf("unexpected function name: %+v", functionDef["name"])
-		}
-		if payload["max_tokens"] != float64(32) {
-			t.Fatalf("unexpected max_tokens: %+v", payload["max_tokens"])
-		}
-		if _, exists := payload["user"]; exists {
-			t.Fatalf("user must be stripped before provider call: %+v", payload["user"])
-		}
-
-		_, _ = writer.Write([]byte(`{
-			"id":"chatcmpl-2",
-			"object":"chat.completion",
-			"model":"gpt-4.1",
-			"choices":[{"index":0,"message":{"role":"assistant","content":"ok from responses payload"}}],
-			"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}
-		}`))
-	}))
-	defer server.Close()
-
-	provider := OpenAICompatibleProvider{HTTPClient: server.Client()}
+	provider := OpenAICompatibleProvider{}
 	result, err := provider.Invoke(context.Background(), InvocationReservation{
-		BaseURL: server.URL + "/v1",
+		BaseURL: "http://unused.local/v1",
 		APIKey:  "sk-test",
 		APIMode: APIModeChatCompletions,
 		Model:   "gpt-4.1",
 	}, InvokeRequest{
 		Request: OpenAIResponsesRequest{
-			"input":        "你好",
-			"instructions": "system instruction",
-			"tools": []any{
-				map[string]any{
-					"type":        "function",
-					"name":        "read",
-					"description": "read file",
-					"parameters": map[string]any{
-						"type": "object",
-					},
-				},
-			},
-			"max_output_tokens": 32,
-			"user":              "end-user-2",
+			"input": "hello",
 		},
 	})
-	if err != nil {
-		t.Fatalf("invoke: %v", err)
+	_ = result
+	if err == nil {
+		t.Fatalf("expected provider error")
 	}
-	if result.OutputText == nil || *result.OutputText != "ok from responses payload" {
-		t.Fatalf("unexpected output: %+v", result.OutputText)
+	providerErr, ok := err.(*ProviderInvocationError)
+	if !ok {
+		t.Fatalf("expected ProviderInvocationError, got %T", err)
+	}
+	if providerErr.GatewayError.Code != "gateway_unsupported_request" {
+		t.Fatalf("unexpected code: %s", providerErr.GatewayError.Code)
+	}
+	if !strings.Contains(providerErr.GatewayError.Message, "chat_request is required") {
+		t.Fatalf("unexpected message: %s", providerErr.GatewayError.Message)
 	}
 }
 

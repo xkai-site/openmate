@@ -1,5 +1,20 @@
 # Agent池内部开发过程（收敛版）
 
+## 2026-04-25 Chat/Responses 输入协议硬解耦
+
+1. `api_mode=chat_completions` 校验收敛为仅接受 `chat_request`：
+   - `validateInvokeRequestForMode` 不再接受 `request`（Responses 形态）；
+   - 未传 `chat_request` 时返回明确错误：`chat_request is required for api_mode=chat_completions`。
+2. provider 层移除 chat 模式下的 Responses->Chat 兼容转换桥：
+   - `buildChatCompletionsPayloadForInvoke` 仅从 `chat_request` 构造下游 payload；
+   - 传 `request` 时返回 `gateway_unsupported_request`。
+3. chat 响应归一化逻辑保留，仍输出统一结构供上层复用既有解析逻辑。
+4. 单测同步更新：
+   - `internal/poolgateway/openai_responses_test.go`：chat 模式传 `request` 改为失败断言；
+   - `internal/poolgateway/providers_test.go`：替换原“chat 模式兼容 request”测试为拒绝断言。
+5. 回归结果：
+   - `go test ./internal/poolgateway/... ./internal/schedule/...` 通过。
+
 ## 2026-04-17 Chat 流式追尾与结果查询闭环（vos/httpapi + frontend）
 
 1. `vos/httpapi`：

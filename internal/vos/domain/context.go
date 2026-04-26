@@ -8,7 +8,7 @@ type ContextSessionHistory struct {
 type ProcessContext struct {
 	Name          string          `json:"name"`
 	Status        ProcessStatus   `json:"status"`
-	Memory        map[string]any  `json:"memory,omitempty"`
+	Summary       map[string]any  `json:"summary,omitempty"`
 	SessionEvents []*SessionEvent `json:"session_events,omitempty"`
 }
 

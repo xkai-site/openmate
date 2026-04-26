@@ -34,14 +34,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	sessionDBFile := root.String("session-db-file", "", "SQLite session database path (overrides --db-file)")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")
-		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context> <command> [flags]")
+		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context|process|memory> <command> [flags]")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Commands:")
 		fmt.Fprintln(root.Output(), "  topic   Topic operations")
 		fmt.Fprintln(root.Output(), "  node    Node operations")
 		fmt.Fprintln(root.Output(), "  session Session operations")
 		fmt.Fprintln(root.Output(), "  context Context aggregation operations")
-	fmt.Fprintln(root.Output(), "  process Process operations")
+		fmt.Fprintln(root.Output(), "  process Process operations")
+		fmt.Fprintln(root.Output(), "  memory  Topic memory proposal operations")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Global flags:")
 		root.PrintDefaults()
@@ -96,9 +97,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		defer sessionStore.Close()
 		svc := service.NewWithSessionStore(store.NewJSONStateStore(*stateFile), sessionStore)
 		return runContext(svc, rest[1:], stdout, stderr)
-		case "process":
-			svc := service.New(store.NewJSONStateStore(*stateFile))
-			return runProcess(svc, *stateFile, resolvedSessionDBFile, rest[1:], stdout, stderr)
+	case "process":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
+		return runProcess(svc, *stateFile, resolvedSessionDBFile, rest[1:], stdout, stderr)
+	case "memory":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
+		return runMemory(svc, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown resource: %s\n", rest[0])
 		root.Usage()
@@ -159,6 +163,8 @@ func runNode(svc *service.Service, stateFile string, sessionDBFile string, args 
 		return runNodeUpdate(svc, args[1:], stdout, stderr)
 	case "leaf":
 		return runNodeLeaf(svc, args[1:], stdout, stderr)
+	case "children-processes":
+		return runNodeChildrenProcesses(svc, args[1:], stdout, stderr)
 	case "decompose":
 		return runNodeDecompose(svc, stateFile, sessionDBFile, args[1:], stdout, stderr)
 	default:
@@ -624,6 +630,27 @@ func runNodeLeaf(svc *service.Service, args []string, stdout, stderr io.Writer) 
 	return dumpJSON(map[string]any{"node_id": *nodeID, "operable": operable}, stdout, stderr)
 }
 
+func runNodeChildrenProcesses(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("vos node children-processes", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	nodeID := fs.String("node-id", "", "Parent node ID")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage:")
+		fmt.Fprintln(fs.Output(), "  vos node children-processes --node-id ID")
+		fmt.Fprintln(fs.Output())
+		fs.PrintDefaults()
+	}
+	if code := parseFlagSet(fs, args); code >= 0 {
+		return code
+	}
+
+	entries, err := svc.ListChildrenProcesses(*nodeID)
+	if err != nil {
+		return printError(err, stderr)
+	}
+	return dumpJSON(entries, stdout, stderr)
+}
+
 func printTopicUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  vos topic <create|get|list|update|delete> [flags]")
@@ -631,7 +658,7 @@ func printTopicUsage(writer io.Writer) {
 
 func printNodeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
-	fmt.Fprintln(writer, "  vos node <create|get|list|children|move|delete|update|leaf|decompose> [flags]")
+	fmt.Fprintln(writer, "  vos node <create|get|list|children|children-processes|move|delete|update|leaf|decompose> [flags]")
 }
 
 func parseFlagSet(fs *flag.FlagSet, args []string) int {

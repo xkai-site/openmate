@@ -7,6 +7,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 from uuid import uuid4
 
 from openmate_pool.models import (
@@ -17,8 +18,10 @@ from openmate_pool.models import (
     OpenAIResponsesResponse,
 )
 from openmate_agent.service import AgentCapabilityService
+from openmate_agent.orchestration import ChatExecutionRunner, ResponsesExecutionRunner
 from openmate_agent.session_models import AppendSessionEventInput
-from openmate_agent.models import DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest
+from openmate_agent.models import CompactProcessInput, CompactRequest, DecomposeRequest, PriorityCandidate, PriorityLevel, PriorityRequest, ToolResult
+from openmate_agent.vos_cli import VosCommandError
 
 
 class AgentCapabilityServiceTests(unittest.TestCase):
@@ -67,11 +70,23 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(len(gateway.requests), 2)
         first = gateway.requests[0]
         self.assertIsNotNone(first.request.tools)
+        tool_names = [tool.get("name") for tool in (first.request.tools or []) if isinstance(tool, dict)]
+        self.assertEqual(tool_names, ["command", "network", "node_process", "read", "search", "tool_query", "write"])
         self.assertEqual(first.request.tool_choice, "auto")
         self.assertEqual(first.request.parallel_tool_calls, False)
         self.assertIsInstance(first.request.input, list)
         self.assertEqual(first.request.input[0]["role"], "user")
         self.assertIsInstance(first.request.input[0]["content"], str)
+        first_content = first.request.input[0]["content"]
+        self.assertIn('"SystemPrompt"', first_content)
+        self.assertIn('"UserPrompt"', first_content)
+        self.assertIn('"memory_update_confirmation_rule"', first_content)
+        self.assertIn('"user_memory"', first_content)
+        self.assertIn('"topic_memory"', first_content)
+        self.assertIn('"process_contexts"', first_content)
+        self.assertIn('"session_history"', first_content)
+        self.assertNotIn('"node_memory"', first_content)
+        self.assertNotIn('"global_index"', first_content)
         second = gateway.requests[1]
         self.assertEqual(second.request.previous_response_id, "resp-tool-1")
         self.assertIsInstance(second.request.input, list)
@@ -83,6 +98,42 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         self.assertEqual(session_writer.events[0].next_status.value, "waiting")
         self.assertEqual(session_writer.events[1].item_type, "function_call_output")
         self.assertEqual(session_writer.events[1].next_status.value, "active")
+        self.assertIn("assistant_delta", [event.item_type for event in session_writer.events])
+        self.assertEqual(session_writer.events[-1].item_type, "message")
+        self.assertEqual(session_writer.events[-1].next_status.value, "completed")
+
+    def test_execute_agent_runs_chat_tool_loop_and_writes_session_events(self) -> None:
+        gateway = _ChatToolLoopGateway()
+        session_writer = _SpySessionWriter()
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(
+                gateway=gateway,
+                session_writer=session_writer,
+                workspace_root=tmp,
+                execution_runner=ChatExecutionRunner(),
+            )
+            result = service.execute_agent(service.build("node-chat-tool-loop", session_id="session-chat-1"))
+
+        self.assertEqual(result, "chat-tool-loop-finished")
+        self.assertEqual(session_writer.ensure_calls, [("node-chat-tool-loop", "session-chat-1")])
+        self.assertEqual(len(gateway.requests), 2)
+        first = gateway.requests[0]
+        self.assertIsNone(first.request)
+        self.assertIsNotNone(first.chat_request)
+        self.assertEqual(first.chat_request.tool_choice, "auto")
+        self.assertNotIn("previous_response_id", first.chat_request.model_dump(mode="json", exclude_none=True))
+        self.assertGreaterEqual(len(first.chat_request.messages), 2)
+        self.assertEqual(first.chat_request.messages[0]["role"], "system")
+        self.assertEqual(first.chat_request.messages[1]["role"], "user")
+        second = gateway.requests[1]
+        self.assertIsNotNone(second.chat_request)
+        self.assertGreaterEqual(len(second.chat_request.messages), 4)
+        self.assertEqual(second.chat_request.messages[-1]["role"], "tool")
+        self.assertEqual(second.chat_request.messages[-1]["tool_call_id"], "chat-call-1")
+
+        self.assertGreaterEqual(len(session_writer.events), 4)
+        self.assertEqual(session_writer.events[0].item_type, "function_call")
+        self.assertEqual(session_writer.events[1].item_type, "function_call_output")
         self.assertIn("assistant_delta", [event.item_type for event in session_writer.events])
         self.assertEqual(session_writer.events[-1].item_type, "message")
         self.assertEqual(session_writer.events[-1].next_status.value, "completed")
@@ -133,7 +184,10 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             )
             service = AgentCapabilityService(workspace_root=tmp)
             result = service.execute_agent(service.build("node-real"))
-            self.assertIn("echo:node=node-real", result)
+            self.assertIn("echo:{", result)
+            self.assertIn('"SystemPrompt"', result)
+            self.assertIn('"UserPrompt"', result)
+            self.assertIn('"node_id": "node-real"', result)
 
     def test_priority_returns_true_for_non_empty_input(self) -> None:
         result = self.service.priority(["n1", "n2"], hint="hot-topic")
@@ -217,6 +271,61 @@ class AgentCapabilityServiceTests(unittest.TestCase):
         )
         self.assertEqual(response.status, "succeeded")
         self.assertEqual(len(response.priority_plan), 2)
+
+    def test_compact_agent_returns_summary_and_pending_proposal_candidates(self) -> None:
+        service = AgentCapabilityService(gateway=_CompactGateway())
+        response = service.compact_agent(
+            CompactRequest(
+                node_id="node-compact",
+                processes=[
+                    CompactProcessInput(
+                        process={"id": "proc-1", "name": "Implement", "summary": {"legacy": "keep"}},
+                        uncompacted_session_ids=["session-1"],
+                    )
+                ],
+                context={
+                    "session_history": [
+                        {
+                            "session": {"id": "session-1"},
+                            "events": [{"seq": 1, "item_type": "message", "payload_json": {"text": "done"}}],
+                        }
+                    ]
+                },
+            )
+        )
+        self.assertEqual(response.status, "succeeded")
+        self.assertEqual(len(response.compacted), 1)
+        compacted = response.compacted[0]
+        self.assertEqual(compacted.process_id, "proc-1")
+        self.assertEqual(compacted.summary["legacy"], "keep")
+        self.assertIn("key_findings", compacted.summary)
+        self.assertEqual(len(compacted.memory_proposals), 1)
+        self.assertTrue(compacted.memory_proposals[0].propose_update)
+        self.assertEqual(compacted.memory_proposals[0].entries[0].key, "team_norm")
+
+    def test_compact_agent_returns_failed_on_invalid_output(self) -> None:
+        service = AgentCapabilityService(gateway=_BadCompactGateway())
+        response = service.compact_agent(
+            CompactRequest(
+                node_id="node-compact-fail",
+                processes=[CompactProcessInput(process={"id": "proc-1", "name": "Implement"}, uncompacted_session_ids=["s1"])],
+                context={"session_history": [{"session": {"id": "s1"}, "events": [{"seq": 1}]}]},
+            )
+        )
+        self.assertEqual(response.status, "failed")
+        self.assertIn("compact output is not valid JSON", response.error or "")
+
+    def test_tool_output_payload_uses_structured_error_code(self) -> None:
+        failed = ToolResult(
+            tool_name="sibling_progress_board",
+            success=False,
+            error_code="VOS_NODE_NOT_FOUND",
+            error="node_not_found: node not found",
+        )
+        payload = ResponsesExecutionRunner._build_tool_output_payload(failed)
+        self.assertEqual(payload["ok"], False)
+        error = payload.get("error") or {}
+        self.assertEqual(error.get("code"), "VOS_NODE_NOT_FOUND")
 
     def test_run_tool_write_read_query(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -330,6 +439,233 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             )
             self.assertFalse(bad_result.success)
             self.assertIn("stdout is not valid json", bad_result.error or "")
+
+    def test_run_tool_tool_query_threshold_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-tool-query",
+                tool_name="tool_query",
+                payload={},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            payload = json.loads(result.output)
+            self.assertEqual(payload.get("mode"), "tools")
+            self.assertGreaterEqual(payload.get("remaining_count", 0), 1)
+
+    def test_run_tool_tool_query_threshold_tags_when_over_limit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _write_tool_registry(
+                Path(tmp),
+                tools=[
+                    {
+                        "name": "cmd_extra_1",
+                        "description": "extra command 1",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "command_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/exec",
+                    },
+                    {
+                        "name": "cmd_extra_2",
+                        "description": "extra command 2",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "command_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/exec",
+                    },
+                    {
+                        "name": "cmd_extra_3",
+                        "description": "extra command 3",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "command_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/exec",
+                    },
+                    {
+                        "name": "net_extra_1",
+                        "description": "extra network 1",
+                        "enabled": True,
+                        "is_default": False,
+                        "primary_tag": "network_ext",
+                        "secondary_tags": [],
+                        "backend": "builtin/query",
+                    },
+                ],
+            )
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-tool-query-tags",
+                tool_name="tool_query",
+                payload={},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            payload = json.loads(result.output)
+            self.assertEqual(payload.get("mode"), "tags")
+            self.assertGreater(payload.get("remaining_count", 0), 10)
+            self.assertIsInstance(payload.get("tags"), list)
+
+    def test_run_tool_tool_query_by_tag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-tool-query-tag",
+                tool_name="tool_query",
+                payload={"by_tag": "command"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertTrue(result.success)
+            payload = json.loads(result.output)
+            self.assertEqual(payload.get("mode"), "by_tag")
+            self.assertEqual(payload.get("tag"), "command")
+            self.assertGreaterEqual(payload.get("remaining_count", 0), 2)
+
+    def test_run_tool_node_process_get(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with (
+                mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime,
+                mock.patch("openmate_agent.tooling.tools.run_vos_cli") as vos_mock_tools,
+            ):
+                vos_mock_runtime.return_value = '{"id":"node-process","name":"ProcessNode","parent_id":"parent-1"}'
+                vos_mock_tools.return_value = '[{"id":"proc-1","name":"Design","status":"todo"}]'
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-process",
+                    tool_name="node_process",
+                    payload={"action": "get"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                payload = json.loads(result.output)
+                self.assertEqual(payload["node_id"], "node-process")
+                self.assertEqual(payload["action"], "get")
+                self.assertEqual(payload["processes"][0]["id"], "proc-1")
+
+    def test_run_tool_node_process_replace_requires_processes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            result = service.run_tool(
+                node_id="node-process",
+                tool_name="node_process",
+                payload={"action": "replace"},
+                is_safe=True,
+                is_read_only=True,
+            )
+            self.assertFalse(result.success)
+            self.assertIn("processes is required", result.error or "")
+
+    def test_run_tool_sibling_progress_board_root_returns_empty_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with (
+                mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime,
+                mock.patch("openmate_agent.tooling.tools.run_vos_cli") as vos_mock_tools,
+            ):
+                vos_mock_runtime.return_value = '{"id":"node-root","name":"Root","parent_id":null}'
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-root",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                payload = json.loads(result.output)
+                self.assertEqual(payload["node_id"], "node-root")
+                self.assertEqual(payload["parent_id"], None)
+                self.assertEqual(payload["items"], [])
+
+    def test_runtime_registry_auto_registers_sibling_progress_board(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = AgentCapabilityService(workspace_root=tmp)
+            _ = service
+            path = Path(tmp, ".openmate", "runtime", "tool_registry.json")
+            self.assertTrue(path.exists())
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            tools = payload.get("tools", [])
+            self.assertTrue(any(item.get("name") == "sibling_progress_board" for item in tools))
+
+    def test_run_tool_sibling_progress_board_non_root_returns_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with (
+                mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime,
+                mock.patch("openmate_agent.tooling.tools.run_vos_cli") as vos_mock_tools,
+            ):
+                vos_mock_runtime.return_value = '{"id":"node-1","name":"Child","parent_id":"parent-0"}'
+                vos_mock_tools.return_value = '[{"node_id":"node-1","node_name":"Child","processes":[{"id":"p-1","name":"Design","status":"done"}]}]'
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-1",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertTrue(result.success)
+                payload = json.loads(result.output)
+                self.assertEqual(payload["node_id"], "node-1")
+                self.assertEqual(payload["parent_id"], "parent-0")
+                self.assertEqual(len(payload["items"]), 1)
+                self.assertEqual(payload["items"][0]["node_name"], "Child")
+                self.assertEqual(payload["items"][0]["process_name"], "Design")
+
+    def test_run_tool_sibling_progress_board_invalid_node_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime:
+                vos_mock_runtime.side_effect = VosCommandError("node not found")
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-missing",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, "VOS_NODE_NOT_FOUND")
+                self.assertIn("node not found", result.error or "")
+                self.assertIn("node_not_found", result.error or "")
+
+    def test_run_tool_sibling_progress_board_vos_unavailable_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime:
+                vos_mock_runtime.side_effect = VosCommandError("vos CLI failed")
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-any",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, "VOS_UNAVAILABLE")
+                self.assertIn("vos_unavailable", result.error or "")
+
+    def test_run_tool_sibling_progress_board_invalid_payload_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with mock.patch("openmate_agent.vos_cli.run_vos_cli") as vos_mock_runtime:
+                vos_mock_runtime.return_value = "[]"
+                service = AgentCapabilityService(workspace_root=tmp)
+                result = service.run_tool(
+                    node_id="node-any",
+                    tool_name="sibling_progress_board",
+                    payload={},
+                    is_safe=True,
+                    is_read_only=True,
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, "VOS_INVALID_PAYLOAD")
+                self.assertIn("invalid_payload", result.error or "")
 
     def test_run_tool_requires_confirmation_when_flags_are_default(self) -> None:
         service = AgentCapabilityService()
@@ -507,6 +843,12 @@ class AgentCapabilityServiceTests(unittest.TestCase):
             self.assertNotIn("ignored.py", glob_result.output)
 
 
+def _write_tool_registry(workspace_root: Path, tools: list[dict[str, object]]) -> None:
+    path = workspace_root / ".openmate" / "runtime" / "tool_registry.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "tools": tools}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 class _EchoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         from urllib.parse import parse_qs, urlparse
@@ -620,6 +962,56 @@ class _ToolLoopGateway:
             status=InvocationStatus.SUCCESS,
             response=OpenAIResponsesResponse.model_validate(payload),
             output_text="tool-loop-finished",
+            timing=InvocationTiming(),
+        )
+
+
+class _ChatToolLoopGateway:
+    def __init__(self) -> None:
+        self.requests: list[InvokeRequest] = []
+
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            payload = {
+                "id": "chat-resp-tool-1",
+                "object": "response",
+                "model": "gpt-4.1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "chat-item-call-1",
+                        "type": "function_call",
+                        "call_id": "chat-call-1",
+                        "name": "exec",
+                        "arguments": json.dumps({"command": [sys.executable, "-c", "print('chat-tool-loop-ok')"]}),
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            return InvokeResponse(
+                invocation_id=str(uuid4()),
+                request_id=request.request_id,
+                node_id=request.node_id,
+                status=InvocationStatus.SUCCESS,
+                response=OpenAIResponsesResponse.model_validate(payload),
+                output_text=None,
+                timing=InvocationTiming(),
+            )
+
+        payload = _response_payload_for_text("chat-tool-loop-finished")
+        payload["id"] = "chat-resp-tool-2"
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=OpenAIResponsesResponse.model_validate(payload),
+            output_text="chat-tool-loop-finished",
             timing=InvocationTiming(),
         )
 
@@ -740,6 +1132,50 @@ class _EmptyDecomposeGateway:
         )
 
 
+class _CompactGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        output = json.dumps(
+            {
+                "summary": {
+                    "key_findings": "implementation completed",
+                    "decisions": "use strict typing",
+                },
+                "memory_proposal": {
+                    "propose_update": True,
+                    "entries": [{"key": "team_norm", "value": "confirm before writing topic_memory"}],
+                    "evidence": ["explicitly repeated by user"],
+                    "confidence": 0.92,
+                    "reason": "stable cross-turn consensus",
+                },
+            },
+            ensure_ascii=False,
+        )
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=None,
+            output_text=output,
+            timing=InvocationTiming(),
+        )
+
+
+class _BadCompactGateway:
+    def invoke(self, request: InvokeRequest) -> InvokeResponse:
+        _ = request
+        return InvokeResponse(
+            invocation_id=str(uuid4()),
+            request_id=request.request_id,
+            node_id=request.node_id,
+            status=InvocationStatus.SUCCESS,
+            response=None,
+            output_text="not-json",
+            timing=InvocationTiming(),
+        )
+
+
 class _FakeGateway:
     def invoke(self, request: InvokeRequest) -> InvokeResponse:
         return InvokeResponse(
@@ -817,4 +1253,3 @@ def _extract_input_text(value: object) -> str:
 
 if __name__ == "__main__":
     unittest.main()
-

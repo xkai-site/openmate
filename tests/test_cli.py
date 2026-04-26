@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -170,6 +171,36 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(tool_help.returncode, 0)
         self.assertIn("exec", tool_help.stdout)
         self.assertIn("patch", tool_help.stdout)
+        self.assertIn("node_process", tool_help.stdout)
+        self.assertIn("sibling_progress_board", tool_help.stdout)
+        tools_help = self._run("tools", "--help")
+        self.assertEqual(tools_help.returncode, 0)
+        self.assertIn("register", tools_help.stdout)
+        self.assertIn("validate", tools_help.stdout)
+
+    def test_tool_node_process_help(self) -> None:
+        result = self._run("tool", "node_process", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--action", result.stdout)
+        self.assertIn("--processes", result.stdout)
+
+    def test_tool_sibling_progress_board_help(self) -> None:
+        result = self._run("tool", "sibling_progress_board", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Node identifier", result.stdout)
+
+    def test_tool_node_process_replace_requires_processes(self) -> None:
+        result = self._run(
+            "tool",
+            "node_process",
+            "node-50",
+            "--action",
+            "replace",
+            "--is-safe",
+            "--is-read-only",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--processes is required", result.stdout)
 
     def test_tool_write_and_read(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -504,6 +535,128 @@ class AgentCliTests(unittest.TestCase):
             self.assertEqual(glob_result.returncode, 0)
             self.assertIn("src", glob_result.stdout)
             self.assertNotIn("ignored.py", glob_result.stdout)
+
+    def test_tools_registry_lifecycle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            validate_result = self._run("tools", "validate", cwd=tmp)
+            self.assertEqual(validate_result.returncode, 0)
+            self.assertIn('"success": true', validate_result.stdout.lower())
+
+            register_result = self._run(
+                "tools",
+                "register",
+                "--name",
+                "custom_exec_tool",
+                "--description",
+                "custom exec",
+                "--primary-tag",
+                "command_ext",
+                "--backend",
+                "builtin/exec",
+                "--enabled",
+                cwd=tmp,
+            )
+            self.assertEqual(register_result.returncode, 0, msg=register_result.stdout + register_result.stderr)
+
+            list_result = self._run("tools", "list", "--tag", "command_ext", cwd=tmp)
+            self.assertEqual(list_result.returncode, 0)
+            self.assertIn("custom_exec_tool", list_result.stdout)
+
+            disable_result = self._run("tools", "disable", "--name", "custom_exec_tool", cwd=tmp)
+            self.assertEqual(disable_result.returncode, 0)
+
+            enable_result = self._run("tools", "enable", "--name", "custom_exec_tool", cwd=tmp)
+            self.assertEqual(enable_result.returncode, 0)
+
+            update_result = self._run(
+                "tools",
+                "update",
+                "--name",
+                "custom_exec_tool",
+                "--description",
+                "custom exec updated",
+                cwd=tmp,
+            )
+            self.assertEqual(update_result.returncode, 0)
+
+    def test_tools_monitor_help(self) -> None:
+        result = self._run("tools", "monitor", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("list", result.stdout)
+        self.assertIn("summary", result.stdout)
+        self.assertIn("Examples", result.stdout)
+
+    def test_tools_monitor_list_and_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            monitor_file = Path(tmp) / ".openmate" / "runtime" / "tool_monitor.jsonl"
+            monitor_file.parent.mkdir(parents=True, exist_ok=True)
+            monitor_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event_id": "1",
+                                "phase": "before",
+                                "ts": now,
+                                "node_id": "node-1",
+                                "tool_name": "read",
+                                "source": "cli",
+                                "is_safe": True,
+                                "is_read_only": True,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "event_id": "2",
+                                "phase": "after",
+                                "ts": now,
+                                "node_id": "node-1",
+                                "tool_name": "read",
+                                "source": "cli",
+                                "is_safe": True,
+                                "is_read_only": True,
+                                "success": True,
+                                "duration_ms": 12,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            list_result = self._run(
+                "tools",
+                "monitor",
+                "list",
+                "--tool-name",
+                "read",
+                "--source",
+                "cli",
+                "--success",
+                "true",
+                cwd=tmp,
+            )
+            self.assertEqual(list_result.returncode, 0)
+            self.assertIn('"events"', list_result.stdout)
+            self.assertIn('"tool_name": "read"', list_result.stdout)
+
+            summary_result = self._run(
+                "tools",
+                "monitor",
+                "summary",
+                "--tool-name",
+                "read",
+                "--source",
+                "cli",
+                "--window-minutes",
+                "120",
+                cwd=tmp,
+            )
+            self.assertEqual(summary_result.returncode, 0)
+            self.assertIn('"summary"', summary_result.stdout)
+            self.assertIn('"p95_duration_ms"', summary_result.stdout)
 
 
 class _EchoHandler(BaseHTTPRequestHandler):

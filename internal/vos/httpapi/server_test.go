@@ -128,6 +128,119 @@ func TestServerV1NodeCreateWithoutTopicCreatesIndependentTopic(t *testing.T) {
 	}
 }
 
+func TestServerV1TopicMemoryProposalListAndApply(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	if _, _, err := server.service.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-memory",
+		Name:    "Topic Memory",
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := server.service.CreateNode(service.CreateNodeInput{
+		TopicID: "topic-memory",
+		NodeID:  "node-memory",
+		Name:    "Node Memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := server.service.UpdateNode(service.UpdateNodeInput{
+		NodeID: node.ID,
+		Process: []domain.ProcessItem{
+			{ID: "proc-memory", Name: "P", Status: domain.ProcessStatusDone},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateNode(process) error = %v", err)
+	}
+	node, err = server.service.GetNode(node.ID)
+	if err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	processes, err := server.service.ListNodeProcesses(node.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
+	}
+	processes[0].Summary = map[string]any{"k": "v"}
+	_, created, err := server.service.ApplyCompactionResults(service.ApplyCompactionResultsInput{
+		NodeID:          node.ID,
+		ExpectedVersion: &node.Version,
+		Processes:       processes,
+		Compacted: []service.CompactedProcess{
+			{
+				ProcessID: "proc-memory",
+				Name:      "P",
+				Summary:   map[string]any{"k": "v"},
+				MemoryProposals: []service.MemoryProposalCandidate{
+					{
+						ProposeUpdate: true,
+						Entries:       []service.MemoryProposalEntry{{Key: "team_rule", Value: "must confirm before write"}},
+						Evidence:      []string{"repeated in conversation"},
+						Confidence:    0.9,
+						Reason:        "stable consensus",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyCompactionResults() error = %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("len(created) = %d, want 1", len(created))
+	}
+
+	listEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/topics/topic-memory/memory/proposals",
+		nil,
+		http.StatusOK,
+	)
+	listed := []domain.MemoryProposal{}
+	mustDecodeEnvelopeData(t, listEnv, &listed)
+	if len(listed) != 1 {
+		t.Fatalf("len(listed proposals) = %d, want 1", len(listed))
+	}
+	if listed[0].Status != domain.MemoryProposalStatusPending {
+		t.Fatalf("listed status = %s, want pending", listed[0].Status)
+	}
+
+	applyEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodPost,
+		testServer.URL+"/api/v1/topics/topic-memory/memory/apply",
+		map[string]any{
+			"proposal_id": created[0].ProposalID,
+			"decision":    "confirm",
+		},
+		http.StatusOK,
+	)
+	applied := domain.MemoryProposal{}
+	mustDecodeEnvelopeData(t, applyEnv, &applied)
+	if applied.Status != domain.MemoryProposalStatusApplied {
+		t.Fatalf("applied status = %s, want applied", applied.Status)
+	}
+
+	topic, err := server.service.GetTopic("topic-memory")
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	topicMemory, ok := topic.Metadata["topic_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("topic_memory = %T, want map[string]any", topic.Metadata["topic_memory"])
+	}
+	if topicMemory["team_rule"] != "must confirm before write" {
+		t.Fatalf("topic_memory = %v, want merged key", topicMemory)
+	}
+}
+
 func TestServerV1TreeRootsReturnsDisplayRoots(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {
@@ -715,6 +828,176 @@ func TestServerV1Health(t *testing.T) {
 	}
 }
 
+func TestServerV1ToolMonitorEventsFiltersAndEnvelope(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	writeToolMonitorJSONL(
+		t,
+		server.workspace,
+		[]map[string]any{
+			{
+				"event_id":     "evt-1",
+				"phase":        "before",
+				"ts":           time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339Nano),
+				"node_id":      "node-a",
+				"tool_name":    "read",
+				"source":       "cli",
+				"is_safe":      true,
+				"is_read_only": true,
+			},
+			{
+				"event_id":     "evt-2",
+				"phase":        "after",
+				"ts":           time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				"node_id":      "node-a",
+				"tool_name":    "read",
+				"source":       "cli",
+				"is_safe":      true,
+				"is_read_only": true,
+				"success":      true,
+				"duration_ms":  18,
+			},
+			{
+				"event_id":     "evt-3",
+				"phase":        "after",
+				"ts":           time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				"node_id":      "node-b",
+				"tool_name":    "write",
+				"source":       "http",
+				"is_safe":      true,
+				"is_read_only": false,
+				"success":      false,
+				"duration_ms":  33,
+			},
+		},
+	)
+
+	envelope := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/tools/monitor/events?tool_name=read&source=cli&success=true&limit=1",
+		nil,
+		http.StatusOK,
+	)
+	if envelope.Code != http.StatusOK || envelope.Message != "ok" {
+		t.Fatalf("envelope = %+v, want code=200 message=ok", envelope)
+	}
+	events := []toolMonitorEvent{}
+	mustDecodeEnvelopeData(t, envelope, &events)
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1", len(events))
+	}
+	if events[0].ToolName != "read" || events[0].Source != "cli" {
+		t.Fatalf("event = %+v, want read/cli", events[0])
+	}
+	if events[0].Success == nil || !*events[0].Success {
+		t.Fatalf("event success = %+v, want true", events[0].Success)
+	}
+}
+
+func TestServerV1ToolMonitorSummaryAndInvalidParams(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	writeToolMonitorJSONL(
+		t,
+		server.workspace,
+		[]map[string]any{
+			{
+				"event_id":     "evt-s1",
+				"phase":        "after",
+				"ts":           time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				"node_id":      "node-a",
+				"tool_name":    "read",
+				"source":       "cli",
+				"is_safe":      true,
+				"is_read_only": true,
+				"success":      true,
+				"duration_ms":  10,
+			},
+			{
+				"event_id":     "evt-s2",
+				"phase":        "after",
+				"ts":           time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				"node_id":      "node-a",
+				"tool_name":    "read",
+				"source":       "cli",
+				"is_safe":      true,
+				"is_read_only": true,
+				"success":      true,
+				"duration_ms":  30,
+			},
+			{
+				"event_id":     "evt-s3",
+				"phase":        "after",
+				"ts":           time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano),
+				"node_id":      "node-a",
+				"tool_name":    "read",
+				"source":       "cli",
+				"is_safe":      true,
+				"is_read_only": true,
+				"success":      false,
+				"duration_ms":  40,
+			},
+		},
+	)
+
+	invalidEvents := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/tools/monitor/events?success=not-bool",
+		nil,
+		http.StatusBadRequest,
+	)
+	if invalidEvents.Code != http.StatusBadRequest {
+		t.Fatalf("invalid events code = %d, want 400", invalidEvents.Code)
+	}
+
+	invalidSummary := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/tools/monitor/summary?window_minutes=0",
+		nil,
+		http.StatusBadRequest,
+	)
+	if invalidSummary.Code != http.StatusBadRequest {
+		t.Fatalf("invalid summary code = %d, want 400", invalidSummary.Code)
+	}
+
+	okSummary := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodGet,
+		testServer.URL+"/api/v1/tools/monitor/summary?tool_name=read&source=cli&window_minutes=120",
+		nil,
+		http.StatusOK,
+	)
+	rows := []toolMonitorSummaryItem{}
+	mustDecodeEnvelopeData(t, okSummary, &rows)
+	if len(rows) != 1 {
+		t.Fatalf("len(summary rows) = %d, want 1", len(rows))
+	}
+	if rows[0].ToolName != "read" {
+		t.Fatalf("tool_name = %q, want read", rows[0].ToolName)
+	}
+	if rows[0].Count != 3 {
+		t.Fatalf("count = %d, want 3", rows[0].Count)
+	}
+	if rows[0].SuccessRate <= 0 || rows[0].AvgDurationMS <= 0 || rows[0].P95DurationMS <= 0 {
+		t.Fatalf("summary metrics should be positive: %+v", rows[0])
+	}
+}
+
 type testProvider struct {
 	invoke func(ctx context.Context, reservation poolgateway.InvocationReservation, request poolgateway.InvokeRequest) (poolgateway.ProviderInvokeResult, error)
 }
@@ -935,4 +1218,24 @@ func TestServerV1ChatStreamAttachExistingInvocation(t *testing.T) {
 func intPtr(value int) *int {
 	result := value
 	return &result
+}
+
+func writeToolMonitorJSONL(t *testing.T, workspaceRoot string, rows []map[string]any) {
+	t.Helper()
+	path := filepath.Join(workspaceRoot, filepath.FromSlash(".openmate/runtime/tool_monitor.jsonl"))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir tool monitor dir error = %v", err)
+	}
+	builder := strings.Builder{}
+	for _, row := range rows {
+		encoded, err := json.Marshal(row)
+		if err != nil {
+			t.Fatalf("marshal monitor row error = %v", err)
+		}
+		builder.Write(encoded)
+		builder.WriteString("\n")
+	}
+	if err := os.WriteFile(path, []byte(builder.String()), 0o644); err != nil {
+		t.Fatalf("write tool monitor file error = %v", err)
+	}
 }

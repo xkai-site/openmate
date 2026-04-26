@@ -3,6 +3,7 @@ package service_test
 import (
 	"testing"
 
+	"vos/internal/vos/domain"
 	"vos/internal/vos/service"
 )
 
@@ -186,5 +187,54 @@ func TestGetContextSnapshotRequiresSessionStore(t *testing.T) {
 	svc := newTestService(t)
 	if _, err := svc.GetContextSnapshot("node-1"); err == nil {
 		t.Fatalf("GetContextSnapshot() error = nil, want session store error")
+	}
+}
+
+func TestGetContextSnapshotIncludesProcessSummaryContext(t *testing.T) {
+	svc := newTestServiceWithSessions(t)
+	_, _, err := svc.CreateTopic(service.CreateTopicInput{
+		TopicID: "topic-ps",
+		Name:    "Topic Process Summary",
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := svc.CreateNode(service.CreateNodeInput{
+		TopicID: "topic-ps",
+		NodeID:  "node-ps",
+		Name:    "Node PS",
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := svc.UpdateNode(service.UpdateNodeInput{
+		NodeID: node.ID,
+		Process: []domain.ProcessItem{
+			{
+				ID:      "proc-ps",
+				Name:    "Summarized Process",
+				Status:  domain.ProcessStatusDone,
+				Summary: map[string]any{"key_findings": "aligned"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateNode(process) error = %v", err)
+	}
+	if _, err := svc.CreateSession(service.CreateSessionInput{
+		NodeID:    node.ID,
+		SessionID: "session-ps",
+	}); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	snapshot, err := svc.GetContextSnapshot(node.ID)
+	if err != nil {
+		t.Fatalf("GetContextSnapshot() error = %v", err)
+	}
+	if len(snapshot.ProcessContexts) != 1 {
+		t.Fatalf("len(ProcessContexts) = %d, want 1", len(snapshot.ProcessContexts))
+	}
+	if snapshot.ProcessContexts[0].Summary["key_findings"] != "aligned" {
+		t.Fatalf("ProcessContexts[0].Summary = %v, want key_findings=aligned", snapshot.ProcessContexts[0].Summary)
 	}
 }

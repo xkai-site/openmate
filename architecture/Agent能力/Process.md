@@ -1,4 +1,61 @@
-# Process 记录
+﻿# Process 记录
+## 2026-04-25 Process 工具能力新增（node_process + sibling_progress_board）
+1. `openmate_agent` 新增 `node_process` 默认工具（内建后端 `builtin/node_process`），支持：
+   - `action=get`：读取当前 node 的 process 列表。
+   - `action=replace`：按传入 `processes` 全量替换当前 node process（可选 `expected_version`）。
+2. 新增 `sibling_progress_board` 非默认工具（内建后端 `builtin/sibling_progress_board`），用于读取当前 node 同级进度，输出项包含 `node_id / node_name / process_id / process_name`。
+3. 根节点行为约束：当前 node 无 `parent_id` 时，`sibling_progress_board` 返回 `items: []`。
+4. CLI 已扩展并支持帮助查询：
+   - `openmate-agent tool node_process --help`
+   - `openmate-agent tool sibling_progress_board --help`
+5. 运行时注册初始化：`load_tool_registry` 会自动确保 `.openmate/runtime/tool_registry.json` 至少包含 `sibling_progress_board` 注册项（`enabled=true`、`is_default=false`、`primary_tag=process`）。
+6. 本轮按要求仅完成实现与用例落地，不执行测试。
+
+## 2026-04-25 Tool Registry + Default-Only Injection
+1. Agent tool runtime migrated to registry-driven architecture with JSON persistence (`.openmate/runtime/tool_registry.json`).
+2. Default model-injected tools fixed to six: `read`, `write`, `search`, `command`, `network`, `tool_query`.
+3. Non-default tools (`edit/patch/grep/glob/exec/shell/query`) moved to extension set and discovered on demand via `tool_query`.
+4. `tool_query` now supports threshold mode (10): direct tool details when `<=10`, tag summary when `>10`, plus `by_tag` and `keyword` drill-down.
+5. `ToolName Literal` static constraint removed; runtime now validates tools by registry metadata.
+6. Permission policy changed from hardcoded whitelist to registry metadata + command risk rules.
+7. CLI expanded with `openmate-agent tools list/register/update/enable/disable/validate` and `--help` coverage.
+8. Verified by tests:
+   - `.\.venv\Scripts\python -m unittest tests.test_service tests.test_cli tests.test_pipeline_orchestration`
+   - `.\.venv\Scripts\python -m unittest tests.test_worker tests.test_context_injector`
+
+## 2026-04-25 Chat 独立执行链路解耦（Responses 保持不变）
+
+1. `worker` 请求模型新增 `agent_spec.api_id`（可选），并在执行前基于 `model.json` 解析目标 `api_mode`：
+   - 单 enabled API：允许自动选择；
+   - 多 enabled API 且未传 `api_id`：直接失败并提示必须传 `agent_spec.api_id`；
+   - `api_id` 命中后由该 API 唯一决定 `api_mode`（`responses/chat_completions`）。
+2. 执行编排新增 `ChatExecutionRunner`，与 `ResponsesExecutionRunner` 独立：
+   - Chat 走原生 `chat_request` + 本地 `messages` 窗口回环；
+   - 不使用 `previous_response_id`；
+   - 工具回环按 Chat 语义维护 `assistant(tool_calls)` + `tool(tool_call_id)`。
+3. 在 `ChatExecutionRunner` 内新增 `WindowBuilder` 抽象与默认实现 `DefaultChatWindowBuilder`，本次先落“最小可用回环”窗口，后续可替换策略而不改 runner 主流程。
+4. `ResponsesExecutionRunner` 行为保持原样，仅补充 `route_policy.api_id` 透传，确保多模型路由确定性。
+5. 会话事件语义保持兼容：`function_call/function_call_output/message/failed` 路径与既有 VOS 消费口径不变。
+6. 回归结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_worker tests.test_pool -v` 通过（41 项）。
+
+## 2026-04-24 执行链路注入封装重构（单消息内 SystemPrompt + UserPrompt）
+
+1. 执行链路保持单条 `OpenAIResponsesRequest.input`（`role=user`）不变，不改为 `system/user` 双消息。
+2. `VosContextInjector` 输出上下文字段改为：
+   - `node_id`
+   - `user_memory`
+   - `topic_memory`
+   - `process_contexts`
+   - `session_history`
+   - 不再注入 `node_memory`、`global_index` 到执行上下文载荷。
+3. `ExecutionAgentService` 新增执行态封装：
+   - 在单条请求内容中构造第一段 `SystemPrompt`（预设提示词 + 工具管理 + skill 管理 + 记忆更新确认规则）。
+   - 同一内容中构造 `UserPrompt`（`user_memory/topic_memory/process_contexts/session_history`，其中主要体量为 `session_history`）。
+4. 兼容处理：执行封装支持读取旧 `ContextBundle.payload` 结构并转换到新结构，避免存量注入格式导致执行失败。
+5. 本轮范围仅影响执行链路；`decompose` 维持现有注入路径不变。
+6. 验证结果：
+   - `.\.venv\Scripts\python.exe -m unittest tests.test_context_injector tests.test_service tests.test_pipeline_orchestration -v` 通过（33 项）。
 
 ## 2026-04-09
 
@@ -573,3 +630,38 @@
 6. 回归结果：
    - `.\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_cli -v` 通过
    - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v` 通过（69 项）
+
+## 2026-04-24 Compact Agent 输出契约升级（summary + memory_proposal）
+
+1. `openmate_agent` compact 输出从单一 `memory` 改为双输出：
+   - `summary`：Process 摘要
+   - `memory_proposals`：topic_memory 候选提案（候选，不直接落库）
+2. 模型变更：
+   - `openmate_agent/models.py`
+     - `CompactedProcess.memory -> summary`
+     - 新增 `process_id` 与 `memory_proposals` 结构
+3. 解析与注入链路变更：
+   - `openmate_agent/agent_services.py`：compact prompt/解析改为结构化 JSON 双动作输出
+   - `openmate_agent/context_reader.py`、`openmate_agent/context_injector.py`：`process_contexts.memory -> process_contexts.summary`
+4. 新增测试：
+   - `tests/test_service.py`：compact 成功输出 summary+proposal、异常输出失败路径
+5. 回归：`python -m unittest discover -s tests` 通过（71 项）。
+
+
+## 2026-04-26 Tool Monitor 最小可插拔增强（AOP日志 + CLI monitor）
+
+1. `ToolRuntimeExecutor.run_tool` 已新增监控前后切面：
+   - `before`：记录 `node_id/tool_name/source/is_safe/is_read_only/request_id/ts`。
+   - `after`：统一覆盖 success/failure/blocked/invalid/上下文错误路径，记录 `success/error_code/duration_ms/ts`。
+2. 新增监控模块 `openmate_agent/tool_monitor.py`：
+   - `ToolMonitorEvent`（Pydantic 强类型）
+   - `ToolMonitorStore`（append-only JSONL）
+   - `ToolMonitorService`（list/summary 聚合，含 p95）
+   - 持久化文件：`.openmate/runtime/tool_monitor.jsonl`（UTF-8 JSONL）。
+3. 监控写入降级策略已落地：写失败不影响工具主流程（runtime 内部静默容错）。
+4. CLI 已新增 `openmate-agent tools monitor` 分组：
+   - `openmate-agent tools monitor list [--tool-name] [--node-id] [--source] [--success true|false] [--limit]`
+   - `openmate-agent tools monitor summary [--tool-name] [--node-id] [--source] [--success true|false] [--limit] [--window-minutes]`
+   - `--help` 已补参数说明与示例。
+5. 回归结果：
+   - `\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。

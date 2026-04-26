@@ -142,7 +142,7 @@ func (service *Service) CreateTopic(input CreateTopicInput) (*domain.Topic, *dom
 		Memory:      nil,
 		Input:       map[string]any{},
 		Output:      map[string]any{},
-		Process:     []domain.ProcessItem{},
+		ProcessIDs:  []string{},
 		Status:      domain.NodeStatusReady,
 		Version:     1,
 		CreatedAt:   now,
@@ -371,7 +371,7 @@ func (service *Service) CreateNode(input CreateNodeInput) (*domain.Node, error) 
 		Memory:      cloneMapNil(input.Memory),
 		Input:       cloneMap(input.Input),
 		Output:      cloneMap(input.Output),
-		Process:     []domain.ProcessItem{},
+		ProcessIDs:  []string{},
 		Status:      input.Status,
 		Version:     1,
 		CreatedAt:   now,
@@ -433,6 +433,18 @@ func (service *Service) GetNode(nodeID string) (*domain.Node, error) {
 	return cloneNode(node), nil
 }
 
+func (service *Service) ListNodeProcesses(nodeID string) ([]domain.ProcessItem, error) {
+	state, err := service.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	node, err := requireNode(state, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	return resolveNodeProcesses(state, node), nil
+}
+
 func (service *Service) ListChildren(nodeID string) ([]*domain.Node, error) {
 	state, err := service.store.Load()
 	if err != nil {
@@ -452,6 +464,38 @@ func (service *Service) ListChildren(nodeID string) ([]*domain.Node, error) {
 		children = append(children, cloneNode(child))
 	}
 	return children, nil
+}
+
+// ChildProcessEntry holds one child node's id/name and its resolved process items.
+type ChildProcessEntry struct {
+	NodeID    string                `json:"node_id"`
+	NodeName  string                `json:"node_name"`
+	Processes []domain.ProcessItem  `json:"processes"`
+}
+
+func (service *Service) ListChildrenProcesses(parentID string) ([]ChildProcessEntry, error) {
+	state, err := service.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	parent, err := requireNode(state, parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]ChildProcessEntry, 0, len(parent.ChildrenIDs))
+	for _, childID := range parent.ChildrenIDs {
+		child, err := requireNode(state, childID)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, ChildProcessEntry{
+			NodeID:    child.ID,
+			NodeName:  child.Name,
+			Processes: resolveNodeProcesses(state, child),
+		})
+	}
+	return entries, nil
 }
 
 func (service *Service) MoveNode(nodeID, newParentID string) (*domain.Node, error) {
@@ -618,7 +662,9 @@ func (service *Service) UpdateNode(input UpdateNodeInput) (*domain.Node, error) 
 		node.Session = append(node.Session, input.SessionIDs...)
 	}
 	if input.Process != nil {
-		node.Process = cloneProcessItems(input.Process)
+		if err := syncNodeProcesses(state, node, input.Process); err != nil {
+			return nil, err
+		}
 	}
 
 	touchNode(node)
@@ -812,7 +858,7 @@ func cloneNode(node *domain.Node) *domain.Node {
 	cloned.Memory = cloneMapNil(node.Memory)
 	cloned.Input = cloneMap(node.Input)
 	cloned.Output = cloneMap(node.Output)
-	cloned.Process = cloneProcessItems(node.Process)
+	cloned.ProcessIDs = cloneStrings(node.ProcessIDs)
 	return &cloned
 }
 
@@ -827,10 +873,81 @@ func cloneProcessItems(raw []domain.ProcessItem) []domain.ProcessItem {
 			sr := *item.SessionRange
 			cloned[i].SessionRange = &sr
 		}
-		cloned[i].Memory = cloneMapNil(item.Memory)
+		cloned[i].Summary = cloneMapNil(item.Summary)
 		cloned[i].CompactedSessionIDs = cloneStrings(item.CompactedSessionIDs)
 	}
 	return cloned
+}
+
+func resolveNodeProcesses(state domain.VfsState, node *domain.Node) []domain.ProcessItem {
+	if node == nil || len(node.ProcessIDs) == 0 {
+		return []domain.ProcessItem{}
+	}
+	processes := make([]domain.ProcessItem, 0, len(node.ProcessIDs))
+	for _, processID := range node.ProcessIDs {
+		raw, ok := state.Processes[processID]
+		if !ok || raw == nil {
+			continue
+		}
+		item := *raw
+		if item.SessionRange != nil {
+			sr := *item.SessionRange
+			item.SessionRange = &sr
+		}
+		item.Summary = cloneMapNil(item.Summary)
+		item.CompactedSessionIDs = cloneStrings(item.CompactedSessionIDs)
+		processes = append(processes, item)
+	}
+	return processes
+}
+
+func syncNodeProcesses(state domain.VfsState, node *domain.Node, input []domain.ProcessItem) error {
+	if node == nil {
+		return domain.ValidationError{Message: "node is required"}
+	}
+	if state.Processes == nil {
+		state.Processes = map[string]*domain.ProcessItem{}
+	}
+
+	nextIDs := make([]string, 0, len(input))
+	nextSet := make(map[string]struct{}, len(input))
+	for _, raw := range input {
+		item := raw
+		item.Normalize(node.UpdatedAt, node.CreatedAt)
+		if item.ID == "" {
+			item.ID = domain.NewID()
+		}
+		if _, exists := nextSet[item.ID]; exists {
+			return domain.ValidationError{Message: "duplicate process id in update payload"}
+		}
+		nextSet[item.ID] = struct{}{}
+		nextIDs = append(nextIDs, item.ID)
+		state.Processes[item.ID] = &domain.ProcessItem{
+			ID:                  item.ID,
+			Name:                item.Name,
+			Status:              item.Status,
+			SessionRange:        cloneSessionRange(item.SessionRange),
+			Summary:             cloneMapNil(item.Summary),
+			CompactedSessionIDs: cloneStrings(item.CompactedSessionIDs),
+			Timestamp:           item.Timestamp,
+		}
+	}
+
+	for _, oldID := range node.ProcessIDs {
+		if _, keep := nextSet[oldID]; !keep {
+			delete(state.Processes, oldID)
+		}
+	}
+	node.ProcessIDs = nextIDs
+	return nil
+}
+
+func cloneSessionRange(raw *domain.SessionRange) *domain.SessionRange {
+	if raw == nil {
+		return nil
+	}
+	cloned := *raw
+	return &cloned
 }
 
 func cloneStringPtr(raw *string) *string {

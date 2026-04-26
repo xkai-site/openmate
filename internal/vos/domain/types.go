@@ -32,12 +32,39 @@ type SessionRange struct {
 }
 
 type ProcessItem struct {
-	Name               string         `json:"name"`
-	Status             ProcessStatus  `json:"status"`
-	SessionRange       *SessionRange  `json:"session_range,omitempty"`
-	Memory             map[string]any `json:"memory,omitempty"`
-	CompactedSessionIDs []string      `json:"compacted_session_ids,omitempty"`
-	Timestamp          time.Time      `json:"timestamp"`
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	Status              ProcessStatus  `json:"status"`
+	SessionRange        *SessionRange  `json:"session_range,omitempty"`
+	Summary             map[string]any `json:"summary,omitempty"`
+	CompactedSessionIDs []string       `json:"compacted_session_ids,omitempty"`
+	Timestamp           time.Time      `json:"timestamp"`
+}
+
+type MemoryProposalStatus string
+
+const (
+	MemoryProposalStatusPending  MemoryProposalStatus = "pending"
+	MemoryProposalStatusApplied  MemoryProposalStatus = "applied"
+	MemoryProposalStatusRejected MemoryProposalStatus = "rejected"
+)
+
+type MemoryProposalEntry struct {
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+}
+
+type MemoryProposal struct {
+	ProposalID string                `json:"proposal_id"`
+	TopicID    string                `json:"topic_id"`
+	NodeID     string                `json:"node_id"`
+	ProcessID  string                `json:"process_id"`
+	Status     MemoryProposalStatus  `json:"status"`
+	CreatedAt  time.Time             `json:"created_at"`
+	Entries    []MemoryProposalEntry `json:"entries"`
+	Evidence   []string              `json:"evidence,omitempty"`
+	Confidence float64               `json:"confidence,omitempty"`
+	Reason     string                `json:"reason,omitempty"`
 }
 
 func (sr *SessionRange) Closed() bool {
@@ -56,32 +83,34 @@ type Topic struct {
 }
 
 type Node struct {
-	ID          string         `json:"id"`
-	TopicID     string         `json:"topic_id"`
-	Name        string         `json:"name"`
-	Description *string        `json:"description"`
-	ParentID    *string        `json:"parent_id"`
-	ChildrenIDs []string       `json:"children_ids"`
-	Session     []string       `json:"session"`
-	Memory      map[string]any `json:"memory"`
-	Input       map[string]any `json:"input"`
-	Output      map[string]any `json:"output"`
-	Process     []ProcessItem  `json:"process"`
-	Status      NodeStatus     `json:"status"`
-	Version     int            `json:"version"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID            string         `json:"id"`
+	TopicID       string         `json:"topic_id"`
+	Name          string         `json:"name"`
+	Description   *string        `json:"description"`
+	ParentID      *string        `json:"parent_id"`
+	ChildrenIDs   []string       `json:"children_ids"`
+	Session       []string       `json:"session"`
+	Memory        map[string]any `json:"memory"`
+	Input         map[string]any `json:"input"`
+	Output        map[string]any `json:"output"`
+	ProcessIDs    []string       `json:"process_ids"`
+	Status        NodeStatus     `json:"status"`
+	Version       int            `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 type VfsState struct {
-	Topics map[string]*Topic `json:"topics"`
-	Nodes  map[string]*Node  `json:"nodes"`
+	Topics    map[string]*Topic       `json:"topics"`
+	Nodes     map[string]*Node        `json:"nodes"`
+	Processes map[string]*ProcessItem `json:"processes"`
 }
 
 func NewVfsState() VfsState {
 	return VfsState{
-		Topics: map[string]*Topic{},
-		Nodes:  map[string]*Node{},
+		Topics:    map[string]*Topic{},
+		Nodes:     map[string]*Node{},
+		Processes: map[string]*ProcessItem{},
 	}
 }
 
@@ -91,6 +120,9 @@ func (state *VfsState) Normalize() {
 	}
 	if state.Nodes == nil {
 		state.Nodes = map[string]*Node{}
+	}
+	if state.Processes == nil {
+		state.Processes = map[string]*ProcessItem{}
 	}
 	for _, topic := range state.Topics {
 		if topic == nil {
@@ -103,6 +135,16 @@ func (state *VfsState) Normalize() {
 			continue
 		}
 		node.Normalize()
+	}
+	for id, proc := range state.Processes {
+		if proc == nil {
+			delete(state.Processes, id)
+			continue
+		}
+		proc.Normalize(time.Time{}, time.Time{})
+		if proc.ID == "" {
+			proc.ID = id
+		}
 	}
 }
 
@@ -128,11 +170,8 @@ func (node *Node) Normalize() {
 	if node.Output == nil {
 		node.Output = map[string]any{}
 	}
-	if node.Process == nil {
-		node.Process = []ProcessItem{}
-	}
-	for index := range node.Process {
-		node.Process[index].Normalize(node.UpdatedAt, node.CreatedAt)
+	if node.ProcessIDs == nil {
+		node.ProcessIDs = []string{}
 	}
 	if node.Version <= 0 {
 		node.Version = 1
@@ -143,6 +182,9 @@ func (node *Node) Normalize() {
 }
 
 func (item *ProcessItem) Normalize(nodeUpdatedAt, nodeCreatedAt time.Time) {
+	if item.ID == "" {
+		item.ID = NewID()
+	}
 	item.Name = strings.TrimSpace(item.Name)
 	if item.Status != ProcessStatusDone {
 		item.Status = ProcessStatusTodo
@@ -159,8 +201,8 @@ func (item *ProcessItem) Normalize(nodeUpdatedAt, nodeCreatedAt time.Time) {
 	if item.SessionRange != nil {
 		item.SessionRange.Normalize()
 	}
-	if item.Memory == nil {
-		item.Memory = nil
+	if item.Summary == nil {
+		item.Summary = nil
 	}
 	if item.CompactedSessionIDs == nil {
 		item.CompactedSessionIDs = []string{}

@@ -12,29 +12,44 @@ import (
 
 // CompactAgentRequest is sent to the compact agent CLI.
 type CompactAgentRequest struct {
-	NodeID    string                   `json:"node_id"`
-	Processes []CompactProcessInput    `json:"processes"`
-	Context   *domain.ContextSnapshot  `json:"context,omitempty"`
+	NodeID    string                  `json:"node_id"`
+	Processes []CompactProcessInput   `json:"processes"`
+	Context   *domain.ContextSnapshot `json:"context,omitempty"`
 }
 
 // CompactProcessInput describes a single process and its uncompacted sessions.
 type CompactProcessInput struct {
 	Process               domain.ProcessItem `json:"process"`
-	UncompactedSessionIDs []string            `json:"uncompacted_session_ids"`
+	UncompactedSessionIDs []string           `json:"uncompacted_session_ids"`
 }
 
 // CompactAgentResponse is the expected response from the compact agent CLI.
 type CompactAgentResponse struct {
-	Status    string              `json:"status"`
-	Compacted []CompactedProcess  `json:"compacted"`
-	Error     *string             `json:"error,omitempty"`
+	Status    string             `json:"status"`
+	Compacted []CompactedProcess `json:"compacted"`
+	Error     *string            `json:"error,omitempty"`
 }
 
 // CompactedProcess is the result of compacting a single process.
 type CompactedProcess struct {
-	Name               string         `json:"name"`
-	Memory             map[string]any `json:"memory"`
-	CompactedSessionIDs []string       `json:"compacted_session_ids"`
+	ProcessID           string                    `json:"process_id"`
+	Name                string                    `json:"name"`
+	Summary             map[string]any            `json:"summary"`
+	CompactedSessionIDs []string                  `json:"compacted_session_ids"`
+	MemoryProposals     []MemoryProposalCandidate `json:"memory_proposals,omitempty"`
+}
+
+type MemoryProposalEntry struct {
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+}
+
+type MemoryProposalCandidate struct {
+	ProposeUpdate bool                  `json:"propose_update"`
+	Entries       []MemoryProposalEntry `json:"entries"`
+	Evidence      []string              `json:"evidence,omitempty"`
+	Confidence    float64               `json:"confidence,omitempty"`
+	Reason        string                `json:"reason,omitempty"`
 }
 
 // CompactRunner executes the compact agent.

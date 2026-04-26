@@ -390,17 +390,21 @@ func TestUpdateNodeAppendsRuntimeFieldsAndAggregatesParentMemory(t *testing.T) {
 	if len(updated.Session) != 2 || updated.Session[0] != "session-1" || updated.Session[1] != "session-2" {
 		t.Fatalf("Session = %v, want [session-1 session-2]", updated.Session)
 	}
-	if len(updated.Process) != 2 {
-		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	processes, err := svc.ListNodeProcesses(updated.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
 	}
-	if updated.Process[0].Name != "created" || updated.Process[0].Status != domain.ProcessStatusDone {
-		t.Fatalf("Process[0] = %+v, want created/done", updated.Process[0])
+	if len(processes) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(processes))
 	}
-	if updated.Process[1].Name != "running" || updated.Process[1].Status != domain.ProcessStatusTodo {
-		t.Fatalf("Process[1] = %+v, want running/todo", updated.Process[1])
+	if processes[0].Name != "created" || processes[0].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[0] = %+v, want created/done", processes[0])
 	}
-	if updated.Process[0].Timestamp.IsZero() || updated.Process[1].Timestamp.IsZero() {
-		t.Fatalf("Process timestamp should not be zero: %+v", updated.Process)
+	if processes[1].Name != "running" || processes[1].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[1] = %+v, want running/todo", processes[1])
+	}
+	if processes[0].Timestamp.IsZero() || processes[1].Timestamp.IsZero() {
+		t.Fatalf("Process timestamp should not be zero: %+v", processes)
 	}
 
 	parent, err := svc.GetNode(root.ID)
@@ -478,14 +482,18 @@ func TestUpdateNodeSupportsProcessList(t *testing.T) {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
 
-	if len(updated.Process) != 2 {
-		t.Fatalf("Process length = %d, want 2", len(updated.Process))
+	processes, err := svc.ListNodeProcesses(updated.ID)
+	if err != nil {
+		t.Fatalf("ListNodeProcesses() error = %v", err)
 	}
-	if updated.Process[0].Name != "queued" || updated.Process[0].Status != domain.ProcessStatusTodo {
-		t.Fatalf("Process[0] = %+v, want queued/todo", updated.Process[0])
+	if len(processes) != 2 {
+		t.Fatalf("Process length = %d, want 2", len(processes))
 	}
-	if updated.Process[1].Name != "thinking" || updated.Process[1].Status != domain.ProcessStatusDone {
-		t.Fatalf("Process[1] = %+v, want thinking/done", updated.Process[1])
+	if processes[0].Name != "queued" || processes[0].Status != domain.ProcessStatusTodo {
+		t.Fatalf("Process[0] = %+v, want queued/todo", processes[0])
+	}
+	if processes[1].Name != "thinking" || processes[1].Status != domain.ProcessStatusDone {
+		t.Fatalf("Process[1] = %+v, want thinking/done", processes[1])
 	}
 }
 
@@ -585,4 +593,81 @@ func TestMoveDoesNotRecomputeParentMemory(t *testing.T) {
 
 func stringPtr(raw string) *string {
 	return &raw
+}
+
+func TestListChildrenProcessesReturnsNodeNameAndProcesses(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	_, err = svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-a", Name: "Node A"})
+	if err != nil {
+		t.Fatalf("CreateNode(node-a) error = %v", err)
+	}
+	nodeB, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-b", Name: "Node B"})
+	if err != nil {
+		t.Fatalf("CreateNode(node-b) error = %v", err)
+	}
+	// Add processes to node-b
+	_, err = svc.UpdateNode(service.UpdateNodeInput{
+		NodeID: nodeB.ID,
+		Process: []domain.ProcessItem{
+			{Name: "design", Status: domain.ProcessStatusDone},
+			{Name: "build", Status: domain.ProcessStatusTodo},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateNode(node-b) error = %v", err)
+	}
+
+	// Query from the topic root (parent of node-a and node-b)
+	root, err := svc.GetNode(topic.RootNodeID)
+	if err != nil {
+		t.Fatalf("GetNode(root) error = %v", err)
+	}
+	entries, err := svc.ListChildrenProcesses(root.ID)
+	if err != nil {
+		t.Fatalf("ListChildrenProcesses() error = %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries len = %d, want 2", len(entries))
+	}
+	if entries[0].NodeID != "node-a" || entries[0].NodeName != "Node A" {
+		t.Fatalf("entries[0] = %+v, want node-a/Node A", entries[0])
+	}
+	if len(entries[0].Processes) != 0 {
+		t.Fatalf("entries[0].Processes = %d, want 0", len(entries[0].Processes))
+	}
+	if entries[1].NodeID != "node-b" || entries[1].NodeName != "Node B" {
+		t.Fatalf("entries[1] = %+v, want node-b/Node B", entries[1])
+	}
+	if len(entries[1].Processes) != 2 {
+		t.Fatalf("entries[1].Processes = %d, want 2", len(entries[1].Processes))
+	}
+	if entries[1].Processes[0].Name != "design" || entries[1].Processes[1].Name != "build" {
+		t.Fatalf("entries[1].Processes = %+v, want design+build", entries[1].Processes)
+	}
+}
+
+func TestListChildrenProcessesReturnsEmptyForLeafNode(t *testing.T) {
+	svc := newTestService(t)
+
+	topic, _, err := svc.CreateTopic(service.CreateTopicInput{TopicID: "topic-1", Name: "Topic One"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	node, err := svc.CreateNode(service.CreateNodeInput{TopicID: topic.ID, NodeID: "node-a", Name: "Node A"})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	entries, err := svc.ListChildrenProcesses(node.ID)
+	if err != nil {
+		t.Fatalf("ListChildrenProcesses() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %d, want 0 for leaf node", len(entries))
+	}
 }

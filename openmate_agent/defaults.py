@@ -12,13 +12,17 @@ from .models import (
     ToolBundle,
     ToolSpec,
 )
+from .tooling import ToolRegistry
 
 
 class DefaultContextInjector(ContextInjector):
     def inject(self, node_id: str) -> ContextBundle:
         payload = {
-            "SystemPrompt": {"memory": {}},
-            "UserPrompt": {"session": []},
+            "node_id": node_id,
+            "user_memory": None,
+            "topic_memory": None,
+            "process_contexts": [],
+            "session_history": [],
         }
         return ContextBundle(
             node_id=node_id,
@@ -27,26 +31,34 @@ class DefaultContextInjector(ContextInjector):
 
 
 class DefaultToolInjector(ToolInjector):
+    def __init__(self, tool_registry: ToolRegistry) -> None:
+        self._tool_registry = tool_registry
+
     def inject(self, node_id: str) -> ToolBundle:
+        default_tools = self._tool_registry.list_specs(enabled_only=True, default_only=True)
         return ToolBundle(
             node_id=node_id,
             tools=[
-                ToolSpec(name="read", description="Read data."),
-                ToolSpec(name="write", description="Write data."),
-                ToolSpec(name="edit", description="Patch file content by old/new strings."),
-                ToolSpec(name="patch", description="Apply structured multi-file patch operations."),
-                ToolSpec(name="query", description="Query network resource."),
-                ToolSpec(name="grep", description="Search content with regex via ripgrep."),
-                ToolSpec(name="glob", description="Search files by glob via ripgrep."),
-                ToolSpec(name="exec", description="Run structured command in workspace."),
-                ToolSpec(name="shell", description="Run system shell command."),
+                ToolSpec(
+                    name=spec.name,
+                    description=spec.description,
+                    is_default=spec.is_default,
+                    primary_tag=spec.primary_tag,
+                    secondary_tags=list(spec.secondary_tags),
+                    backend=spec.backend,
+                    parameters_schema=dict(spec.parameters_schema),
+                )
+                for spec in default_tools
             ],
         )
 
     def authorize(self, action: ToolAction) -> GuardDecision:
-        if action.tool_name in {"read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"}:
-            return GuardDecision(decision="allow", reason="tool is allowed in MVP")
-        return GuardDecision(decision="deny", reason="tool is not supported")
+        spec = self._tool_registry.get_spec(action.tool_name)
+        if spec is None:
+            return GuardDecision(decision="deny", reason="tool is not supported")
+        if not spec.enabled:
+            return GuardDecision(decision="deny", reason="tool is disabled")
+        return GuardDecision(decision="allow", reason="tool is allowed by registry")
 
 
 class DefaultSkillInjector(SkillInjector):

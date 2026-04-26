@@ -1,4 +1,85 @@
-# SharedInfo Process
+﻿# SharedInfo Process
+## 2026-04-25 Agent Process 工具能力新增（node_process + sibling_progress_board）
+1. Agent 默认工具集合新增 `node_process`，当前默认注入集合变更为：`read/write/search/command/network/node_process/tool_query`。
+2. 新增非默认注册工具 `sibling_progress_board`（`primary_tag=process`），用于读取同级节点进度板（父节点 children 的 process `id/name`）。
+3. 运行时在加载 registry 时会自动初始化 `.openmate/runtime/tool_registry.json`，确保包含 `sibling_progress_board` 注册项（`enabled=true`、`is_default=false`）。
+4. 行为约束：当当前 node 为根节点（`parent_id` 为空）时，`sibling_progress_board` 返回空列表 `items: []`。
+5. CLI 已新增：
+   - `openmate-agent tool node_process --help`
+   - `openmate-agent tool sibling_progress_board --help`
+
+## 2026-04-25 Agent Tool Mechanism Refactor (Registry + On-Demand Discovery)
+1. Agent tools switched to registry-driven runtime, loading built-in defaults plus JSON registrations from `.openmate/runtime/tool_registry.json`.
+2. Prompt injection now exposes only six default tools (`read/write/search/command/network/tool_query`) and adds discovery policy for extensions.
+3. Added threshold-based `tool_query` protocol (threshold=10): full details when small set, tag aggregation when large set, and by-tag drill-down.
+4. Permission gateway now evaluates by registry metadata (enabled/backend) and keeps dangerous command blocking.
+5. Added CLI management commands with `--help`: `openmate-agent tools list/register/update/enable/disable/validate`.
+6. Regression tests passed:
+   - `.\.venv\Scripts\python -m unittest tests.test_service tests.test_cli tests.test_pipeline_orchestration`
+   - `.\.venv\Scripts\python -m unittest tests.test_worker tests.test_context_injector`
+
+## 2026-04-25 master 初始化（不跑测试/不切分支，第七次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建/切换分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前指令，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
+## 2026-04-25 Node 旧 `process` 兼容字段下线
+
+1. VFS `Node` 已下线旧兼容字段 `process`，当前仅保留 `process_ids` 作为稳定引用面。
+2. `VfsState.Normalize()` 的旧数据迁移逻辑已删除，进入纯新结构运行阶段。
+3. 回归结果：`go test ./...` 通过。
+
+## 2026-04-25 master 初始化（不跑测试/不加分支，第六次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建/切换分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前指令，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
+## 2026-04-24 VFS Process 主键化与引用化（Node.process_ids）
+
+1. VFS `Process` 已从 Node 内嵌列表升级为独立实体：
+   - `ProcessItem` 新增 `id`。
+   - `Node` 改为 `process_ids[]` 引用关系。
+   - 状态文件新增 `processes` 集合承载 Process 实体。
+2. 兼容口径：
+   - `vos node update --process-json` 与 HTTP `PATCH /api/v1/nodes/{id}` 的 `process` 入参语义保持不变。
+   - 读取 `process` 明细统一走服务层解析（`process_ids -> processes`）。
+3. 影响范围：
+   - `context snapshot`、`vos process list/compact`、HTTP `include=process` 已全部切换到引用解析路径。
+4. 回归结果：
+   - `go test ./internal/vos/...` 通过。
+   - `go test ./...` 通过。
+
+## 2026-04-24 master 初始化（不跑测试/不切分支，第五次）
+
+1. 已确认当前工作分支为 `master`，并按本次要求保持不创建/切换分支。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 本轮遵循当前指令，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
 
 ## 2026-04-26 前端先行接入 Topic-Workspace 绑定契约
 
@@ -274,3 +355,35 @@
    - `architecture/Agent能力/Process.md`
    - `architecture/frontend/Process.md`
 3. 本轮遵循当前要求，不执行单元测试、不执行构建验证，仅完成初始化与过程沉淀。
+
+## 2026-04-24 Compact 双动作共享变更（summary + memory proposal pending）
+
+1. VOS compact 流程改为双动作：
+   - Process 压缩摘要写入 `Process.summary`
+   - 生成 `topic_memory` 提案并先落 pending，待用户确认后 apply
+2. 硬切字段：`ProcessItem.memory -> ProcessItem.summary`（Go/Python/CLI/HTTP/上下文注入链路同步）。
+3. 新增专用确认通道，避免复用 `topic update` 全量 metadata 覆盖：
+   - CLI: `vos memory proposal list --topic-id ...`
+   - CLI: `vos memory apply --topic-id ... --proposal-id ... --decision confirm|reject`
+   - HTTP: `GET /api/v1/topics/{topic_id}/memory/proposals`
+   - HTTP: `POST /api/v1/topics/{topic_id}/memory/apply`
+4. 服务端门槛校验：空条目/低置信/证据不足/敏感键均丢弃，仅保留 summary 回写。
+5. 回归：
+   - `go test ./internal/vos/...` 通过
+   - `go test ./...` 通过
+   - `python -m unittest discover -s tests` 通过（71 项）
+
+
+## 2026-04-26 Tool Monitor 最小可插拔增强（Agent + VOS HTTP）
+
+1. Agent 工具运行时已新增旁路监控（AOP before/after），落盘 `.openmate/runtime/tool_monitor.jsonl`（UTF-8 JSONL，append-only）。
+2. Agent CLI 新增监控查询分组：
+   - `openmate-agent tools monitor list`
+   - `openmate-agent tools monitor summary`
+3. VOS HTTP v1 新增监控查询接口：
+   - `GET /api/v1/tools/monitor/events`
+   - `GET /api/v1/tools/monitor/summary`
+4. 监控设计边界：仅记录与查询，不参与权限裁决与工具执行判定；写监控失败不影响主链路。
+5. 验证结果：
+   - Python：`\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
+   - Go：`go test ./internal/vos/httpapi/...`、`go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。

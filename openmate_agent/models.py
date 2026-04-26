@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ToolName = Literal["read", "write", "edit", "patch", "query", "grep", "glob", "exec", "shell"]
 GuardState = Literal["allow", "deny", "confirm"]
 AgentMode = Literal["execution", "decompose", "priority", "compact"]
 
@@ -13,6 +12,7 @@ AgentMode = Literal["execution", "decompose", "priority", "compact"]
 class Build(BaseModel):
     node_id: str = Field(min_length=1)
     session_id: str | None = None
+    api_id: str | None = None
 
 
 class ContextBundle(BaseModel):
@@ -21,8 +21,13 @@ class ContextBundle(BaseModel):
 
 
 class ToolSpec(BaseModel):
-    name: ToolName
+    name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    is_default: bool = False
+    primary_tag: str | None = None
+    secondary_tags: list[str] = Field(default_factory=list)
+    backend: str | None = None
+    parameters_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolBundle(BaseModel):
@@ -42,7 +47,7 @@ class SkillBundle(BaseModel):
 
 class ToolAction(BaseModel):
     node_id: str = Field(min_length=1)
-    tool_name: ToolName
+    tool_name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
     is_safe: bool = False
     is_read_only: bool = False
@@ -65,6 +70,7 @@ class ToolResult(BaseModel):
     tool_name: str = Field(min_length=1)
     success: bool = True
     output: str = ""
+    error_code: str | None = None
     error: str | None = None
 
 
@@ -151,11 +157,26 @@ class CompactRequest(BaseModel):
     context: dict[str, Any] | None = None
 
 
+class MemoryProposalEntry(BaseModel):
+    key: str = Field(min_length=1)
+    value: Any = None
+
+
+class MemoryProposalCandidate(BaseModel):
+    propose_update: bool = False
+    entries: list[MemoryProposalEntry] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+
 class CompactedProcess(BaseModel):
     """Result of compacting a single process."""
+    process_id: str = ""
     name: str = ""
-    memory: dict[str, Any] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
     compacted_session_ids: list[str] = Field(default_factory=list)
+    memory_proposals: list[MemoryProposalCandidate] = Field(default_factory=list)
 
 
 class CompactResponse(BaseModel):

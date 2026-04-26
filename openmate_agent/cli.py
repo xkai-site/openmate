@@ -5,8 +5,12 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from openmate_shared.runtime_paths import resolve_workspace_root
+
 from .models import CompactRequest, DecomposeRequest, PriorityRequest
 from .service import AgentCapabilityService
+from .tool_monitor import dump_events_json, ToolMonitorService
+from .tooling import ToolRegistration, load_tool_registry, save_registry_file, validate_registry_file
 from .worker import WorkerExecuteRequest, execute_worker_request
 
 
@@ -141,6 +145,181 @@ def create_parser() -> argparse.ArgumentParser:
         help="Mark this tool call as read-only.",
     )
 
+    tool_search = tool_subparsers.add_parser("search", help="Unified search by content or file pattern.")
+    tool_search.add_argument("node_id", help="Node identifier.")
+    tool_search.add_argument("--mode", default="content", choices=["content", "file"], help="Search mode.")
+    tool_search.add_argument("--pattern", required=True, help="Pattern for search.")
+    tool_search.add_argument("--scope", default=".", help="Search scope path.")
+    tool_search.add_argument("--max-results", type=int, default=100, help="Max result count.")
+    tool_search.add_argument("--file-glob", default=None, help="Optional file glob filter when mode=content.")
+    tool_search.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_search.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tool_command = tool_subparsers.add_parser("command", help="Run command with exec-first strategy.")
+    tool_command.add_argument("node_id", help="Node identifier.")
+    tool_command.add_argument("--command", dest="command_json", default="", help='JSON array, e.g. ["python","-V"].')
+    tool_command.add_argument("--shell-command", default="", help="Shell command string for shell features.")
+    tool_command.add_argument("--cwd", default=None, help="Relative working directory under workspace.")
+    tool_command.add_argument("--timeout-seconds", type=int, default=30, help="Command timeout in seconds.")
+    tool_command.add_argument("--expect-json", action="store_true", default=False, help="Parse stdout as JSON.")
+    tool_command.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_command.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tool_network = tool_subparsers.add_parser("network", help="Run HTTP network request.")
+    tool_network.add_argument("node_id", help="Node identifier.")
+    tool_network.add_argument("--url", required=True, help="Request URL.")
+    tool_network.add_argument("--method", default="GET", choices=["GET", "POST"], help="HTTP method.")
+    tool_network.add_argument("--params", default="{}", help="JSON object for query params.")
+    tool_network.add_argument("--headers", default="{}", help="JSON object for HTTP headers.")
+    tool_network.add_argument("--body", default="{}", help="JSON object for POST body.")
+    tool_network.add_argument("--timeout-seconds", type=int, default=10, help="HTTP timeout in seconds.")
+    tool_network.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_network.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tool_node_process = tool_subparsers.add_parser(
+        "node_process",
+        help="Read or replace current node process list via vos CLI.",
+    )
+    tool_node_process.add_argument("node_id", help="Node identifier.")
+    tool_node_process.add_argument("--action", choices=["get", "replace"], default="get", help="Process action.")
+    tool_node_process.add_argument(
+        "--processes",
+        default="",
+        help='JSON array for replace action, e.g. [{"name":"design","status":"todo"}].',
+    )
+    tool_node_process.add_argument(
+        "--expected-version",
+        type=int,
+        default=None,
+        help="Optional node expected version for optimistic concurrency.",
+    )
+    tool_node_process.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_node_process.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tool_sibling_progress_board = tool_subparsers.add_parser(
+        "sibling_progress_board",
+        help="Read sibling node process id/name under current node parent.",
+    )
+    tool_sibling_progress_board.add_argument("node_id", help="Node identifier.")
+    tool_sibling_progress_board.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_sibling_progress_board.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tool_query_registry = tool_subparsers.add_parser("tool_query", help="Discover non-default tools.")
+    tool_query_registry.add_argument("node_id", help="Node identifier.")
+    tool_query_registry.add_argument("--by-tag", default=None, help="Filter non-default tools by primary tag.")
+    tool_query_registry.add_argument("--keyword", default=None, help="Keyword filter on name/description.")
+    tool_query_registry.add_argument("--is-safe", action="store_true", default=False, help="Mark this tool call as safe.")
+    tool_query_registry.add_argument(
+        "--is-read-only",
+        action="store_true",
+        default=False,
+        help="Mark this tool call as read-only.",
+    )
+
+    tools_parser = subparsers.add_parser("tools", help="Manage tool registry.")
+    tools_subparsers = tools_parser.add_subparsers(dest="tools_name", required=True)
+
+    tools_list = tools_subparsers.add_parser("list", help="List tools from registry.")
+    tools_list.add_argument("--default-only", action="store_true", default=False, help="Show only default tools.")
+    tools_list.add_argument("--non-default-only", action="store_true", default=False, help="Show only non-default tools.")
+    tools_list.add_argument("--tag", default=None, help="Filter by tag.")
+
+    tools_register = tools_subparsers.add_parser("register", help="Register tool into JSON registry.")
+    tools_register.add_argument("--name", required=True, help="Tool name.")
+    tools_register.add_argument("--description", required=True, help="Tool description.")
+    tools_register.add_argument("--primary-tag", required=True, help="Primary tag.")
+    tools_register.add_argument("--secondary-tags", default="", help="Comma-separated secondary tags.")
+    tools_register.add_argument("--backend", required=True, help="Backend mapping, e.g. builtin/exec.")
+    tools_register.add_argument("--enabled", action="store_true", default=False, help="Enable this tool.")
+    tools_register.add_argument("--disabled", action="store_true", default=False, help="Disable this tool.")
+
+    tools_update = tools_subparsers.add_parser("update", help="Update registered JSON tool fields.")
+    tools_update.add_argument("--name", required=True, help="Tool name.")
+    tools_update.add_argument("--description", default=None, help="New description.")
+    tools_update.add_argument("--primary-tag", default=None, help="New primary tag.")
+    tools_update.add_argument("--secondary-tags", default=None, help="Comma-separated secondary tags.")
+    tools_update.add_argument("--backend", default=None, help="New backend.")
+    tools_update.add_argument("--enabled", action="store_true", default=False, help="Set enabled=true.")
+    tools_update.add_argument("--disabled", action="store_true", default=False, help="Set enabled=false.")
+
+    tools_enable = tools_subparsers.add_parser("enable", help="Enable a JSON-registered tool.")
+    tools_enable.add_argument("--name", required=True, help="Tool name.")
+
+    tools_disable = tools_subparsers.add_parser("disable", help="Disable a JSON-registered tool.")
+    tools_disable.add_argument("--name", required=True, help="Tool name.")
+
+    tools_subparsers.add_parser("validate", help="Validate tool registry configuration.")
+
+    tools_monitor = tools_subparsers.add_parser(
+        "monitor",
+        help="Query tool monitor events and summary.",
+        description="Query tool monitor events and aggregated statistics.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  openmate-agent tools monitor list --tool-name read --source cli --limit 20\n"
+            "  openmate-agent tools monitor summary --source model --window-minutes 60"
+        ),
+    )
+    tools_monitor_subparsers = tools_monitor.add_subparsers(dest="monitor_name", required=True)
+    monitor_list = tools_monitor_subparsers.add_parser(
+        "list",
+        help="List monitor events.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  openmate-agent tools monitor list --node-id node-1 --success true\n"
+            "  openmate-agent tools monitor list --tool-name write --source cli --limit 50"
+        ),
+    )
+    monitor_list.add_argument("--tool-name", default=None, help="Filter by tool name.")
+    monitor_list.add_argument("--node-id", default=None, help="Filter by node id.")
+    monitor_list.add_argument("--source", choices=["model", "cli", "http", "unknown"], default=None, help="Filter by call source.")
+    monitor_list.add_argument("--success", choices=["true", "false"], default=None, help="Filter by after-event success.")
+    monitor_list.add_argument("--limit", type=int, default=50, help="Max event count.")
+
+    monitor_summary = tools_monitor_subparsers.add_parser(
+        "summary",
+        help="Summarize monitor events by tool.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  openmate-agent tools monitor summary --window-minutes 30\n"
+            "  openmate-agent tools monitor summary --tool-name read --source model"
+        ),
+    )
+    monitor_summary.add_argument("--tool-name", default=None, help="Filter by tool name.")
+    monitor_summary.add_argument("--node-id", default=None, help="Filter by node id.")
+    monitor_summary.add_argument("--source", choices=["model", "cli", "http", "unknown"], default=None, help="Filter by call source.")
+    monitor_summary.add_argument("--success", choices=["true", "false"], default=None, help="Filter by success.")
+    monitor_summary.add_argument("--limit", type=int, default=100, help="Max tool rows.")
+    monitor_summary.add_argument("--window-minutes", type=int, default=60, help="Lookback window in minutes.")
+
     worker_parser = subparsers.add_parser("worker", help="Execute schedule worker action.")
     worker_subparsers = worker_parser.add_subparsers(dest="worker_name", required=True)
 
@@ -226,6 +405,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload["command"] = args.shell_cmd
             payload["cwd"] = args.cwd
             payload["timeout_seconds"] = args.timeout_seconds
+        elif args.tool_name == "search":
+            payload["mode"] = args.mode
+            payload["pattern"] = args.pattern
+            payload["scope"] = args.scope
+            payload["max_results"] = args.max_results
+            payload["file_glob"] = args.file_glob
+        elif args.tool_name == "command":
+            payload["cwd"] = args.cwd
+            payload["timeout_seconds"] = args.timeout_seconds
+            payload["expect_json"] = args.expect_json
+            if args.command_json:
+                try:
+                    payload["command"] = json.loads(args.command_json)
+                except json.JSONDecodeError as exc:
+                    print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
+                    return 1
+            if args.shell_command:
+                payload["shell_command"] = args.shell_command
+        elif args.tool_name == "network":
+            payload["url"] = args.url
+            payload["method"] = args.method
+            payload["timeout_seconds"] = args.timeout_seconds
+            try:
+                payload["params"] = json.loads(args.params)
+                payload["headers"] = json.loads(args.headers)
+                payload["body"] = json.loads(args.body)
+            except json.JSONDecodeError as exc:
+                print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
+                return 1
+        elif args.tool_name == "node_process":
+            payload["action"] = args.action
+            if args.expected_version is not None:
+                payload["expected_version"] = args.expected_version
+            if args.action == "replace":
+                if not args.processes:
+                    print(json.dumps({"success": False, "error": "--processes is required when --action replace"}))
+                    return 1
+                try:
+                    payload["processes"] = json.loads(args.processes)
+                except json.JSONDecodeError as exc:
+                    print(json.dumps({"success": False, "error": f"invalid json argument: {exc}"}))
+                    return 1
+        elif args.tool_name == "sibling_progress_board":
+            payload = {}
+        elif args.tool_name == "tool_query":
+            payload["by_tag"] = args.by_tag
+            payload["keyword"] = args.keyword
 
         result = service.run_tool(
             node_id=args.node_id,
@@ -233,9 +459,167 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload=payload,
             is_safe=args.is_safe,
             is_read_only=args.is_read_only,
+            source="cli",
         )
         print(result.model_dump_json(indent=2))
         return 0 if result.success else 1
+
+    if args.command == "tools":
+        workspace_root = resolve_workspace_root(Path.cwd())
+        if args.tools_name == "monitor":
+            monitor_service = ToolMonitorService(workspace_root=workspace_root)
+            if args.monitor_name == "list":
+                success_value = None if args.success is None else args.success == "true"
+                events = monitor_service.list_events(
+                    tool_name=args.tool_name,
+                    node_id=args.node_id,
+                    source=args.source,
+                    success=success_value,
+                    limit=args.limit,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "success": True,
+                            "events": dump_events_json(events),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.monitor_name == "summary":
+                success_value = None if args.success is None else args.success == "true"
+                summary = monitor_service.summarize(
+                    tool_name=args.tool_name,
+                    node_id=args.node_id,
+                    source=args.source,
+                    success=success_value,
+                    limit=args.limit,
+                    window_minutes=args.window_minutes,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "success": True,
+                            "summary": summary,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+
+        try:
+            registry = load_tool_registry(workspace_root=workspace_root)
+        except Exception as exc:
+            print(json.dumps({"success": False, "error": f"load tool registry failed: {exc}"}))
+            return 2
+
+        if args.tools_name == "list":
+            if args.default_only and args.non_default_only:
+                print(json.dumps({"success": False, "error": "--default-only and --non-default-only are mutually exclusive"}))
+                return 2
+            default_only: bool | None = None
+            if args.default_only:
+                default_only = True
+            elif args.non_default_only:
+                default_only = False
+            specs = registry.list_specs(enabled_only=False, default_only=default_only, tag=args.tag)
+            data = [
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "enabled": spec.enabled,
+                    "is_default": spec.is_default,
+                    "primary_tag": spec.primary_tag,
+                    "secondary_tags": spec.secondary_tags,
+                    "backend": spec.backend,
+                    "source": spec.source,
+                }
+                for spec in specs
+            ]
+            print(json.dumps({"success": True, "tools": data}, ensure_ascii=False, indent=2))
+            return 0
+
+        if args.tools_name == "register":
+            enabled = True
+            if args.enabled and args.disabled:
+                print(json.dumps({"success": False, "error": "--enabled and --disabled are mutually exclusive"}))
+                return 2
+            if args.disabled:
+                enabled = False
+            secondary_tags = [tag.strip() for tag in args.secondary_tags.split(",") if tag.strip()]
+            try:
+                spec = ToolRegistration(
+                    name=args.name,
+                    description=args.description,
+                    enabled=enabled,
+                    is_default=False,
+                    primary_tag=args.primary_tag,
+                    secondary_tags=secondary_tags,
+                    backend=args.backend,
+                )
+                registry.register_json_tool(spec)
+                path = save_registry_file(registry=registry, workspace_root=workspace_root)
+            except Exception as exc:
+                print(json.dumps({"success": False, "error": str(exc)}))
+                return 2
+            print(json.dumps({"success": True, "action": "register", "name": spec.name, "path": str(path)}, ensure_ascii=False))
+            return 0
+
+        if args.tools_name == "update":
+            if args.enabled and args.disabled:
+                print(json.dumps({"success": False, "error": "--enabled and --disabled are mutually exclusive"}))
+                return 2
+            updates: dict[str, object] = {}
+            if args.description is not None:
+                updates["description"] = args.description
+            if args.primary_tag is not None:
+                updates["primary_tag"] = args.primary_tag
+            if args.secondary_tags is not None:
+                updates["secondary_tags"] = [tag.strip() for tag in args.secondary_tags.split(",") if tag.strip()]
+            if args.backend is not None:
+                updates["backend"] = args.backend
+            if args.enabled:
+                updates["enabled"] = True
+            if args.disabled:
+                updates["enabled"] = False
+            if not updates:
+                print(json.dumps({"success": False, "error": "no update fields provided"}))
+                return 2
+            try:
+                updated = registry.update_json_tool(args.name, updates)
+                path = save_registry_file(registry=registry, workspace_root=workspace_root)
+            except Exception as exc:
+                print(json.dumps({"success": False, "error": str(exc)}))
+                return 2
+            print(json.dumps({"success": True, "action": "update", "name": updated.name, "path": str(path)}, ensure_ascii=False))
+            return 0
+
+        if args.tools_name in {"enable", "disable"}:
+            enabled = args.tools_name == "enable"
+            try:
+                registry.update_json_tool(args.name, {"enabled": enabled})
+                path = save_registry_file(registry=registry, workspace_root=workspace_root)
+            except Exception as exc:
+                print(json.dumps({"success": False, "error": str(exc)}))
+                return 2
+            print(
+                json.dumps(
+                    {"success": True, "action": args.tools_name, "name": args.name, "path": str(path)},
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
+        if args.tools_name == "validate":
+            errors = validate_registry_file(workspace_root=workspace_root)
+            if errors:
+                print(json.dumps({"success": False, "errors": errors}, ensure_ascii=False, indent=2))
+                return 2
+            print(json.dumps({"success": True, "message": "tool registry validation passed"}, ensure_ascii=False))
+            return 0
 
     if args.command == "worker":
         if args.worker_name != "run":

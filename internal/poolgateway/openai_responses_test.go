@@ -154,7 +154,7 @@ func TestValidateInvokeRequestAcceptsChatStream(t *testing.T) {
 	}
 }
 
-func TestValidateInvokeRequestForModeAllowsResponsesPayloadForChatMode(t *testing.T) {
+func TestValidateInvokeRequestForModeRejectsResponsesPayloadForChatMode(t *testing.T) {
 	t.Parallel()
 
 	err := validateInvokeRequestForMode(
@@ -167,7 +167,10 @@ func TestValidateInvokeRequestForModeAllowsResponsesPayloadForChatMode(t *testin
 		},
 		APIModeChatCompletions,
 	)
-	if err != nil {
-		t.Fatalf("expected responses payload to be accepted for chat mode: %v", err)
+	if err == nil {
+		t.Fatalf("expected responses payload to be rejected for chat mode")
+	}
+	if !strings.Contains(err.Error(), "chat_request is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

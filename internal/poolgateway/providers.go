@@ -257,12 +257,8 @@ func buildChatCompletionsPayloadForInvoke(
 		chatRequestPayload := mergeChatCompletionsPayload(reservation.RequestDefaults, request.ChatRequest, reservation.Model)
 		return buildChatCompletionsPayload(chatRequestPayload)
 	}
-	if len(request.Request) > 0 {
-		responsesPayload := mergeRequestPayload(reservation.RequestDefaults, request.Request, reservation.Model)
-		return buildChatCompletionsPayloadFromResponsesRequest(responsesPayload)
-	}
-	gatewayError := gatewayUnsupportedRequest("request")
-	gatewayError.Message = "either request or chat_request is required for chat_completions mode"
+	gatewayError := gatewayUnsupportedRequest("chat_request")
+	gatewayError.Message = "chat_request is required for chat_completions mode"
 	return nil, &gatewayError
 }
 

@@ -44,7 +44,7 @@ func (service *Service) GetContextSnapshot(nodeID string) (*domain.ContextSnapsh
 		return nil, err
 	}
 
-	processContexts, err := service.buildProcessContexts(node)
+	processContexts, err := service.buildProcessContexts(state, node)
 	if err != nil {
 		return nil, err
 	}
@@ -143,20 +143,21 @@ func readMetadataValue(metadata map[string]any, key string) any {
 	return value
 }
 
-func (service *Service) buildProcessContexts(node *domain.Node) ([]domain.ProcessContext, error) {
-	if len(node.Process) == 0 {
+func (service *Service) buildProcessContexts(state domain.VfsState, node *domain.Node) ([]domain.ProcessContext, error) {
+	processes := resolveNodeProcesses(state, node)
+	if len(processes) == 0 {
 		return nil, nil
 	}
 
-	ctxs := make([]domain.ProcessContext, 0, len(node.Process))
-	for _, item := range node.Process {
+	ctxs := make([]domain.ProcessContext, 0, len(processes))
+	for _, item := range processes {
 		pc := domain.ProcessContext{
 			Name:   item.Name,
 			Status: item.Status,
 		}
 
-		if item.Memory != nil {
-			pc.Memory = cloneMap(item.Memory)
+		if item.Summary != nil {
+			pc.Summary = cloneMap(item.Summary)
 		} else if item.SessionRange != nil && !item.SessionRange.Closed() {
 			events, err := service.loadSessionRangeEvents(item.SessionRange)
 			if err != nil {
