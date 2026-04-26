@@ -103,6 +103,13 @@ func TestGetContextSnapshotIncludesMemoriesAndOrderedSessionHistory(t *testing.T
 	if snapshot.UserMemory["user_id"] != "u-1" {
 		t.Fatalf("UserMemory = %v, want user_id=u-1", snapshot.UserMemory)
 	}
+	storedTopic, err := svc.GetTopic(topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	if _, exists := storedTopic.Metadata["user_memory"]; exists {
+		t.Fatalf("topic metadata should not contain legacy user_memory after extraction: %v", storedTopic.Metadata)
+	}
 	if snapshot.TopicMemory["summary"] != "topic summary" {
 		t.Fatalf("TopicMemory = %v, want summary=topic summary", snapshot.TopicMemory)
 	}

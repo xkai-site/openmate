@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from openmate_pool.pool import PoolGateway
 from openmate_shared.runtime_paths import (
@@ -14,8 +15,20 @@ from .context_reader import VosContextReader
 from .context_injector import VosContextInjector
 from .defaults import DefaultAssembler, DefaultContextInjector, DefaultSkillInjector, DefaultToolInjector
 from .interfaces import Assembler, ContextInjector, LlmGateway, SessionEventWriter, SkillInjector, ToolInjector
-from .models import Build, CompactRequest, CompactResponse, DecomposeRequest, DecomposeResponse, PriorityRequest, PriorityResponse, ToolResult
+from .models import (
+    ApprovalDecision,
+    ApprovalRequest,
+    Build,
+    CompactRequest,
+    CompactResponse,
+    DecomposeRequest,
+    DecomposeResponse,
+    PriorityRequest,
+    PriorityResponse,
+    ToolResult,
+)
 from .orchestration import ExecutionOrchestrator, ExecutionRunner
+from .permission_store import PermissionStore, VosPermissionStore
 from .pipeline import BuildPipeline
 from .session_writer import VosSessionWriter
 from .tool_runtime import ToolRuntimeExecutor
@@ -48,6 +61,8 @@ class AgentCapabilityService:
         priority_agent: PriorityAgentService | None = None,
         compact_agent: CompactAgentService | None = None,
         tool_runtime: ToolRuntimeExecutor | None = None,
+        approval_resolver: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
+        permission_store: PermissionStore | None = None,
     ) -> None:
         self._workspace_root = resolve_workspace_root(workspace_root)
         resolved_tool_registry = tool_registry or load_tool_registry(workspace_root=self._workspace_root)
@@ -82,10 +97,14 @@ class AgentCapabilityService:
             vos_session_db_file=vos_session_db_file,
             vos_binary_path=vos_binary_path,
         )
+        self._approval_resolver = approval_resolver or _default_approval_resolver
+        self._permission_store = permission_store or VosPermissionStore(workspace_root=self._workspace_root)
         self._tool_runtime = tool_runtime or ToolRuntimeExecutor(
             workspace_root=self._workspace_root,
             permission_gateway=permission_gateway or PermissionGateway(tool_registry=resolved_tool_registry),
             tool_registry=resolved_tool_registry,
+            approval_resolver=self._approval_resolver,
+            permission_store=self._permission_store,
         )
         self._execution_orchestrator = execution_orchestrator or ExecutionOrchestrator(
             gateway=self._gateway,
@@ -96,6 +115,8 @@ class AgentCapabilityService:
         self._execution_agent = execution_agent or ExecutionAgentService(
             build_pipeline=self._build_pipeline,
             execution_orchestrator=self._execution_orchestrator,
+            approval_resolver=self._approval_resolver,
+            permission_store=self._permission_store,
         )
         self._decompose_agent = decompose_agent or DecomposeAgentService(
             build_pipeline=self._build_pipeline,
@@ -183,3 +204,8 @@ class AgentCapabilityService:
                 binary_path=vos_binary_path,
             )
         return None
+
+
+def _default_approval_resolver(request: ApprovalRequest) -> ApprovalDecision:
+    _ = request
+    return ApprovalDecision(choice="allow_once")

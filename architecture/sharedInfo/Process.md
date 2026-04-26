@@ -1,4 +1,67 @@
 ﻿# SharedInfo Process
+## 2026-04-26 权限确认与放行记忆（VOS + Agent）
+
+1. VOS 新增 Topic/User 权限管理能力（仅 allow 项，支持删除反悔）：
+   - Topic 工具放行：`Topic.metadata.permission.tool_allows[]`（键：`tool_name + dir_prefix`，prefix 命中）。
+   - User skill 放行：`User.user_permission.skill_allows[]`（键：`skill_name`）。
+2. VOS CLI 新增命令组（均支持 `--help`）：
+   - `vos permission topic list|add|delete --topic-id ...`
+   - `vos permission user list|add|delete`
+3. VOS HTTP v1 新增接口：
+   - `GET/POST/DELETE /api/v1/topics/{topic_id}/permissions`
+   - `GET/POST/DELETE /api/v1/user/permissions`
+4. Agent 执行链路接入审批回调接缝：
+   - 工具调用在执行链路支持 `allow_and_remember / allow_once / deny / supplement`。
+   - CLI 直调保持原语义（未确认仍 blocked）。
+   - `supplement` 不执行工具，继续回环；审批信息落 `mcp_approval_request` 事件。
+5. 验证结果：
+   - Go：`go test ./internal/vos/...` 通过；`go test ./...` 通过（仓库内 GOCACHE/GOMODCACHE）。
+   - Python：`python -m unittest tests.test_permission_flow tests.test_service tests.test_tool_monitor -v` 通过（47 项）。
+   - Python 全量发现测试已通过：`python -m unittest discover -s tests -p "test_*.py" -v`（104 项）。
+## 2026-04-26 User 级数据骨架落地（VOS）
+
+1. VOS 状态模型新增 `User` 一级对象，当前字段：
+   - `user_memory`
+   - `model_json`
+   - `user_permission`（当前默认空 map，后续用于鉴权）
+2. `ContextSnapshot.user_memory` 读取口径已从 `Topic.metadata.user_memory` 调整为优先读取 `User.user_memory`。
+3. 兼容迁移已落地：
+   - 加载旧状态时，若 `Topic.metadata.user_memory` 存在，会迁移并合并到 `User.user_memory`。
+   - 迁移后会删除 Topic 上的旧 `user_memory` 键，完成“UserMemory 从 Topic 抽离”。
+4. 本轮不改调度与 Agent 执行协议，仅收口 VOS 状态与上下文读取语义。
+5. 验证结果：
+   - `go test ./internal/vos/domain ./internal/vos/service ./internal/vos/cli` 通过
+   - `go test ./...` 通过
+## 2026-04-26 master 初始化（执行基线验证）
+
+1. 已确认当前工作分支为 `master`，并保持在 `master` 上执行初始化。
+2. 已完成初始化前置读取：
+   - `AGENTS.md`
+   - `architecture/sharedInfo/模块契约.md`
+   - `architecture/sharedInfo/Process.md`
+   - `architecture/sharedInfo/Go仓库约定.md`
+   - `architecture/虚拟文件系统/Process.md`
+   - `architecture/调度队列/Process.md`
+   - `architecture/Agent池/Process.md`
+   - `architecture/Agent能力/Process.md`
+   - `architecture/frontend/Process.md`
+3. 基线验证结果：
+   - `go test ./...` 通过（使用仓库内 `GOCACHE=.openmate/go/cache`、`GOMODCACHE=.openmate/go/modcache` 等价路径）。
+   - CLI `--help` 冒烟通过：
+     - `go run ./cmd/vos --help`
+     - `go run ./cmd/openmate-schedule --help`
+     - `go run ./cmd/openmate-pool --help`
+     - `.\.venv\Scripts\python.exe -m openmate_agent.cli --help`
+4. Python 全量单测未全部通过：
+   - 命令：`.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+   - 结果：`Ran 100 tests`，`FAILED (failures=6)`
+   - 失败用例：
+     - `tests.test_cli.AgentCliTests.test_tool_exec`
+     - `tests.test_cli.AgentCliTests.test_tool_grep_and_glob`
+     - `tests.test_cli.AgentCliTests.test_tool_patch`
+     - `tests.test_cli.AgentCliTests.test_tool_shell`
+     - `tests.test_cli.AgentCliTests.test_tool_write_and_read`
+     - `tests.test_tool_monitor.ToolMonitorTests.test_run_tool_records_before_and_after_for_all_outcomes`
 ## 2026-04-26 Topic Workspace 语义硬切（VOS + Agent + Frontend）
 
 1. VOS HTTP `topics/{id}/workspace` 契约已切换为 `workspace`：
@@ -439,6 +502,11 @@
 5. 验证结果：
    - Python：`\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
    - Go：`go test ./internal/vos/httpapi/...`、`go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+
+
+
+
+
 
 
 

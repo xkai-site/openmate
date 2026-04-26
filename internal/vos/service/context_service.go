@@ -51,13 +51,23 @@ func (service *Service) GetContextSnapshot(nodeID string) (*domain.ContextSnapsh
 
 	return &domain.ContextSnapshot{
 		NodeID:          node.ID,
-		UserMemory:      readMetadataObject(topic.Metadata, topicMetadataUserMemoryKey),
+		UserMemory:      resolveUserMemory(state, topic),
 		TopicMemory:     readMetadataObject(topic.Metadata, topicMetadataTopicMemoryKey),
 		NodeMemory:      nodeMemory,
 		GlobalIndex:     readMetadataValue(topic.Metadata, topicMetadataGlobalIndexKey),
 		SessionHistory:  sessionHistory,
 		ProcessContexts: processContexts,
 	}, nil
+}
+
+func resolveUserMemory(state domain.VfsState, topic *domain.Topic) map[string]any {
+	if state.User != nil && state.User.UserMemory != nil {
+		return cloneMap(state.User.UserMemory)
+	}
+	if topic == nil {
+		return nil
+	}
+	return readMetadataObject(topic.Metadata, topicMetadataUserMemoryKey)
 }
 
 func (service *Service) buildContextSessionHistory(node *domain.Node) ([]domain.ContextSessionHistory, error) {

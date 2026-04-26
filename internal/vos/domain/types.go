@@ -3,6 +3,7 @@ package domain
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"slices"
 	"strings"
 	"time"
 )
@@ -83,6 +84,15 @@ type Topic struct {
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
+const DefaultUserID = "default-user"
+
+type User struct {
+	ID             string         `json:"id"`
+	UserMemory     map[string]any `json:"user_memory,omitempty"`
+	ModelJSON      map[string]any `json:"model_json"`
+	UserPermission map[string]any `json:"user_permission"`
+}
+
 type Node struct {
 	ID          string         `json:"id"`
 	TopicID     string         `json:"topic_id"`
@@ -105,6 +115,7 @@ type VfsState struct {
 	Topics    map[string]*Topic       `json:"topics"`
 	Nodes     map[string]*Node        `json:"nodes"`
 	Processes map[string]*ProcessItem `json:"processes"`
+	User      *User                   `json:"user,omitempty"`
 }
 
 func NewVfsState() VfsState {
@@ -112,6 +123,16 @@ func NewVfsState() VfsState {
 		Topics:    map[string]*Topic{},
 		Nodes:     map[string]*Node{},
 		Processes: map[string]*ProcessItem{},
+		User:      NewDefaultUser(),
+	}
+}
+
+func NewDefaultUser() *User {
+	return &User{
+		ID:             DefaultUserID,
+		UserMemory:     nil,
+		ModelJSON:      map[string]any{},
+		UserPermission: map[string]any{},
 	}
 }
 
@@ -125,6 +146,10 @@ func (state *VfsState) Normalize() {
 	if state.Processes == nil {
 		state.Processes = map[string]*ProcessItem{}
 	}
+	if state.User == nil {
+		state.User = NewDefaultUser()
+	}
+	state.User.Normalize()
 	for _, topic := range state.Topics {
 		if topic == nil {
 			continue
@@ -146,6 +171,38 @@ func (state *VfsState) Normalize() {
 		if proc.ID == "" {
 			proc.ID = id
 		}
+	}
+	state.migrateLegacyTopicUserMemory()
+}
+
+func (state *VfsState) migrateLegacyTopicUserMemory() {
+	if state == nil || state.User == nil {
+		return
+	}
+	topicIDs := make([]string, 0, len(state.Topics))
+	for topicID := range state.Topics {
+		topicIDs = append(topicIDs, topicID)
+	}
+	slices.Sort(topicIDs)
+	for _, topicID := range topicIDs {
+		topic := state.Topics[topicID]
+		if topic == nil || topic.Metadata == nil {
+			continue
+		}
+		raw, exists := topic.Metadata["user_memory"]
+		if !exists {
+			continue
+		}
+		userMemory, ok := raw.(map[string]any)
+		if ok && len(userMemory) > 0 {
+			if state.User.UserMemory == nil {
+				state.User.UserMemory = map[string]any{}
+			}
+			for key, value := range userMemory {
+				state.User.UserMemory[key] = value
+			}
+		}
+		delete(topic.Metadata, "user_memory")
 	}
 }
 
@@ -173,6 +230,22 @@ func (topic *Topic) Normalize() {
 	delete(topic.Metadata, "workspace_root")
 	if topic.Tags == nil {
 		topic.Tags = []string{}
+	}
+}
+
+func (user *User) Normalize() {
+	if user.ID == "" {
+		user.ID = DefaultUserID
+	}
+	user.ID = strings.TrimSpace(user.ID)
+	if user.ID == "" {
+		user.ID = DefaultUserID
+	}
+	if user.ModelJSON == nil {
+		user.ModelJSON = map[string]any{}
+	}
+	if user.UserPermission == nil {
+		user.UserPermission = map[string]any{}
 	}
 }
 

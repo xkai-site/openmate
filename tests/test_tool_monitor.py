@@ -5,6 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from openmate_agent.service import AgentCapabilityService
 from openmate_agent.tool_monitor import ToolMonitorEvent, ToolMonitorService, ToolMonitorStore
@@ -14,32 +15,52 @@ class ToolMonitorTests(unittest.TestCase):
     def test_run_tool_records_before_and_after_for_all_outcomes(self) -> None:
         with TemporaryDirectory() as tmp:
             service = AgentCapabilityService(workspace_root=tmp)
-
-            success_result = service.run_tool(
-                node_id="node-monitor",
-                tool_name="write",
-                payload={"path": "notes.txt", "content": "ok"},
-                is_safe=True,
-                is_read_only=True,
-            )
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Monitor",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                success_result = service.run_tool(
+                    node_id="node-monitor",
+                    tool_name="write",
+                    payload={"path": "notes.txt", "content": "ok"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
             self.assertTrue(success_result.success)
 
-            failure_result = service.run_tool(
-                node_id="node-monitor",
-                tool_name="read",
-                payload={"path": "missing.txt"},
-                is_safe=True,
-                is_read_only=True,
-            )
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Monitor",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                failure_result = service.run_tool(
+                    node_id="node-monitor",
+                    tool_name="read",
+                    payload={"path": "missing.txt"},
+                    is_safe=True,
+                    is_read_only=True,
+                )
             self.assertFalse(failure_result.success)
 
-            blocked_result = service.run_tool(
-                node_id="node-monitor",
-                tool_name="read",
-                payload={"path": "notes.txt"},
-                is_safe=False,
-                is_read_only=False,
-            )
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Monitor",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                blocked_result = service.run_tool(
+                    node_id="node-monitor",
+                    tool_name="read",
+                    payload={"path": "notes.txt"},
+                    is_safe=False,
+                    is_read_only=False,
+                )
             self.assertFalse(blocked_result.success)
             self.assertEqual(blocked_result.error_code, "TOOL_ACTION_BLOCKED")
 

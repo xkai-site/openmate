@@ -296,6 +296,12 @@ class ResponsesExecutionRunner:
                         )
 
                     tool_result = tool_executor(build.node_id, function_call.name, function_call.arguments)
+                    if session_started and session_writer and session_id:
+                        self._append_approval_event_if_any(
+                            session_writer=session_writer,
+                            session_id=session_id,
+                            tool_result=tool_result,
+                        )
                     tool_output_payload = self._build_tool_output_payload(tool_result)
 
                     if session_started and session_writer and session_id:
@@ -511,6 +517,26 @@ class ResponsesExecutionRunner:
             index += chunk_size
         return chunks
 
+    @staticmethod
+    def _append_approval_event_if_any(
+        *,
+        session_writer: SessionEventWriter,
+        session_id: str,
+        tool_result: ToolResult,
+    ) -> None:
+        approval = tool_result.metadata.get("approval") if isinstance(tool_result.metadata, dict) else None
+        if not isinstance(approval, dict):
+            return
+        session_writer.append_event(
+            AppendSessionEventInput(
+                session_id=session_id,
+                item_type=SessionItemType.MCP_APPROVAL_REQUEST.value,
+                role=SessionRole.SYSTEM,
+                payload_json=approval,
+                next_status=SessionStatus.ACTIVE,
+            )
+        )
+
 
 class ChatExecutionRunner:
     """Independent execution loop based on OpenAI Chat Completions semantics."""
@@ -602,6 +628,12 @@ class ChatExecutionRunner:
                         )
 
                     tool_result = tool_executor(build.node_id, function_call.name, function_call.arguments)
+                    if session_started and session_writer and session_id:
+                        ResponsesExecutionRunner._append_approval_event_if_any(
+                            session_writer=session_writer,
+                            session_id=session_id,
+                            tool_result=tool_result,
+                        )
                     tool_output_payload = ResponsesExecutionRunner._build_tool_output_payload(tool_result)
                     if session_started and session_writer and session_id:
                         session_writer.append_event(

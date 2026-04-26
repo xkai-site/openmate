@@ -1,4 +1,24 @@
 ﻿# Process 记录
+## 2026-04-26 权限确认与放行记忆（执行链路）落地（LangGraph 人机确认接缝）
+
+1. Agent 执行链路已从“`confirm => 直接 blocked`”升级为“可走审批回调并按用户选择执行”：
+   - 新增审批模型：`ApprovalRequest / ApprovalDecision / PermissionRule`。
+   - 新增选择分支：`allow_and_remember / allow_once / deny / supplement`。
+   - `supplement` 分支不执行工具，返回结构化工具输出并继续模型回环。
+2. ToolRuntime 权限行为收敛：
+   - 执行链路（`source=model`）支持审批回调；CLI 直调保持原有阻断语义（未确认即 blocked）。
+   - 工具放行规则支持 `tool_name + 目录前缀` 命中（含 `path/cwd/scope/patch.operations[*].path` 目录归一化提取）。
+   - `allow_and_remember` 可写入 Topic 级工具放行规则。
+3. Skill 注入权限收口：
+   - 执行链路构建 prompt 前对 skill 做权限判定；
+   - 未放行 skill 走同一审批回调；
+   - `allow_and_remember` 写入 User 级 skill 放行。
+4. 会话事件沉淀：
+   - 在工具回环中识别审批元数据，写入 `mcp_approval_request` 事件，记录请求/决策/记忆信息。
+5. Python 新增与回归：
+   - 新增 `tests/test_permission_flow.py`，覆盖 `allow_and_remember / deny / supplement / prefix 命中`。
+   - 回归通过：`python -m unittest tests.test_permission_flow tests.test_service tests.test_tool_monitor -v`（47 项）。
+   - 全量发现测试已通过：`python -m unittest discover -s tests -p "test_*.py" -v`（104 项）。
 ## 2026-04-26 ToolContext 字段收敛 + 系统工具禁止回退
 
 1. `ToolContext` 字段已收敛为：`workspace/topic_workspace/runtime_workspace`，移除 `*_root` 版本字段。
@@ -703,6 +723,9 @@ ode_name，避免测试桩和灰度期间抖动。
    - `--help` 已补参数说明与示例。
 5. 回归结果：
    - `\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
+
+
+
 
 
 

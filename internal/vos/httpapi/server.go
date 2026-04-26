@@ -204,6 +204,7 @@ func (server *Server) registerRoutes() {
 
 	server.mux.HandleFunc(v1Prefix+"/topics", server.handleV1Topics)
 	server.mux.HandleFunc(v1Prefix+"/topics/", server.handleV1TopicRoutes)
+	server.mux.HandleFunc(v1Prefix+"/user/permissions", server.handleV1UserPermissions)
 
 	server.mux.HandleFunc(v1Prefix+"/nodes", server.handleV1Nodes)
 	server.mux.HandleFunc(v1Prefix+"/nodes/", server.handleV1NodeRoutes)
@@ -325,6 +326,16 @@ func (server *Server) handleV1TopicRoutes(writer http.ResponseWriter, request *h
 			return
 		}
 		server.handleV1TopicWorkspace(writer, request, topicID)
+		return
+	}
+	if strings.HasSuffix(path, "/permissions") {
+		topicID := strings.TrimSuffix(path, "/permissions")
+		topicID = strings.TrimSuffix(topicID, "/")
+		if topicID == "" || strings.Contains(topicID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1TopicPermissions(writer, request, topicID)
 		return
 	}
 
@@ -485,6 +496,86 @@ func (server *Server) handleV1TopicWorkspace(writer http.ResponseWriter, request
 		server.writeV1Success(writer, binding)
 	default:
 		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPut)
+	}
+}
+
+func (server *Server) handleV1TopicPermissions(writer http.ResponseWriter, request *http.Request, topicID string) {
+	switch request.Method {
+	case http.MethodGet:
+		items, err := server.service.ListTopicToolPermissions(topicID)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, map[string]any{"topic_id": topicID, "tool_allows": items})
+	case http.MethodPost:
+		var payload v1TopicPermissionAddPayload
+		if err := decodeJSON(request.Body, &payload); err != nil {
+			server.writeV1Error(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		item, err := server.service.AddTopicToolPermission(topicID, payload.ToolName, payload.DirPrefix)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, item)
+	case http.MethodDelete:
+		permissionID := strings.TrimSpace(request.URL.Query().Get("id"))
+		if permissionID == "" {
+			var payload v1TopicPermissionDeletePayload
+			if err := decodeJSON(request.Body, &payload); err == nil {
+				permissionID = strings.TrimSpace(payload.ID)
+			}
+		}
+		deleted, err := server.service.DeleteTopicToolPermission(topicID, permissionID)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, map[string]any{"topic_id": topicID, "id": permissionID, "deleted": deleted})
+	default:
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPost, http.MethodDelete)
+	}
+}
+
+func (server *Server) handleV1UserPermissions(writer http.ResponseWriter, request *http.Request) {
+	switch request.Method {
+	case http.MethodGet:
+		items, err := server.service.ListUserSkillPermissions()
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, map[string]any{"skill_allows": items})
+	case http.MethodPost:
+		var payload v1UserPermissionAddPayload
+		if err := decodeJSON(request.Body, &payload); err != nil {
+			server.writeV1Error(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		name, err := server.service.AddUserSkillPermission(payload.SkillName)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, map[string]any{"skill_name": name})
+	case http.MethodDelete:
+		skillName := strings.TrimSpace(request.URL.Query().Get("skill_name"))
+		if skillName == "" {
+			var payload v1UserPermissionDeletePayload
+			if err := decodeJSON(request.Body, &payload); err == nil {
+				skillName = strings.TrimSpace(payload.SkillName)
+			}
+		}
+		deleted, err := server.service.DeleteUserSkillPermission(skillName)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, map[string]any{"skill_name": skillName, "deleted": deleted})
+	default:
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPost, http.MethodDelete)
 	}
 }
 
@@ -1396,6 +1487,23 @@ type v1TopicMemoryApplyPayload struct {
 
 type v1TopicWorkspaceUpdatePayload struct {
 	Workspace string `json:"workspace"`
+}
+
+type v1TopicPermissionAddPayload struct {
+	ToolName  string `json:"tool_name"`
+	DirPrefix string `json:"dir_prefix"`
+}
+
+type v1TopicPermissionDeletePayload struct {
+	ID string `json:"id"`
+}
+
+type v1UserPermissionAddPayload struct {
+	SkillName string `json:"skill_name"`
+}
+
+type v1UserPermissionDeletePayload struct {
+	SkillName string `json:"skill_name"`
 }
 
 type moveNodePayload struct {

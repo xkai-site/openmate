@@ -34,7 +34,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	sessionDBFile := root.String("session-db-file", "", "SQLite session database path (overrides --db-file)")
 	root.Usage = func() {
 		fmt.Fprintln(root.Output(), "Usage:")
-		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context|process|memory> <command> [flags]")
+		fmt.Fprintln(root.Output(), "  vos [--db-file PATH] [--state-file PATH] [--session-db-file PATH] <topic|node|session|context|process|memory|permission> <command> [flags]")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Commands:")
 		fmt.Fprintln(root.Output(), "  topic   Topic operations")
@@ -43,6 +43,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(root.Output(), "  context Context aggregation operations")
 		fmt.Fprintln(root.Output(), "  process Process operations")
 		fmt.Fprintln(root.Output(), "  memory  Topic memory proposal operations")
+		fmt.Fprintln(root.Output(), "  permission Topic/User permission operations")
 		fmt.Fprintln(root.Output())
 		fmt.Fprintln(root.Output(), "Global flags:")
 		root.PrintDefaults()
@@ -103,6 +104,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "memory":
 		svc := service.New(store.NewJSONStateStore(*stateFile))
 		return runMemory(svc, rest[1:], stdout, stderr)
+	case "permission":
+		svc := service.New(store.NewJSONStateStore(*stateFile))
+		return runPermission(svc, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown resource: %s\n", rest[0])
 		root.Usage()
@@ -674,6 +678,132 @@ func runNodeToolContext(svc *service.Service, args []string, stdout, stderr io.W
 	return dumpJSON(context, stdout, stderr)
 }
 
+func runPermission(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || isHelpToken(args[0]) {
+		printPermissionUsage(stderr)
+		if len(args) > 0 {
+			return 0
+		}
+		return 2
+	}
+	switch args[0] {
+	case "topic":
+		return runPermissionTopic(svc, args[1:], stdout, stderr)
+	case "user":
+		return runPermissionUser(svc, args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown permission command: %s\n", args[0])
+		printPermissionUsage(stderr)
+		return 2
+	}
+}
+
+func runPermissionTopic(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || isHelpToken(args[0]) {
+		fmt.Fprintln(stderr, "Usage:")
+		fmt.Fprintln(stderr, "  vos permission topic <list|add|delete> [flags]")
+		if len(args) > 0 {
+			return 0
+		}
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("vos permission topic list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		topicID := fs.String("topic-id", "", "Topic ID")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		items, err := svc.ListTopicToolPermissions(*topicID)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"topic_id": *topicID, "tool_allows": items}, stdout, stderr)
+	case "add":
+		fs := flag.NewFlagSet("vos permission topic add", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		topicID := fs.String("topic-id", "", "Topic ID")
+		toolName := fs.String("tool-name", "", "Tool name")
+		dirPrefix := fs.String("dir-prefix", "", "Directory prefix")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		item, err := svc.AddTopicToolPermission(*topicID, *toolName, *dirPrefix)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(item, stdout, stderr)
+	case "delete":
+		fs := flag.NewFlagSet("vos permission topic delete", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		topicID := fs.String("topic-id", "", "Topic ID")
+		id := fs.String("id", "", "Permission rule id")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		deleted, err := svc.DeleteTopicToolPermission(*topicID, *id)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"topic_id": *topicID, "id": *id, "deleted": deleted}, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown permission topic command: %s\n", args[0])
+		return 2
+	}
+}
+
+func runPermissionUser(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || isHelpToken(args[0]) {
+		fmt.Fprintln(stderr, "Usage:")
+		fmt.Fprintln(stderr, "  vos permission user <list|add|delete> [flags]")
+		if len(args) > 0 {
+			return 0
+		}
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("vos permission user list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		items, err := svc.ListUserSkillPermissions()
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"skill_allows": items}, stdout, stderr)
+	case "add":
+		fs := flag.NewFlagSet("vos permission user add", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		skillName := fs.String("skill-name", "", "Skill name")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		skill, err := svc.AddUserSkillPermission(*skillName)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"skill_name": skill}, stdout, stderr)
+	case "delete":
+		fs := flag.NewFlagSet("vos permission user delete", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		skillName := fs.String("skill-name", "", "Skill name")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		deleted, err := svc.DeleteUserSkillPermission(*skillName)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"skill_name": *skillName, "deleted": deleted}, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown permission user command: %s\n", args[0])
+		return 2
+	}
+}
+
 func printTopicUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  vos topic <create|get|list|update|delete> [flags]")
@@ -682,6 +812,11 @@ func printTopicUsage(writer io.Writer) {
 func printNodeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  vos node <create|get|list|children|children-processes|tool-context|move|delete|update|leaf|decompose> [flags]")
+}
+
+func printPermissionUsage(writer io.Writer) {
+	fmt.Fprintln(writer, "Usage:")
+	fmt.Fprintln(writer, "  vos permission <topic|user> <list|add|delete> [flags]")
 }
 
 func parseFlagSet(fs *flag.FlagSet, args []string) int {

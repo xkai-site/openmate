@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 GuardState = Literal["allow", "deny", "confirm"]
 AgentMode = Literal["execution", "decompose", "priority", "compact"]
+ApprovalChoice = Literal["allow_and_remember", "allow_once", "deny", "supplement"]
 
 
 class Build(BaseModel):
@@ -58,6 +59,28 @@ class GuardDecision(BaseModel):
     reason: str = ""
 
 
+class PermissionRule(BaseModel):
+    tool_name: str = Field(min_length=1)
+    normalized_dir_prefix: str = Field(min_length=1)
+
+
+class ApprovalRequest(BaseModel):
+    request_id: str = Field(min_length=1)
+    node_id: str = Field(min_length=1)
+    topic_id: str | None = None
+    target_type: Literal["tool", "skill"]
+    tool_name: str | None = None
+    skill_name: str | None = None
+    directories: list[str] = Field(default_factory=list)
+    reason: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalDecision(BaseModel):
+    choice: ApprovalChoice
+    supplement_text: str | None = None
+
+
 class AgentInput(BaseModel):
     node_id: str = Field(min_length=1)
     context: ContextBundle
@@ -72,6 +95,7 @@ class ToolResult(BaseModel):
     output: str = ""
     error_code: str | None = None
     error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DecomposeTask(BaseModel):

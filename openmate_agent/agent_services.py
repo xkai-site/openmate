@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 _LOGGER = logging.getLogger(__name__)
@@ -13,6 +13,8 @@ from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
 
 from .interfaces import LlmGateway
 from .models import (
+    ApprovalDecision,
+    ApprovalRequest,
     Build,
     CompactProcessInput,
     CompactRequest,
@@ -25,18 +27,30 @@ from .models import (
     PriorityAssignment,
     PriorityRequest,
     PriorityResponse,
+    SkillSpec,
     ToolBundle,
 )
 from .orchestration import ContextTooLargeError, ExecutionOrchestrator
+from .permission_store import PermissionStore
 from .pipeline import BuildPipeline
 
 class ExecutionAgentService:
-    def __init__(self, *, build_pipeline: BuildPipeline, execution_orchestrator: ExecutionOrchestrator) -> None:
+    def __init__(
+        self,
+        *,
+        build_pipeline: BuildPipeline,
+        execution_orchestrator: ExecutionOrchestrator,
+        approval_resolver: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
+        permission_store: PermissionStore | None = None,
+    ) -> None:
         self._build_pipeline = build_pipeline
         self._execution_orchestrator = execution_orchestrator
+        self._approval_resolver = approval_resolver
+        self._permission_store = permission_store
 
     def run(self, build: Build) -> str:
         agent_input = self._build_pipeline.build(build.node_id)
+        agent_input = self._apply_skill_permissions(build=build, agent_input=agent_input)
         agent_input = agent_input.model_copy(update={"prompt": self._build_execution_prompt(agent_input)})
         tools_payload = _build_openai_tools(agent_input.tools)
         try:
@@ -49,6 +63,7 @@ class ExecutionAgentService:
             # Context was compacted by the runner. Rebuild and retry once.
             _LOGGER.info("ContextTooLargeError, rebuilding context and retrying for node=%s", build.node_id)
             agent_input = self._build_pipeline.build(build.node_id)
+            agent_input = self._apply_skill_permissions(build=build, agent_input=agent_input)
             agent_input = agent_input.model_copy(update={"prompt": self._build_execution_prompt(agent_input)})
             tools_payload = _build_openai_tools(agent_input.tools)
             return self._execution_orchestrator.execute(
@@ -56,6 +71,44 @@ class ExecutionAgentService:
                 agent_input=agent_input,
                 tools_payload=tools_payload,
             )
+
+    def _apply_skill_permissions(self, *, build: Build, agent_input: Any) -> Any:
+        if not agent_input.skills.skills:
+            return agent_input
+        if self._approval_resolver is None:
+            return agent_input
+
+        allowed_names: set[str] = set()
+        if self._permission_store is not None:
+            try:
+                allowed_names = set(self._permission_store.list_user_skill_allows())
+            except Exception:
+                allowed_names = set()
+
+        approved: list[SkillSpec] = []
+        for skill in agent_input.skills.skills:
+            if skill.name in allowed_names:
+                approved.append(skill)
+                continue
+
+            request = ApprovalRequest(
+                request_id=f"approval:{build.node_id}:skill:{skill.name}",
+                node_id=build.node_id,
+                target_type="skill",
+                skill_name=skill.name,
+                reason="skill injection requires user confirmation",
+                payload={"config": skill.config},
+            )
+            decision = self._approval_resolver(request)
+            if decision.choice in {"allow_once", "allow_and_remember"}:
+                approved.append(skill)
+                if decision.choice == "allow_and_remember" and self._permission_store is not None:
+                    try:
+                        self._permission_store.add_user_skill_allow(skill_name=skill.name)
+                    except Exception:
+                        pass
+        next_skills = agent_input.skills.model_copy(update={"skills": approved})
+        return agent_input.model_copy(update={"skills": next_skills})
 
     @staticmethod
     def _build_execution_prompt(agent_input: Any) -> str:
