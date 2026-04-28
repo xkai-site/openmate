@@ -658,6 +658,46 @@ class AgentCliTests(unittest.TestCase):
             self.assertIn('"summary"', summary_result.stdout)
             self.assertIn('"p95_duration_ms"', summary_result.stdout)
 
+    def test_skills_query_and_monitor(self) -> None:
+        with TemporaryDirectory() as tmp:
+            skill_file = Path(tmp) / ".skill" / "alpha" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text("# alpha\nalpha skill description\n", encoding="utf-8")
+
+            query_result = self._run("skills", "query", cwd=tmp)
+            self.assertEqual(query_result.returncode, 0)
+            self.assertIn('"mode"', query_result.stdout)
+            self.assertIn('"alpha"', query_result.stdout)
+
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            monitor_file = Path(tmp) / ".openmate" / "runtime" / "skill_monitor.jsonl"
+            monitor_file.parent.mkdir(parents=True, exist_ok=True)
+            monitor_file.write_text(
+                json.dumps(
+                    {
+                        "event_id": "1",
+                        "phase": "after",
+                        "ts": now,
+                        "target_type": "skill",
+                        "node_id": "node-1",
+                        "source": "model",
+                        "skill_name": "alpha",
+                        "skill_path": str(skill_file),
+                        "success": True,
+                        "duration_ms": 9,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            list_result = self._run("skills", "monitor", "list", "--skill-name", "alpha", cwd=tmp)
+            self.assertEqual(list_result.returncode, 0)
+            self.assertIn('"events"', list_result.stdout)
+            summary_result = self._run("skills", "monitor", "summary", "--skill-name", "alpha", cwd=tmp)
+            self.assertEqual(summary_result.returncode, 0)
+            self.assertIn('"summary"', summary_result.stdout)
+
 
 class _EchoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802

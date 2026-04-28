@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -33,6 +34,8 @@ from .models import (
 from .orchestration import ContextTooLargeError, ExecutionOrchestrator
 from .permission_store import PermissionStore
 from .pipeline import BuildPipeline
+from .skill_catalog import SkillCatalog
+from .skill_monitor import SkillMonitorService
 
 class ExecutionAgentService:
     def __init__(
@@ -42,11 +45,16 @@ class ExecutionAgentService:
         execution_orchestrator: ExecutionOrchestrator,
         approval_resolver: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
         permission_store: PermissionStore | None = None,
+        workspace_root: str | Path | None = None,
+        skill_catalog: SkillCatalog | None = None,
+        skill_monitor: SkillMonitorService | None = None,
     ) -> None:
         self._build_pipeline = build_pipeline
         self._execution_orchestrator = execution_orchestrator
         self._approval_resolver = approval_resolver
         self._permission_store = permission_store
+        self._skill_catalog = skill_catalog or SkillCatalog(workspace_root=workspace_root or Path.cwd())
+        self._skill_monitor = skill_monitor or SkillMonitorService(workspace_root=workspace_root or Path.cwd())
 
     def run(self, build: Build) -> str:
         agent_input = self._build_pipeline.build(build.node_id)
@@ -75,9 +83,6 @@ class ExecutionAgentService:
     def _apply_skill_permissions(self, *, build: Build, agent_input: Any) -> Any:
         if not agent_input.skills.skills:
             return agent_input
-        if self._approval_resolver is None:
-            return agent_input
-
         allowed_names: set[str] = set()
         if self._permission_store is not None:
             try:
@@ -85,12 +90,21 @@ class ExecutionAgentService:
             except Exception:
                 allowed_names = set()
 
+        context_payload = self._parse_context_payload(agent_input.context.payload)
+        requested = set(self._extract_requested_skills(context_payload))
         approved: list[SkillSpec] = []
         for skill in agent_input.skills.skills:
-            if skill.name in allowed_names:
+            if skill.name == "skill_query":
                 approved.append(skill)
                 continue
+            if requested and skill.name not in requested:
+                continue
+            if skill.name in allowed_names:
+                approved.append(self._materialize_skill(skill=skill, node_id=build.node_id))
+                continue
 
+            if self._approval_resolver is None:
+                continue
             request = ApprovalRequest(
                 request_id=f"approval:{build.node_id}:skill:{skill.name}",
                 node_id=build.node_id,
@@ -101,7 +115,7 @@ class ExecutionAgentService:
             )
             decision = self._approval_resolver(request)
             if decision.choice in {"allow_once", "allow_and_remember"}:
-                approved.append(skill)
+                approved.append(self._materialize_skill(skill=skill, node_id=build.node_id))
                 if decision.choice == "allow_and_remember" and self._permission_store is not None:
                     try:
                         self._permission_store.add_user_skill_allow(skill_name=skill.name)
@@ -113,6 +127,14 @@ class ExecutionAgentService:
     @staticmethod
     def _build_execution_prompt(agent_input: Any) -> str:
         context_payload = ExecutionAgentService._parse_context_payload(agent_input.context.payload)
+        skill_query_config = {"threshold": 10, "description_truncate": 25}
+        for skill in agent_input.skills.skills:
+            if skill.name == "skill_query":
+                skill_query_config = {
+                    "threshold": int(skill.config.get("threshold", 10)),
+                    "description_truncate": int(skill.config.get("description_truncate", 25)),
+                }
+                break
         system_prompt = {
             "preset": (
                 "你是 OpenMate Agent。保持输出可执行、可追踪、可回放；"
@@ -131,6 +153,10 @@ class ExecutionAgentService:
                 {"name": skill.name, "config": skill.config}
                 for skill in agent_input.skills.skills
             ],
+            "skill_discovery_policy": {
+                "default": "Do not preload all skills; discover first, then request approval and inject.",
+                "skill_query": skill_query_config,
+            },
             "memory_update_confirmation_rule": (
                 "当你的回答可能更新 user_memory 或 topic_memory 时，先询问用户是否更新。"
             ),
@@ -176,6 +202,60 @@ class ExecutionAgentService:
             "process_contexts": [],
             "session_history": [],
         }
+
+    @staticmethod
+    def _extract_requested_skills(context_payload: dict[str, Any]) -> list[str]:
+        raw = context_payload.get("requested_skills")
+        if not isinstance(raw, list):
+            return []
+        result: list[str] = []
+        for item in raw:
+            name = str(item).strip()
+            if name:
+                result.append(name)
+        return result
+
+    def _materialize_skill(self, *, skill: SkillSpec, node_id: str) -> SkillSpec:
+        path_raw = skill.config.get("path")
+        if not isinstance(path_raw, str) or not path_raw.strip():
+            return skill
+        skill_path = Path(path_raw).resolve()
+        started = time.perf_counter()
+        try:
+            self._skill_monitor.record_before(
+                node_id=node_id,
+                source="model",
+                skill_name=skill.name,
+                skill_path=str(skill_path),
+            )
+            content = skill_path.read_text(encoding="utf-8")
+            config = dict(skill.config)
+            config["content"] = content
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+            self._skill_monitor.record_after(
+                node_id=node_id,
+                source="model",
+                skill_name=skill.name,
+                skill_path=str(skill_path),
+                success=True,
+                error_code=None,
+                error=None,
+                duration_ms=duration_ms,
+            )
+            return skill.model_copy(update={"config": config})
+        except Exception as exc:
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+            self._skill_monitor.record_after(
+                node_id=node_id,
+                source="model",
+                skill_name=skill.name,
+                skill_path=str(skill_path),
+                success=False,
+                error_code="SKILL_READ_FAILED",
+                error=str(exc),
+                duration_ms=duration_ms,
+            )
+            return skill
 
 
 class DecomposeAgentService:

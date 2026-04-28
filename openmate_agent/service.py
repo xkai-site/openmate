@@ -117,6 +117,7 @@ class AgentCapabilityService:
             execution_orchestrator=self._execution_orchestrator,
             approval_resolver=self._approval_resolver,
             permission_store=self._permission_store,
+            workspace_root=self._workspace_root,
         )
         self._decompose_agent = decompose_agent or DecomposeAgentService(
             build_pipeline=self._build_pipeline,

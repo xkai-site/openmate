@@ -41,6 +41,20 @@ class SkillSpec(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class SkillDescriptor(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+
+
+class SkillQueryResult(BaseModel):
+    mode: Literal["skills", "truncated"]
+    remaining_count: int = Field(ge=0)
+    skills: list[SkillDescriptor] = Field(default_factory=list)
+    threshold: int = Field(default=10, ge=1)
+
+
 class SkillBundle(BaseModel):
     node_id: str = Field(min_length=1)
     skills: list[SkillSpec] = Field(default_factory=list)

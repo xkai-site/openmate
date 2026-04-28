@@ -8,6 +8,9 @@ from typing import Sequence
 from openmate_shared.runtime_paths import resolve_workspace_root
 
 from .models import CompactRequest, DecomposeRequest, PriorityRequest
+from .skill_catalog import SkillCatalog
+from .skill_monitor import dump_events_json as dump_skill_events_json
+from .skill_monitor import SkillMonitorService
 from .service import AgentCapabilityService
 from .tool_monitor import dump_events_json, ToolMonitorService
 from .tooling import ToolRegistration, load_tool_registry, save_registry_file, validate_registry_file
@@ -320,6 +323,29 @@ def create_parser() -> argparse.ArgumentParser:
     monitor_summary.add_argument("--limit", type=int, default=100, help="Max tool rows.")
     monitor_summary.add_argument("--window-minutes", type=int, default=60, help="Lookback window in minutes.")
 
+    skills_parser = subparsers.add_parser("skills", help="Discover and monitor skills.")
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_name", required=True)
+
+    skills_query = skills_subparsers.add_parser("query", help="Discover skills by scanning directories.")
+    skills_query.add_argument("--path", default=None, help="Optional extra scan path.")
+    skills_query.add_argument("--keyword", default=None, help="Keyword filter on name/description.")
+
+    skills_monitor = skills_subparsers.add_parser("monitor", help="Query skill monitor events and summary.")
+    skills_monitor_subparsers = skills_monitor.add_subparsers(dest="skill_monitor_name", required=True)
+    skill_monitor_list = skills_monitor_subparsers.add_parser("list", help="List skill monitor events.")
+    skill_monitor_list.add_argument("--skill-name", default=None, help="Filter by skill name.")
+    skill_monitor_list.add_argument("--source", choices=["model", "cli", "http", "unknown"], default=None, help="Filter by source.")
+    skill_monitor_list.add_argument("--success", choices=["true", "false"], default=None, help="Filter by success.")
+    skill_monitor_list.add_argument("--window-minutes", type=int, default=None, help="Lookback window in minutes.")
+    skill_monitor_list.add_argument("--limit", type=int, default=50, help="Max event count.")
+
+    skill_monitor_summary = skills_monitor_subparsers.add_parser("summary", help="Summarize skill monitor events.")
+    skill_monitor_summary.add_argument("--skill-name", default=None, help="Filter by skill name.")
+    skill_monitor_summary.add_argument("--source", choices=["model", "cli", "http", "unknown"], default=None, help="Filter by source.")
+    skill_monitor_summary.add_argument("--success", choices=["true", "false"], default=None, help="Filter by success.")
+    skill_monitor_summary.add_argument("--window-minutes", type=int, default=60, help="Lookback window in minutes.")
+    skill_monitor_summary.add_argument("--limit", type=int, default=100, help="Max skill rows.")
+
     worker_parser = subparsers.add_parser("worker", help="Execute schedule worker action.")
     worker_subparsers = worker_parser.add_subparsers(dest="worker_name", required=True)
 
@@ -620,6 +646,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             print(json.dumps({"success": True, "message": "tool registry validation passed"}, ensure_ascii=False))
             return 0
+
+    if args.command == "skills":
+        workspace_root = resolve_workspace_root(Path.cwd())
+        if args.skills_name == "query":
+            catalog = SkillCatalog(workspace_root=workspace_root)
+            result = catalog.query(extra_path=args.path, keyword=args.keyword)
+            print(json.dumps({"success": True, **result.model_dump(mode="json")}, ensure_ascii=False, indent=2))
+            return 0
+        if args.skills_name == "monitor":
+            monitor_service = SkillMonitorService(workspace_root=workspace_root)
+            if args.skill_monitor_name == "list":
+                success_value = None if args.success is None else args.success == "true"
+                events = monitor_service.list_events(
+                    skill_name=args.skill_name,
+                    source=args.source,
+                    success=success_value,
+                    window_minutes=args.window_minutes,
+                    limit=args.limit,
+                )
+                print(
+                    json.dumps(
+                        {"success": True, "events": dump_skill_events_json(events)},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.skill_monitor_name == "summary":
+                success_value = None if args.success is None else args.success == "true"
+                summary = monitor_service.summarize(
+                    skill_name=args.skill_name,
+                    source=args.source,
+                    success=success_value,
+                    window_minutes=args.window_minutes,
+                    limit=args.limit,
+                )
+                print(json.dumps({"success": True, "summary": summary}, ensure_ascii=False, indent=2))
+                return 0
 
     if args.command == "worker":
         if args.worker_name != "run":

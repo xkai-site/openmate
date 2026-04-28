@@ -8,6 +8,7 @@ from .models import (
     ContextBundle,
     GuardDecision,
     SkillBundle,
+    SkillSpec,
     ToolAction,
     ToolBundle,
     ToolSpec,
@@ -63,7 +64,18 @@ class DefaultToolInjector(ToolInjector):
 
 class DefaultSkillInjector(SkillInjector):
     def inject(self, node_id: str) -> SkillBundle:
-        return SkillBundle(node_id=node_id, skills=[])
+        return SkillBundle(
+            node_id=node_id,
+            skills=[
+                SkillSpec(
+                    name="skill_query",
+                    config={
+                        "type": "builtin",
+                        "description": "Discover available skills on demand by keyword/path.",
+                    },
+                )
+            ],
+        )
 
 
 class DefaultAssembler(Assembler):
