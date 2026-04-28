@@ -1,10 +1,11 @@
 ﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, App, Modal } from 'antd';
-import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
+import { SendOutlined, StopOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, ExperimentOutlined, ThunderboltOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
+import { cancelChatInvocation, getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
+import { getChatFriendlyErrorMessage, toChatServiceError } from '@/services/chatError';
 import { decomposeNode } from '@/services/api/tree';
 import { compactNode, createNode, getNode, getNodeSession } from '@/services/api/nodes';
 import {
@@ -93,6 +94,7 @@ export default function HomePage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const activeInvocationRef = useRef<string | null>(null);
+  const lastSubmittedTextRef = useRef('');
   const topicWorkspaceUnavailableRef = useRef(false);
 
   const navigate = useNavigate();
@@ -341,7 +343,7 @@ export default function HomePage() {
           clearPendingInvocation();
         } else if (result.status === 'failure') {
           clearPendingInvocation();
-          message.error(result.error?.message || '恢复会话失败');
+          message.error(getChatFriendlyErrorMessage(result.error, '恢复会话失败'));
           return;
         } else {
           await sendChatMessageStream(
@@ -392,7 +394,7 @@ export default function HomePage() {
               clearPendingInvocation();
             } else if (refreshed.status === 'failure') {
               clearPendingInvocation();
-              message.error(refreshed.error?.message || '恢复会话失败');
+              message.error(getChatFriendlyErrorMessage(refreshed.error, '恢复会话失败'));
               return;
             }
           }
@@ -438,6 +440,7 @@ export default function HomePage() {
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || isSending) return;
+    lastSubmittedTextRef.current = text;
     const startedWithoutNode = !nodeId;
     const pendingWorkspaceSnapshot = pendingWorkspaceRoot;
 
@@ -461,6 +464,7 @@ export default function HomePage() {
       let assistantReply = '';
       let summary: ChatStreamSummaryEvent | null = null;
       let hasSummary = false;
+      let fatalReceived = false;
       let createdNodeId: string | null = null;
       const streamPayload: ChatStreamRequest = {
         node_id: nodeId ?? undefined,
@@ -503,10 +507,8 @@ export default function HomePage() {
               setProjectPanelKey((k) => k + 1);
             },
             onFatal: (payload) => {
-              const fatalInvocationID = String((payload as { invocation_id?: string }).invocation_id ?? '').trim();
-              if (fatalInvocationID) {
-                savePendingInvocation(fatalInvocationID, nodeId);
-              }
+              fatalReceived = true;
+              clearPendingInvocation();
             },
           },
           controller.signal,
@@ -517,6 +519,9 @@ export default function HomePage() {
       } catch (streamErr) {
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
           return;
+        }
+        if (fatalReceived) {
+          throw streamErr;
         }
         const activeInvocationID = (activeInvocationRef.current ?? '').trim();
         if (activeInvocationID) {
@@ -568,14 +573,15 @@ export default function HomePage() {
                   setProjectPanelKey((k) => k + 1);
                 },
                 onFatal: (payload) => {
-                  const fatalInvocationID = String((payload as { invocation_id?: string }).invocation_id ?? '').trim();
-                  if (fatalInvocationID) {
-                    savePendingInvocation(fatalInvocationID, nodeId);
-                  }
+                  fatalReceived = true;
+                  clearPendingInvocation();
                 },
               },
               controller.signal,
             );
+            if (fatalReceived) {
+              throw new Error('stream terminated by fatal event');
+            }
             if (!hasSummary) {
               const refreshed = await waitChatResult(activeInvocationID, { signal: controller.signal });
               if (refreshed.status === 'success') {
@@ -589,14 +595,14 @@ export default function HomePage() {
                 setProjectPanelKey((k) => k + 1);
               } else if (refreshed.status === 'failure') {
                 clearPendingInvocation();
-                throw new Error(refreshed.error?.message || '流式对话失败');
+                throw toChatServiceError(refreshed.error, '流式对话失败');
               } else {
                 throw new Error('流式对话仍在进行中，请稍后重试');
               }
             }
           } else {
             clearPendingInvocation();
-            throw new Error(result.error?.message || '流式对话失败');
+            throw toChatServiceError(result.error, '流式对话失败');
           }
         } else {
           const shouldFallback = streamErr instanceof TypeError;
@@ -644,7 +650,7 @@ export default function HomePage() {
       }
     } catch (err) {
       console.error('发送消息失败:', err);
-      message.error('发送失败，请重试');
+      message.error(getChatFriendlyErrorMessage(err, '发送失败，请重试'));
       setMessages((prev) => prev.slice(0, -1));
       setInput(text);
     } finally {
@@ -665,6 +671,30 @@ export default function HomePage() {
     pendingWorkspaceRoot,
     savePendingInvocation,
   ]);
+
+  const handleStopSending = useCallback(async () => {
+    const controller = streamAbortRef.current;
+    if (!controller) {
+      return;
+    }
+    const invocationID = (activeInvocationRef.current ?? '').trim();
+    controller.abort();
+    streamAbortRef.current = null;
+    if (invocationID) {
+      try {
+        await cancelChatInvocation(invocationID);
+      } catch {
+        // ignore cancel errors; local stop already applied
+      }
+    }
+    clearPendingInvocation();
+    setInput(lastSubmittedTextRef.current);
+    setIsSending(false);
+    setLivePhase(null);
+    setStreamingText('');
+    setLiveMethodCalls([]);
+    message.info('已停止当前输出');
+  }, [clearPendingInvocation, message]);
 
   const buildMessagesFromSession = useCallback((sessionHistory: SessionMessage[]): ChatBubble[] => {
     const historyMessages: ChatBubble[] = sessionHistory
@@ -1088,12 +1118,18 @@ export default function HomePage() {
                   {isCompacting ? <LoadingOutlined /> : <ShrinkOutlined />}
                 </button>
                 <button
-                  onClick={() => void handleSend()}
-                  disabled={!input.trim() || isSending || isDecomposing || isCompacting}
+                  onClick={() => {
+                    if (isSending) {
+                      void handleStopSending();
+                      return;
+                    }
+                    void handleSend();
+                  }}
+                  disabled={(!input.trim() && !isSending) || isDecomposing || isCompacting}
                   className="home-send-btn"
-                  aria-label="发送消息"
+                  aria-label={isSending ? '停止输出' : '发送消息'}
                 >
-                  <SendOutlined />
+                  {isSending ? <StopOutlined /> : <SendOutlined />}
                 </button>
               </div>
               

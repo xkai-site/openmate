@@ -408,13 +408,14 @@ export interface ChatStreamSummaryEvent extends ChatStreamBaseEvent {
 }
 
 export interface ChatStreamFatalEvent extends ChatStreamBaseEvent {
-  message: string;
-  code?: number;
+  code?: string;
+  technical_message?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface ChatResultError {
   code?: string;
-  message?: string;
+  technical_message?: string;
   retryable?: boolean;
   provider_status_code?: number;
   details?: Record<string, unknown>;
