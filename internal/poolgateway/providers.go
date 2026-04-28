@@ -1245,6 +1245,7 @@ func classifyHTTPError(statusCode int, responseBody []byte, requestPath string) 
 	code := "provider_http_error"
 	retryable := false
 	message := fmt.Sprintf("provider returned HTTP %d", statusCode)
+	providerCode, providerMessage := parseProviderHTTPErrorBody(responseBody)
 	switch {
 	case statusCode == http.StatusTooManyRequests:
 		code = "provider_rate_limited"
@@ -1252,6 +1253,11 @@ func classifyHTTPError(statusCode int, responseBody []byte, requestPath string) 
 	case statusCode == http.StatusRequestTimeout:
 		code = "provider_timeout"
 		retryable = true
+	case statusCode == http.StatusForbidden && providerCode != "":
+		code = providerCode
+		if providerMessage != "" {
+			message = providerMessage
+		}
 	case statusCode == http.StatusNotFound && strings.HasSuffix(strings.TrimSpace(requestPath), "/responses"):
 		message = "provider returned HTTP 404 on /responses; endpoint may only support chat/completions"
 	case statusCode >= 500:
@@ -1269,4 +1275,19 @@ func classifyHTTPError(statusCode int, responseBody []byte, requestPath string) 
 			"body": string(responseBody),
 		},
 	}
+}
+
+func parseProviderHTTPErrorBody(responseBody []byte) (string, string) {
+	if len(responseBody) == 0 {
+		return "", ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return "", ""
+	}
+	errorRaw, ok := payload["error"].(map[string]any)
+	if !ok || len(errorRaw) == 0 {
+		return "", ""
+	}
+	return strings.TrimSpace(anyString(errorRaw["code"])), strings.TrimSpace(anyString(errorRaw["message"]))
 }

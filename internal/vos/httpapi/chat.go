@@ -393,9 +393,15 @@ func (server *Server) handleV1ChatStream(writer http.ResponseWriter, request *ht
 			}
 			if event.Type == "fatal" {
 				fatalPayload := cloneMapOrEmpty(event.Payload)
-				message := readOptionalString(fatalPayload, "message")
-				if strings.TrimSpace(message) == "" {
-					fatalPayload["message"] = "chat stream failed"
+				technicalMessage := readOptionalString(fatalPayload, "technical_message")
+				if strings.TrimSpace(technicalMessage) == "" {
+					fatalPayload["technical_message"] = "chat stream failed"
+				}
+				if strings.TrimSpace(readOptionalString(fatalPayload, "code")) == "" {
+					fatalPayload["code"] = "chat_stream_failed"
+				}
+				if _, ok := fatalPayload["details"]; !ok {
+					fatalPayload["details"] = map[string]any{}
 				}
 				emitter.emit("fatal", fatalPayload)
 				return
@@ -533,9 +539,9 @@ func (server *Server) startChatRun(
 				PayloadJSON: map[string]any{
 					"role": domain.SessionRoleSystem,
 					"error": map[string]any{
-						"code":      "CHAT_STREAM_FAILED",
-						"message":   err.Error(),
-						"retryable": false,
+						"code":              "chat_stream_failed",
+						"technical_message": err.Error(),
+						"details":           map[string]any{},
 					},
 				},
 				NextStatus: sessionStatusPtr(domain.SessionStatusFailed),
@@ -543,9 +549,11 @@ func (server *Server) startChatRun(
 			run.publish(chatRunEvent{
 				Type: "fatal",
 				Payload: map[string]any{
-					"invocation_id": run.InvocationID,
-					"status":        "failure",
-					"message":       err.Error(),
+					"invocation_id":     run.InvocationID,
+					"status":            "failure",
+					"code":              "chat_stream_failed",
+					"technical_message": err.Error(),
+					"details":           map[string]any{},
 				},
 			})
 			return
@@ -654,16 +662,14 @@ func gatewayErrorToMap(gatewayError *poolgateway.GatewayError) map[string]any {
 		return map[string]any{}
 	}
 	payload := map[string]any{
-		"code":      gatewayError.Code,
-		"message":   gatewayError.Message,
-		"retryable": gatewayError.Retryable,
+		"code":              gatewayError.Code,
+		"technical_message": gatewayError.Message,
+		"retryable":         gatewayError.Retryable,
 	}
 	if gatewayError.ProviderStatusCode != nil {
 		payload["provider_status_code"] = *gatewayError.ProviderStatusCode
 	}
-	if len(gatewayError.Details) > 0 {
-		payload["details"] = cloneMapOrEmpty(gatewayError.Details)
-	}
+	payload["details"] = cloneMapOrEmpty(gatewayError.Details)
 	return payload
 }
 
@@ -1165,12 +1171,14 @@ func (emitter *sseEmitter) toolCall(trace v1ToolTrace) {
 }
 
 func (emitter *sseEmitter) fatal(err error) {
-	message := "chat stream failed"
+	technicalMessage := "chat stream failed"
 	if err != nil {
-		message = err.Error()
+		technicalMessage = err.Error()
 	}
 	emitter.emit("fatal", map[string]any{
-		"message": message,
+		"code":              "chat_stream_failed",
+		"technical_message": technicalMessage,
+		"details":           map[string]any{},
 	})
 }
 

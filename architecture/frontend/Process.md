@@ -1,5 +1,18 @@
 # Frontend Process
 
+## 2026-04-28 聊天错误码映射统一（Home + Workspace）
+
+1. 前端聊天链路新增统一错误层 `frontend/src/services/chatError.ts`：
+   - 统一结构：`code + technical_message + details`
+   - 新增 `ChatServiceError` 与集中映射函数 `getChatFriendlyErrorMessage()`。
+2. `sendChatMessageStream()` 已统一错误解析：
+   - SSE `fatal` 事件按新字段抛 `ChatServiceError`
+   - 非 2xx 响应解析 envelope/data 后同样抛统一错误对象
+3. Home 与 Workspace 会话页统一接入同一错误映射函数：
+   - `insufficient_user_quota`、`provider_rate_limited` 等错误码展示友好提示
+   - 未命中错误码时回退通用文案
+4. 当前保持既有会话回滚、输入恢复、pending invocation 恢复逻辑不变，仅替换提示决策层。
+
 ## 2026-04-26 Home 内嵌工具监控页（左栏入口切换）
 
 1. 类型与 API：

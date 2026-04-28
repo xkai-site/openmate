@@ -1,4 +1,10 @@
 ﻿# SharedInfo Process
+## 2026-04-28 聊天错误码契约统一（code + technical_message + details）
+
+1. 聊天链路错误对象契约收敛为 `code + technical_message + details`，用于后端稳定表达与前端可维护映射解耦。
+2. PoolGateway 增强了 403 错误码解析：当上游返回 JSON 且存在 `error.code` 时，优先透传该稳定码（如 `insufficient_user_quota`）；非 JSON 或缺失 code 时回退 `provider_http_error`。
+3. VOS `chat/result` 与流式 `fatal` 事件已按新字段返回，`technical_message` 仅用于技术信息，不直接作为用户提示文案。
+4. 共享契约文档 `architecture/sharedInfo/模块契约.md` 新增“聊天错误码契约”与首批错误码字典，明确新增错误码需前后端同步维护。
 ## 2026-04-26 Topic Workspace 语义硬切（VOS + Agent + Frontend）
 
 1. VOS HTTP `topics/{id}/workspace` 契约已切换为 `workspace`：
@@ -439,6 +445,7 @@
 5. 验证结果：
    - Python：`\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
    - Go：`go test ./internal/vos/httpapi/...`、`go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+
 
 
 

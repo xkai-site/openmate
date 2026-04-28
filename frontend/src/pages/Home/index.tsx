@@ -5,6 +5,7 @@ import { SendOutlined, BranchesOutlined, LoadingOutlined, BulbOutlined, Experime
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
+import { getChatFriendlyErrorMessage, toChatServiceError } from '@/services/chatError';
 import { decomposeNode } from '@/services/api/tree';
 import { compactNode, createNode, getNode, getNodeSession } from '@/services/api/nodes';
 import {
@@ -341,7 +342,7 @@ export default function HomePage() {
           clearPendingInvocation();
         } else if (result.status === 'failure') {
           clearPendingInvocation();
-          message.error(result.error?.message || '恢复会话失败');
+          message.error(getChatFriendlyErrorMessage(result.error, '恢复会话失败'));
           return;
         } else {
           await sendChatMessageStream(
@@ -392,7 +393,7 @@ export default function HomePage() {
               clearPendingInvocation();
             } else if (refreshed.status === 'failure') {
               clearPendingInvocation();
-              message.error(refreshed.error?.message || '恢复会话失败');
+              message.error(getChatFriendlyErrorMessage(refreshed.error, '恢复会话失败'));
               return;
             }
           }
@@ -589,14 +590,14 @@ export default function HomePage() {
                 setProjectPanelKey((k) => k + 1);
               } else if (refreshed.status === 'failure') {
                 clearPendingInvocation();
-                throw new Error(refreshed.error?.message || '流式对话失败');
+                throw toChatServiceError(refreshed.error, '流式对话失败');
               } else {
                 throw new Error('流式对话仍在进行中，请稍后重试');
               }
             }
           } else {
             clearPendingInvocation();
-            throw new Error(result.error?.message || '流式对话失败');
+            throw toChatServiceError(result.error, '流式对话失败');
           }
         } else {
           const shouldFallback = streamErr instanceof TypeError;
@@ -644,7 +645,7 @@ export default function HomePage() {
       }
     } catch (err) {
       console.error('发送消息失败:', err);
-      message.error('发送失败，请重试');
+      message.error(getChatFriendlyErrorMessage(err, '发送失败，请重试'));
       setMessages((prev) => prev.slice(0, -1));
       setInput(text);
     } finally {

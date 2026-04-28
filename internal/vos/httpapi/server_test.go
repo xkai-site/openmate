@@ -1226,6 +1226,36 @@ func TestServerV1ChatResultReturnsInvocationRecord(t *testing.T) {
 	}
 }
 
+func TestGatewayErrorToMapUsesTechnicalMessageContract(t *testing.T) {
+	t.Parallel()
+	statusCode := http.StatusForbidden
+	mapped := gatewayErrorToMap(&poolgateway.GatewayError{
+		Code:               "insufficient_user_quota",
+		Message:            "insufficient quota",
+		Retryable:          false,
+		ProviderStatusCode: &statusCode,
+		Details: map[string]any{
+			"path": "/v1/responses",
+		},
+	})
+	if mapped["code"] != "insufficient_user_quota" {
+		t.Fatalf("code = %v, want insufficient_user_quota", mapped["code"])
+	}
+	if mapped["technical_message"] != "insufficient quota" {
+		t.Fatalf("technical_message = %v, want insufficient quota", mapped["technical_message"])
+	}
+	if _, exists := mapped["message"]; exists {
+		t.Fatalf("message should not exist in mapped payload: %+v", mapped)
+	}
+	if mapped["provider_status_code"] != statusCode {
+		t.Fatalf("provider_status_code = %v, want %d", mapped["provider_status_code"], statusCode)
+	}
+	details, ok := mapped["details"].(map[string]any)
+	if !ok || details["path"] != "/v1/responses" {
+		t.Fatalf("details = %+v, want path", mapped["details"])
+	}
+}
+
 func TestServerV1ChatStreamAttachNotRunning(t *testing.T) {
 	server, testServer := openTestServer(t)
 	defer func() {

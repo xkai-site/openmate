@@ -5,6 +5,7 @@ import { message as antMessage } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
+import { getChatFriendlyErrorMessage, toChatServiceError } from '@/services/chatError';
 import { compactNode, getNode } from '@/services/api/nodes';
 import { closeOpenCodeFences } from '@/utils/markdown';
 import type {
@@ -423,7 +424,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
           clearPendingInvocation();
         } else if (result.status === 'failure') {
           clearPendingInvocation();
-          antMessage.error(result.error?.message || '恢复会话失败');
+          antMessage.error(getChatFriendlyErrorMessage(result.error, '恢复会话失败'));
           return;
         } else {
           await sendChatMessageStream(
@@ -501,7 +502,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
               clearPendingInvocation();
             } else if (refreshed.status === 'failure') {
               clearPendingInvocation();
-              antMessage.error(refreshed.error?.message || '恢复会话失败');
+              antMessage.error(getChatFriendlyErrorMessage(refreshed.error, '恢复会话失败'));
               return;
             }
           }
@@ -762,14 +763,14 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
                 clearPendingInvocation();
               } else if (refreshed.status === 'failure') {
                 clearPendingInvocation();
-                throw new Error(refreshed.error?.message || '流式对话失败');
+                throw toChatServiceError(refreshed.error, '流式对话失败');
               } else {
                 throw new Error('流式对话仍在进行中，请稍后重试');
               }
             }
           } else {
             clearPendingInvocation();
-            throw new Error(result.error?.message || '流式对话失败');
+            throw toChatServiceError(result.error, '流式对话失败');
           }
         } else {
           const shouldFallback = streamErr instanceof TypeError;
@@ -819,7 +820,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
       onAIReply?.();
     } catch (err) {
       console.error('发送消息失败:', err);
-      antMessage.error(err instanceof Error ? `发送失败: ${err.message}` : '发送失败，请重试');
+      antMessage.error(getChatFriendlyErrorMessage(err, '发送失败，请重试'));
       setHistory((prev) => prev.slice(0, -1));
       setInputValue(text);
     } finally {

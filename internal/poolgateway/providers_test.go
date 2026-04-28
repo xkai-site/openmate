@@ -80,6 +80,79 @@ func TestOpenAICompatibleProviderClassifiesInvalidJSONAsNonRetryable(t *testing.
 	}
 }
 
+func TestOpenAICompatibleProviderExtractsProviderCodeFrom403Body(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/responses" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"error":{"code":"insufficient_user_quota","message":"insufficient quota"}}`))
+	}))
+	defer server.Close()
+
+	provider := OpenAICompatibleProvider{HTTPClient: server.Client()}
+	_, err := provider.Invoke(context.Background(), InvocationReservation{
+		BaseURL: server.URL + "/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-4.1",
+	}, InvokeRequest{
+		Request: OpenAIResponsesRequest{"input": "hello"},
+	})
+	if err == nil {
+		t.Fatalf("expected provider error")
+	}
+	providerErr, ok := err.(*ProviderInvocationError)
+	if !ok {
+		t.Fatalf("expected ProviderInvocationError, got %T", err)
+	}
+	if providerErr.GatewayError.Code != "insufficient_user_quota" {
+		t.Fatalf("unexpected code: %s", providerErr.GatewayError.Code)
+	}
+	if providerErr.GatewayError.Message != "insufficient quota" {
+		t.Fatalf("unexpected message: %s", providerErr.GatewayError.Message)
+	}
+	if providerErr.GatewayError.ProviderStatusCode == nil || *providerErr.GatewayError.ProviderStatusCode != http.StatusForbidden {
+		t.Fatalf("unexpected provider status code: %+v", providerErr.GatewayError.ProviderStatusCode)
+	}
+}
+
+func TestOpenAICompatibleProviderFallsBackWhen403BodyIsNotJSON(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/responses" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`forbidden`))
+	}))
+	defer server.Close()
+
+	provider := OpenAICompatibleProvider{HTTPClient: server.Client()}
+	_, err := provider.Invoke(context.Background(), InvocationReservation{
+		BaseURL: server.URL + "/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-4.1",
+	}, InvokeRequest{
+		Request: OpenAIResponsesRequest{"input": "hello"},
+	})
+	if err == nil {
+		t.Fatalf("expected provider error")
+	}
+	providerErr, ok := err.(*ProviderInvocationError)
+	if !ok {
+		t.Fatalf("expected ProviderInvocationError, got %T", err)
+	}
+	if providerErr.GatewayError.Code != "provider_http_error" {
+		t.Fatalf("unexpected code: %s", providerErr.GatewayError.Code)
+	}
+	if providerErr.GatewayError.ProviderStatusCode == nil || *providerErr.GatewayError.ProviderStatusCode != http.StatusForbidden {
+		t.Fatalf("unexpected provider status code: %+v", providerErr.GatewayError.ProviderStatusCode)
+	}
+}
+
 func TestOpenAICompatibleProviderClassifies5xxAsNonRetryable(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

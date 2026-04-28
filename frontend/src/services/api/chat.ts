@@ -1,4 +1,5 @@
 import { API_BASE_URL, api } from '@/services/api';
+import { ChatServiceError } from '@/services/chatError';
 import type {
   ApiResponse,
   ChatRequest,
@@ -117,7 +118,7 @@ function parseSSEChunk(
   chunk: string,
   state: { buffer: string },
   handlers: ChatStreamHandlers,
-): { fatal?: Error } {
+): { fatal?: ChatServiceError } {
   state.buffer += chunk;
   const blocks = state.buffer.split(/\r?\n\r?\n/);
   state.buffer = blocks.pop() || '';
@@ -171,7 +172,16 @@ function parseSSEChunk(
         break;
       case 'fatal':
         handlers.onFatal?.(payload as unknown as ChatStreamFatalEvent);
-        return { fatal: new Error(String(payload.message ?? '流式对话失败')) };
+        return {
+          fatal: new ChatServiceError(
+            payload as unknown as {
+              code?: string;
+              technical_message?: string;
+              details?: Record<string, unknown>;
+            },
+            '流式对话失败',
+          ),
+        };
       default:
         break;
     }
@@ -194,21 +204,26 @@ export async function sendChatMessageStream(
 
 
   if (!response.ok) {
-    let detail = '';
+    let payload: Record<string, unknown> = {};
     try {
       const rawText = await response.text();
       if (rawText.trim()) {
         const parsed = JSON.parse(rawText) as ApiResponse<unknown>;
-        if (parsed?.message) {
-          detail = `: ${parsed.message}`;
+        if (parsed?.data && typeof parsed.data === 'object') {
+          payload = parsed.data as Record<string, unknown>;
+        } else if (parsed?.message) {
+          payload = { technical_message: parsed.message };
         } else {
-          detail = `: ${rawText}`;
+          payload = { technical_message: rawText };
         }
       }
     } catch {
-      // ignore parse errors and fallback to status only
+      payload = {};
     }
-    throw new Error(`流式请求失败: ${response.status}${detail}`);
+    if (typeof payload.provider_status_code !== 'number') {
+      payload.provider_status_code = response.status;
+    }
+    throw new ChatServiceError(payload, `流式请求失败: ${response.status}`);
   }
 
   if (!response.body) {
