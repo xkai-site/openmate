@@ -1,5 +1,18 @@
 ﻿# SharedInfo Process
-## 2026-04-28 聊天错误码契约统一（code + technical_message + details）
+## 2026-04-28 chat stop 语义收敛（前端显式取消 + pool 清理去取消上下文）
+
+1. 问题复盘：前端“停止输出”仅断开 SSE 时，后端 invocation 仍可能运行，导致后续请求命中 
+o available API。
+2. VOS HTTP 新增取消入口：POST /api/v1/chat/cancel（invocation_id），并将 chat.stream.invoke 改为 run 级可取消 context。
+3. Pool 收尾修复：CompleteAttemptFailure/CompleteInvocationFailure 的清理写库改为 context.WithoutCancel(ctx)，避免因取消态上下文导致租约释放失败。
+4. 回归测试新增：TestServerV1ChatCancelReleasesInvocationCapacity，覆盖 chat/stream -> chat/cancel -> 再次 stream 恢复 路径。
+5. 验证：go test ./internal/poolgateway/... ./internal/vos/httpapi/... 通过（仓库内 GOCACHE/GOMODCACHE）。## 2026-04-28 chat stop 语义收敛（前端显式取消后端 invocation）
+
+1. 问题复盘：前端“停止输出”仅断开 SSE，不会终止后端 chat.stream.invoke，在 max_concurrent 较小（如 1）时会出现后续请求 
+o available API。
+2. VOS HTTP 已新增取消入口：POST /api/v1/chat/cancel，入参 invocation_id，用于显式取消运行中的 chat invocation。
+3. chat.stream.invoke 上下文已从 context.Background() 切换为 run 级可取消 context，取消后可尽快释放 Pool 槽位。
+4. 前端 Home/Workspace 已在停止按钮中接入该取消接口，并在停止后回填原输入文本，支持用户编辑后重发。## 2026-04-28 聊天错误码契约统一（code + technical_message + details）
 
 1. 聊天链路错误对象契约收敛为 `code + technical_message + details`，用于后端稳定表达与前端可维护映射解耦。
 2. PoolGateway 增强了 403 错误码解析：当上游返回 JSON 且存在 `error.code` 时，优先透传该稳定码（如 `insufficient_user_quota`）；非 JSON 或缺失 code 时回退 `provider_http_error`。
@@ -445,6 +458,8 @@
 5. 验证结果：
    - Python：`\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
    - Go：`go test ./internal/vos/httpapi/...`、`go test ./internal/vos/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+
+
 
 
 

@@ -66,6 +66,10 @@ type v1ChatResultResponse struct {
 	FinishedAt   *string        `json:"finished_at"`
 }
 
+type v1ChatCancelRequest struct {
+	InvocationID string `json:"invocation_id"`
+}
+
 type chatRunEvent struct {
 	Type    string
 	Payload map[string]any
@@ -75,6 +79,8 @@ type chatRun struct {
 	InvocationID string
 	NodeID       string
 	SessionID    string
+	Context      context.Context
+	cancel       context.CancelFunc
 
 	mu          sync.Mutex
 	subscribers map[int]chan chatRunEvent
@@ -83,10 +89,13 @@ type chatRun struct {
 }
 
 func newChatRun(invocationID, nodeID, sessionID string) *chatRun {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &chatRun{
 		InvocationID: invocationID,
 		NodeID:       nodeID,
 		SessionID:    sessionID,
+		Context:      ctx,
+		cancel:       cancel,
 		subscribers:  map[int]chan chatRunEvent{},
 	}
 }
@@ -149,14 +158,31 @@ func (run *chatRun) close() {
 		return
 	}
 	run.closed = true
+	cancel := run.cancel
+	run.cancel = nil
 	subscribers := make([]chan chatRunEvent, 0, len(run.subscribers))
 	for key, subscriber := range run.subscribers {
 		delete(run.subscribers, key)
 		subscribers = append(subscribers, subscriber)
 	}
 	run.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	for _, subscriber := range subscribers {
 		close(subscriber)
+	}
+}
+
+func (run *chatRun) cancelRun() {
+	if run == nil {
+		return
+	}
+	run.mu.Lock()
+	cancel := run.cancel
+	run.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -222,6 +248,8 @@ func (server *Server) handleV1ChatEntry(writer http.ResponseWriter, request *htt
 		server.handleV1Chat(writer, request)
 	case "/stream":
 		server.handleV1ChatStream(writer, request)
+	case "/cancel":
+		server.handleV1ChatCancel(writer, request)
 	case "/result":
 		server.handleV1ChatResult(writer, request)
 	default:
@@ -459,6 +487,37 @@ func (server *Server) handleV1ChatResult(writer http.ResponseWriter, request *ht
 	server.writeV1Success(writer, response)
 }
 
+func (server *Server) handleV1ChatCancel(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodPost)
+		return
+	}
+	var payload v1ChatCancelRequest
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		server.writeV1Error(writer, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	invocationID := strings.TrimSpace(payload.InvocationID)
+	if invocationID == "" {
+		server.writeV1Error(writer, http.StatusBadRequest, "invocation_id is required")
+		return
+	}
+	run := server.getChatRun(invocationID)
+	if run == nil {
+		server.writeV1Success(writer, map[string]any{
+			"invocation_id": invocationID,
+			"cancelled":     false,
+			"message":       "chat invocation is not running",
+		})
+		return
+	}
+	run.cancelRun()
+	server.writeV1Success(writer, map[string]any{
+		"invocation_id": invocationID,
+		"cancelled":     true,
+	})
+}
+
 func (server *Server) setChatRun(run *chatRun) {
 	if server == nil || run == nil {
 		return
@@ -529,7 +588,7 @@ func (server *Server) startChatRun(
 			},
 		}
 
-		response, err := server.runtime.PoolGateway.Invoke(context.Background(), poolRequest)
+		response, err := server.runtime.PoolGateway.Invoke(run.Context, poolRequest)
 		if err != nil {
 			operationLogger.Error("stream invoke failed", slog.Any("error", err))
 			_, _ = server.service.AppendSessionEvent(service.AppendSessionEventInput{

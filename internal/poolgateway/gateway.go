@@ -263,12 +263,13 @@ func (gateway *Gateway) finishInternalFailure(
 	reservation InvocationReservation,
 	err error,
 ) (InvokeResponse, error) {
+	cleanupCtx := context.WithoutCancel(ctx)
 	gatewayError := internalGatewayError(err)
 	finishedAt := utcNow()
-	if err := gateway.store.CompleteAttemptFailure(ctx, reservation, gatewayError, finishedAt); err != nil {
+	if err := gateway.store.CompleteAttemptFailure(cleanupCtx, reservation, gatewayError, finishedAt); err != nil {
 		return InvokeResponse{}, err
 	}
-	return gateway.finishInvocationFailure(ctx, reservation.InvocationID, gatewayError, finishedAt)
+	return gateway.finishInvocationFailure(cleanupCtx, reservation.InvocationID, gatewayError, finishedAt)
 }
 
 func (gateway *Gateway) finishInvocationFailure(

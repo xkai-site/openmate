@@ -48,9 +48,21 @@ export async function getChatResult(
   return response.data;
 }
 
+export async function cancelChatInvocation(invocationID: string): Promise<void> {
+  const normalized = invocationID.trim();
+  if (!normalized) {
+    return;
+  }
+  await api.post('/chat/cancel', { invocation_id: normalized }, { timeout: 10000 });
+}
+
 export interface WaitChatResultOptions {
   intervalMs?: number;
   signal?: AbortSignal;
+  // Optional hard upper bound for total wait time. By default we rely on idle watchdog only.
+  timeoutMs?: number;
+  // Idle watchdog: timeout only when result stops making progress for too long.
+  idleTimeoutMs?: number;
 }
 
 function abortError(): DOMException {
@@ -91,13 +103,52 @@ export async function waitChatResult(
   options: WaitChatResultOptions = {},
 ): Promise<ChatResultResponse> {
   const intervalMs = Math.max(200, options.intervalMs ?? 1500);
+  const timeoutMs = typeof options.timeoutMs === 'number' ? Math.max(1000, options.timeoutMs) : null;
+  const idleTimeoutMs = Math.max(10000, options.idleTimeoutMs ?? 120000);
   const { signal } = options;
+  const startedAt = Date.now();
+  let lastProgressAt = startedAt;
+  let lastProgressKey = '';
+
+  const buildProgressKey = (result: ChatResultResponse): string => {
+    const usageTokens = Number(result.usage?.total_tokens ?? 0);
+    const replyLength = String(result.reply ?? '').length;
+    const finishedAt = String(result.finished_at ?? '');
+    return `${result.status}|${replyLength}|${usageTokens}|${finishedAt}`;
+  };
 
   while (true) {
+    if (timeoutMs !== null && Date.now() - startedAt >= timeoutMs) {
+      throw new ChatServiceError(
+        {
+          code: 'chat_stream_failed',
+          technical_message: `wait chat result hard-timeout after ${timeoutMs}ms`,
+          details: { invocation_id: invocationID, timeout_ms: timeoutMs, watchdog: 'hard-timeout' },
+          retryable: true,
+        },
+        '等待对话结果超时',
+      );
+    }
     throwIfAborted(signal);
     const latest = await getChatResult(invocationID, signal);
+    const progressKey = buildProgressKey(latest);
+    if (progressKey !== lastProgressKey) {
+      lastProgressKey = progressKey;
+      lastProgressAt = Date.now();
+    }
     if (latest.status !== 'running') {
       return latest;
+    }
+    if (Date.now() - lastProgressAt >= idleTimeoutMs) {
+      throw new ChatServiceError(
+        {
+          code: 'provider_timeout',
+          technical_message: `wait chat result idle-timeout after ${idleTimeoutMs}ms`,
+          details: { invocation_id: invocationID, idle_timeout_ms: idleTimeoutMs, watchdog: 'idle-timeout' },
+          retryable: true,
+        },
+        '等待对话结果超时',
+      );
     }
     await sleep(intervalMs, signal);
     throwIfAborted(signal);

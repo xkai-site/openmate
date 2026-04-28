@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Input, Button, Avatar, Tooltip, Spin } from 'antd';
-import { SendOutlined, UserOutlined, RobotOutlined, CopyOutlined, ExperimentOutlined, ShrinkOutlined } from '@ant-design/icons';
+import { SendOutlined, StopOutlined, UserOutlined, RobotOutlined, CopyOutlined, ExperimentOutlined, ShrinkOutlined } from '@ant-design/icons';
 import { message as antMessage } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
+import { cancelChatInvocation, getChatResult, sendChatMessage, sendChatMessageStream, waitChatResult } from '@/services/api/chat';
 import { getChatFriendlyErrorMessage, toChatServiceError } from '@/services/chatError';
 import { compactNode, getNode } from '@/services/api/nodes';
 import { closeOpenCodeFences } from '@/utils/markdown';
@@ -307,6 +307,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const activeInvocationRef = useRef<string | null>(null);
+  const lastSubmittedTextRef = useRef('');
   const pendingInvocationStorageKey = `openmate.session.pending_invocation.${nodeId}`;
 
   const savePendingInvocation = useCallback((invocationID: string) => {
@@ -574,6 +575,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
   const handleSend = useCallback(async () => {
     const text = inputValue.trim();
     if (!text || isLoading) return;
+    lastSubmittedTextRef.current = text;
     clearPendingInvocation();
 
     const userMsg: ChatMessage = {
@@ -599,6 +601,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     let assistantThinking = '';
     let summary: ChatStreamSummaryEvent | null = null;
     let hasSummary = false;
+    let fatalReceived = false;
     const streamPayload: ChatStreamRequest = {
       node_id: nodeId,
       message: text,
@@ -664,10 +667,8 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
               clearPendingInvocation();
             },
             onFatal: (payload) => {
-              const fatalInvocationID = String((payload as { invocation_id?: string }).invocation_id ?? '').trim();
-              if (fatalInvocationID) {
-                savePendingInvocation(fatalInvocationID);
-              }
+              fatalReceived = true;
+              clearPendingInvocation();
             },
           },
           controller.signal,
@@ -679,6 +680,9 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
       } catch (streamErr) {
         if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
           return;
+        }
+        if (fatalReceived) {
+          throw streamErr;
         }
         const activeInvocationID = (activeInvocationRef.current ?? '').trim();
         if (activeInvocationID) {
@@ -747,14 +751,15 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
                   clearPendingInvocation();
                 },
                 onFatal: (payload) => {
-                  const fatalInvocationID = String((payload as { invocation_id?: string }).invocation_id ?? '').trim();
-                  if (fatalInvocationID) {
-                    savePendingInvocation(fatalInvocationID);
-                  }
+                  fatalReceived = true;
+                  clearPendingInvocation();
                 },
               },
               controller.signal,
             );
+            if (fatalReceived) {
+              throw new Error('stream terminated by fatal event');
+            }
             if (!hasSummary) {
               const refreshed = await waitChatResult(activeInvocationID, { signal: controller.signal });
               if (refreshed.status === 'success') {
@@ -837,6 +842,32 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     }
 
   }, [clearPendingInvocation, history, inputValue, isLoading, nodeId, onAIReply, savePendingInvocation]);
+
+  const handleStop = useCallback(async () => {
+    const controller = streamAbortRef.current;
+    if (!controller) {
+      return;
+    }
+    const invocationID = (activeInvocationRef.current ?? '').trim();
+    controller.abort();
+    streamAbortRef.current = null;
+    if (invocationID) {
+      try {
+        await cancelChatInvocation(invocationID);
+      } catch {
+        // ignore cancel errors; local stop already applied
+      }
+    }
+    clearPendingInvocation();
+    setInputValue(lastSubmittedTextRef.current);
+    setIsLoading(false);
+    setLivePhase(null);
+    setStreamingText('');
+    setThinkingText('');
+    setLiveMethodCalls([]);
+    setLiveToolCalls([]);
+    antMessage.info('已停止当前输出');
+  }, [clearPendingInvocation]);
 
 
 
@@ -946,15 +977,14 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
             压缩
           </Button>
           <Button
-            type="primary"
-            icon={<SendOutlined />}
-            aria-label="发送消息"
-            onClick={handleSend}
-            disabled={!inputValue.trim() || isCompacting}
-            loading={isLoading}
+            type={isLoading ? 'default' : 'primary'}
+            icon={isLoading ? <StopOutlined /> : <SendOutlined />}
+            aria-label={isLoading ? '停止输出' : '发送消息'}
+            onClick={isLoading ? () => { void handleStop(); } : handleSend}
+            disabled={(!inputValue.trim() && !isLoading) || isCompacting}
             className="chat-send-btn"
           >
-            发送
+            {isLoading ? '停止' : '发送'}
           </Button>
         </div>
         <p className="chat-tip">Enter 发送 · Shift+Enter 换行</p>

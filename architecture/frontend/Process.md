@@ -1,5 +1,42 @@
 # Frontend Process
 
+## 2026-04-28 停止输出语义修复（显式取消 + 输入回填）
+
+1. 根因修复对齐：前端“停止”不再只做本地 `AbortController.abort()`，新增调用后端 `POST /api/v1/chat/cancel` 取消指定 `invocation_id`，避免后端继续占用执行槽位导致下一次发送触发 `no available API`。
+2. Home 与 Workspace 停止交互优化：
+   - 停止时回填“本次发送文本”到输入框；
+   - 用户可直接编辑后重发，符合纠错链路。
+3. 新增前端 API：`cancelChatInvocation(invocationID)`（`frontend/src/services/api/chat.ts`）。
+4. 验证：`cd frontend && npm run build` 通过。
+5. 配套后端清理修复：Pool 收尾写库改为 `context.WithoutCancel(ctx)`，避免取消态导致租约未释放；回归测试 `TestServerV1ChatCancelReleasesInvocationCapacity` 已新增并通过。
+
+## 2026-04-28 流式错误收口修复（避免卡死阻塞）
+
+1. 修复 Home 与 Workspace 聊天流式链路在后端返回 fatal/失败后仍继续进入恢复等待分支的问题，改为 fatal 后直接终止并释放发送态。
+2. 新增前端“停止输出”能力：
+   - Home 发送按钮在流式中切换为停止按钮，可主动 abort 当前流并解除输入锁。
+   - Workspace `SessionPanel` 发送按钮在流式中切换为停止按钮，同步清理 pending invocation 与实时状态。
+3. `waitChatResult()` 新增超时保护（默认 120s），避免后端异常状态下前端无限等待导致 UI 长时间不可用。
+4. 验证：`cd frontend && npm run build` 通过。
+
+## 2026-04-28 waitChatResult 看门狗策略调整（空闲优先）
+
+1. `waitChatResult()` 从“固定总超时优先”调整为“空闲看门狗优先”：
+   - 默认不启用硬总超时；
+   - 仅当长时间无进展（`status/reply长度/usage/finished_at` 都不变化）才判定超时。
+2. 新增参数：
+   - `idleTimeoutMs`（默认 120s，最小 10s）
+   - `timeoutMs`（可选硬总超时，默认不启用）
+3. 语义：后端长文本持续输出时，只要结果持续推进，前端会继续等待，不会被固定 120s 提前截断。
+4. 验证：`cd frontend && npm run build` 通过。
+
+## 2026-04-28 frontend 分支初始化（安装 + 构建校验）
+
+1. 已确认当前工作分支为 `frontend`（`git branch --show-current` 输出 `frontend`）。
+2. 已完成前端依赖初始化：`cd frontend && npm install`，结果 `up to date in 4s`。
+3. 已执行前端构建校验：`cd frontend && npm run build`，构建通过并产出 `frontend/dist`。
+4. 构建过程中存在既有体积告警：`vendor-antd` chunk 超过 700 kB 阈值（warning），不影响本次初始化完成。
+
 ## 2026-04-28 聊天错误码映射统一（Home + Workspace）
 
 1. 前端聊天链路新增统一错误层 `frontend/src/services/chatError.ts`：

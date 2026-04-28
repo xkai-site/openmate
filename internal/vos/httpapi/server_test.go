@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1340,6 +1341,187 @@ func TestServerV1ChatStreamAttachExistingInvocation(t *testing.T) {
 	}
 	if !strings.Contains(text, "event: summary") {
 		t.Fatalf("stream should include summary event, got: %s", text)
+	}
+}
+
+func TestServerV1ChatCancelReleasesInvocationCapacity(t *testing.T) {
+	server, testServer := openTestServer(t)
+	defer func() {
+		_ = server.Close()
+		testServer.Close()
+	}()
+
+	var invokeCount atomic.Int32
+	server.runtime.PoolGateway.SetProviderFactory(func(provider string) (poolgateway.ProviderClient, error) {
+		return testProvider{
+			invoke: func(ctx context.Context, reservation poolgateway.InvocationReservation, request poolgateway.InvokeRequest) (poolgateway.ProviderInvokeResult, error) {
+				current := invokeCount.Add(1)
+				if current == 1 {
+					<-ctx.Done()
+					return poolgateway.ProviderInvokeResult{}, context.Canceled
+				}
+				reply := "second request ok"
+				return poolgateway.ProviderInvokeResult{
+					Response: map[string]any{
+						"object": "response",
+						"status": "completed",
+						"output": []any{
+							map[string]any{
+								"type":   "message",
+								"role":   "assistant",
+								"status": "completed",
+								"content": []any{
+									map[string]any{
+										"type": "output_text",
+										"text": reply,
+									},
+								},
+							},
+						},
+					},
+					OutputText: &reply,
+				}, nil
+			},
+		}, nil
+	})
+
+	streamRequest, err := http.NewRequest(
+		http.MethodPost,
+		testServer.URL+"/api/v1/chat/stream",
+		bytes.NewBufferString(`{"message":"first request"}`),
+	)
+	if err != nil {
+		t.Fatalf("http.NewRequest(stream) error = %v", err)
+	}
+	streamRequest.Header.Set("Content-Type", "application/json")
+	streamResponse, err := testServer.Client().Do(streamRequest)
+	if err != nil {
+		t.Fatalf("client.Do(stream) error = %v", err)
+	}
+	defer streamResponse.Body.Close()
+	if streamResponse.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d, want %d", streamResponse.StatusCode, http.StatusOK)
+	}
+
+	var invocationID string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		server.chatRunsMu.Lock()
+		for id := range server.chatRuns {
+			invocationID = id
+			break
+		}
+		server.chatRunsMu.Unlock()
+		if strings.TrimSpace(invocationID) != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if invocationID == "" {
+		t.Fatalf("invocation id should be present in chatRuns")
+	}
+
+	cancelEnv := mustRequestEnvelope(
+		t,
+		testServer.Client(),
+		http.MethodPost,
+		testServer.URL+"/api/v1/chat/cancel",
+		map[string]any{"invocation_id": invocationID},
+		http.StatusOK,
+	)
+	cancelResp := struct {
+		InvocationID string `json:"invocation_id"`
+		Cancelled    bool   `json:"cancelled"`
+	}{}
+	mustDecodeEnvelopeData(t, cancelEnv, &cancelResp)
+	if cancelResp.InvocationID != invocationID {
+		t.Fatalf("cancel invocation_id = %q, want %q", cancelResp.InvocationID, invocationID)
+	}
+	if !cancelResp.Cancelled {
+		t.Fatalf("cancelled = false, want true")
+	}
+
+	// Wait until the cancelled run is removed before sending the next request.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.getChatRun(invocationID) == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if run := server.getChatRun(invocationID); run != nil {
+		t.Fatalf("chat run should be removed after cancel, invocation_id=%s", invocationID)
+	}
+
+	// Wait until invocation reaches a terminal state:
+	// - status != running, or
+	// - 404 (cancelled before invocation record is persisted).
+	terminal := false
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := testServer.Client().Get(testServer.URL + "/api/v1/chat/result?invocation_id=" + invocationID)
+		if err != nil {
+			t.Fatalf("chat/result request error = %v", err)
+		}
+		var envelope apiEnvelope
+		decodeErr := json.NewDecoder(resp.Body).Decode(&envelope)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			t.Fatalf("decode chat/result envelope error = %v", decodeErr)
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			terminal = true
+			break
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chat/result status = %d, want 200 or 404", resp.StatusCode)
+		}
+		resultResp := struct {
+			Status string `json:"status"`
+		}{}
+		mustDecodeEnvelopeData(t, envelope, &resultResp)
+		if resultResp.Status != "running" {
+			terminal = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !terminal {
+		t.Fatalf("cancelled invocation should reach terminal state before timeout")
+	}
+
+	lastStatus := 0
+	recovered := false
+	var secondBody string
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/v1/chat/stream", bytes.NewBufferString(`{"message":"second request"}`))
+		if err != nil {
+			t.Fatalf("http.NewRequest(second) error = %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := testServer.Client().Do(req)
+		if err != nil {
+			t.Fatalf("client.Do(second) error = %v", err)
+		}
+		lastStatus = resp.StatusCode
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read second stream body error = %v", readErr)
+		}
+		secondBody = string(body)
+		if resp.StatusCode == http.StatusOK && strings.Contains(secondBody, "event: summary") && strings.Contains(secondBody, "\"status\":\"success\"") {
+			recovered = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !recovered {
+		t.Fatalf("second stream did not recover within timeout, last status=%d, body=%q", lastStatus, secondBody)
+	}
+	if got := invokeCount.Load(); got < 2 {
+		t.Fatalf("invokeCount = %d, want >= 2", got)
 	}
 }
 
