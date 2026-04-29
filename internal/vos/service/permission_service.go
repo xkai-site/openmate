@@ -91,13 +91,6 @@ func (service *Service) ListTopicToolPermissions(topicID string) ([]TopicToolPer
 	return decodeTopicToolAllows(topic.Metadata), nil
 }
 
-func (service *Service) AddTopicToolPermission(topicID, toolName, dirPrefix string) (*TopicToolPermission, error) {
-	return service.AddTopicToolPermissionV2(topicID, TopicToolPermissionInput{
-		ToolName:  toolName,
-		DirPrefix: dirPrefix,
-	})
-}
-
 func (service *Service) AddTopicToolPermissionV2(topicID string, input TopicToolPermissionInput) (*TopicToolPermission, error) {
 	trimmedTopicID := strings.TrimSpace(topicID)
 	if trimmedTopicID == "" {

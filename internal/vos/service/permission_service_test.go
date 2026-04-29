@@ -23,9 +23,12 @@ func TestTopicToolPermissionCRUD(t *testing.T) {
 		t.Fatalf("len(items) = %d, want 0", len(items))
 	}
 
-	created, err := svc.AddTopicToolPermission("topic-permission", "write", "D:/workspace/project/src")
+	created, err := svc.AddTopicToolPermissionV2("topic-permission", service.TopicToolPermissionInput{
+		ToolName:  "write",
+		DirPrefix: "D:/workspace/project/src",
+	})
 	if err != nil {
-		t.Fatalf("AddTopicToolPermission() error = %v", err)
+		t.Fatalf("AddTopicToolPermissionV2() error = %v", err)
 	}
 	if created.ID == "" {
 		t.Fatalf("created.ID should not be empty")

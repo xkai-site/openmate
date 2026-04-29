@@ -47,10 +47,10 @@ class PermissionGateway:
         intent = _build_intent(action=action, workspace_root=workspace_root)
         if "destructive" in intent.risk_tags:
             return GuardDecision(
-                decision="confirm",
-                reason="high-risk destructive capability requires explicit user approval",
-                error_code="POLICY_CONFIRM_REQUIRED",
-                metadata=_evaluation_payload(intent=intent, matched_rule=None, result="confirm"),
+                decision="deny",
+                reason="destructive commands are denied by policy; use a recycle-bin delete workflow instead",
+                error_code="POLICY_DENIED",
+                metadata=_evaluation_payload(intent=intent, matched_rule=None, result="deny"),
             )
 
         matched_rule = _match_rule(action, intent=intent, allowed_rules=allowed_rules)

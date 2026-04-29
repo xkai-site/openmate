@@ -534,12 +534,7 @@ func (server *Server) handleV1TopicPermissions(writer http.ResponseWriter, reque
 			server.writeV1Error(writer, http.StatusBadRequest, err.Error())
 			return
 		}
-		item, err := server.service.AddTopicToolPermission(topicID, payload.ToolName, payload.DirPrefix)
-		if err == nil {
-			server.writeV1Success(writer, item)
-			return
-		}
-		item, err = server.service.AddTopicToolPermissionV2(topicID, service.TopicToolPermissionInput{
+		item, err := server.service.AddTopicToolPermissionV2(topicID, service.TopicToolPermissionInput{
 			ToolName:           payload.ToolName,
 			DirPrefix:          payload.DirPrefix,
 			ReadPathPrefixes:   payload.ReadPathPrefixes,

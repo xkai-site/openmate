@@ -153,7 +153,7 @@ class PermissionFlowTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(resolver_calls, [])
 
-    def test_destructive_shell_requires_confirmation(self) -> None:
+    def test_destructive_shell_is_hard_denied_without_confirmation(self) -> None:
         store = _FakePermissionStore()
         with TemporaryDirectory() as tmp:
             resolver_calls: list[str] = []
@@ -182,7 +182,7 @@ class PermissionFlowTests(unittest.TestCase):
                 )
         self.assertFalse(result.success)
         self.assertEqual(result.error_code, "POLICY_DENIED")
-        self.assertEqual(resolver_calls, ["called"])
+        self.assertEqual(resolver_calls, [])
 
 
 if __name__ == "__main__":
