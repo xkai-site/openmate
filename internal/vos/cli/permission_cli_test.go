@@ -90,4 +90,36 @@ func TestPermissionCLIFlow(t *testing.T) {
 	if len(userList.SkillAllows) != 1 || userList.SkillAllows[0].SkillName != "skill.alpha" {
 		t.Fatalf("user skill_allows = %v, want [skill.alpha]", userList.SkillAllows)
 	}
+
+	var auditAddOut bytes.Buffer
+	if code := cli.Run(
+		append(
+			base,
+			"permission", "audit", "add",
+			"--topic-id", "topic-p",
+			"--node-id", "node-1",
+			"--tool-name", "write",
+			"--decision", "allow",
+			"--requested-capabilities-json", `{"write_file":{"path":"D:/workspace/project/a.txt"}}`,
+			"--matched-rule-id", "rule-1",
+			"--risk-tag", "path",
+		),
+		&auditAddOut,
+		&bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("permission audit add code = %d, want 0", code)
+	}
+	var auditAdded struct {
+		RequestedCapabilities map[string]any `json:"requested_capabilities"`
+		MatchedRuleID         string         `json:"matched_rule_id"`
+	}
+	if err := json.Unmarshal(auditAddOut.Bytes(), &auditAdded); err != nil {
+		t.Fatalf("json.Unmarshal(auditAddOut) error = %v", err)
+	}
+	if auditAdded.MatchedRuleID != "rule-1" {
+		t.Fatalf("audit matched_rule_id = %q, want rule-1", auditAdded.MatchedRuleID)
+	}
+	if _, ok := auditAdded.RequestedCapabilities["write_file"]; !ok {
+		t.Fatalf("audit requested_capabilities = %v, want key write_file", auditAdded.RequestedCapabilities)
+	}
 }

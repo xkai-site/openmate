@@ -667,12 +667,11 @@ func decodeUserSkillAllowRecords(permission map[string]any) []UserSkillPermissio
 		if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(skillMTime)); err != nil {
 			continue
 		}
-		roots := decodeRoots(row["allowed_roots"])
 		result = append(result, UserSkillPermission{
 			SkillName:    strings.TrimSpace(skillName),
 			SkillPath:    normalizeDirPrefix(skillPath),
 			SkillMTime:   strings.TrimSpace(skillMTime),
-			AllowedRoots: roots,
+			AllowedRoots: decodeRoots(row["allowed_roots"]),
 		})
 	}
 	return result

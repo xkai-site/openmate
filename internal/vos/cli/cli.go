@@ -813,6 +813,8 @@ func runPermissionAudit(svc *service.Service, args []string, stdout, stderr io.W
 		nodeID := fs.String("node-id", "", "Node ID")
 		toolName := fs.String("tool-name", "", "Tool name")
 		decision := fs.String("decision", "", "Decision")
+		requestedCapabilitiesJSON := fs.String("requested-capabilities-json", "", "Requested capabilities JSON object")
+		matchedRuleID := fs.String("matched-rule-id", "", "Matched rule ID")
 		reason := fs.String("reason", "", "Reason")
 		requestID := fs.String("request-id", "", "Request ID")
 		durationMS := fs.Int("duration-ms", 0, "Duration milliseconds")
@@ -821,15 +823,21 @@ func runPermissionAudit(svc *service.Service, args []string, stdout, stderr io.W
 		if code := parseFlagSet(fs, args[1:]); code >= 0 {
 			return code
 		}
+		requestedCapabilities, err := parseOptionalJSONObject(*requestedCapabilitiesJSON, "requested-capabilities-json")
+		if err != nil {
+			return printError(err, stderr)
+		}
 		item, err := svc.RecordTopicPolicyAudit(service.PolicyAuditEntry{
-			TopicID:    *topicID,
-			NodeID:     *nodeID,
-			ToolName:   *toolName,
-			Decision:   *decision,
-			Reason:     *reason,
-			RequestID:  *requestID,
-			DurationMS: *durationMS,
-			RiskTags:   []string(riskTags),
+			TopicID:               *topicID,
+			NodeID:                *nodeID,
+			ToolName:              *toolName,
+			Decision:              *decision,
+			RequestedCapabilities: requestedCapabilities,
+			MatchedRuleID:         *matchedRuleID,
+			Reason:                *reason,
+			RequestID:             *requestID,
+			DurationMS:            *durationMS,
+			RiskTags:              []string(riskTags),
 		})
 		if err != nil {
 			return printError(err, stderr)
