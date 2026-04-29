@@ -672,7 +672,7 @@ export default function HomePage() {
     savePendingInvocation,
   ]);
 
-  const handleStopSending = useCallback(async () => {
+  const handleStopSending = useCallback(() => {
     const controller = streamAbortRef.current;
     if (!controller) {
       return;
@@ -680,13 +680,6 @@ export default function HomePage() {
     const invocationID = (activeInvocationRef.current ?? '').trim();
     controller.abort();
     streamAbortRef.current = null;
-    if (invocationID) {
-      try {
-        await cancelChatInvocation(invocationID);
-      } catch {
-        // ignore cancel errors; local stop already applied
-      }
-    }
     clearPendingInvocation();
     setInput(lastSubmittedTextRef.current);
     setIsSending(false);
@@ -694,6 +687,11 @@ export default function HomePage() {
     setStreamingText('');
     setLiveMethodCalls([]);
     message.info('已停止当前输出');
+    if (invocationID) {
+      void cancelChatInvocation(invocationID).catch(() => {
+        // ignore cancel errors; local stop already applied
+      });
+    }
   }, [clearPendingInvocation, message]);
 
   const buildMessagesFromSession = useCallback((sessionHistory: SessionMessage[]): ChatBubble[] => {

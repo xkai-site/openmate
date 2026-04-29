@@ -843,7 +843,7 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
 
   }, [clearPendingInvocation, history, inputValue, isLoading, nodeId, onAIReply, savePendingInvocation]);
 
-  const handleStop = useCallback(async () => {
+  const handleStop = useCallback(() => {
     const controller = streamAbortRef.current;
     if (!controller) {
       return;
@@ -851,13 +851,6 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     const invocationID = (activeInvocationRef.current ?? '').trim();
     controller.abort();
     streamAbortRef.current = null;
-    if (invocationID) {
-      try {
-        await cancelChatInvocation(invocationID);
-      } catch {
-        // ignore cancel errors; local stop already applied
-      }
-    }
     clearPendingInvocation();
     setInputValue(lastSubmittedTextRef.current);
     setIsLoading(false);
@@ -867,6 +860,11 @@ function SessionPanel({ nodeId, themeMode = 'dark', onAIReply }: SessionPanelPro
     setLiveMethodCalls([]);
     setLiveToolCalls([]);
     antMessage.info('已停止当前输出');
+    if (invocationID) {
+      void cancelChatInvocation(invocationID).catch(() => {
+        // ignore cancel errors; local stop already applied
+      });
+    }
   }, [clearPendingInvocation]);
 
 

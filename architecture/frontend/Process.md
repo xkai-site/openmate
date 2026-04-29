@@ -1,5 +1,21 @@
 # Frontend Process
 
+## 2026-04-29 停止输出响应性修复（先本地复位，后异步取消）
+
+1. 修复 Home 与 Workspace 的“停止输出”阻塞问题：停止处理函数不再 `await cancelChatInvocation`。
+2. 调整为“本地立即复位”：
+   - 先执行本地 `abort`、清理 `isSending/isLoading` 与流式态、回填输入框并提示停止成功；
+   - 再异步触发 `cancelChatInvocation(invocation_id)`，失败静默，不影响前端立即可继续交互。
+3. 影响文件：
+   - `frontend/src/pages/Home/index.tsx`
+   - `frontend/src/pages/AITree/components/SessionPanel.tsx`
+
+## 2026-04-28 frontend 分支初始化（免测）
+
+1. 已确认当前工作分支为 `frontend`（`git branch --show-current` 输出 `frontend`）。
+2. 已完成前端依赖初始化：`cd frontend && npm install`，结果 `up to date in 2s`。
+3. 本轮按要求未执行测试命令，仅完成初始化准备。
+
 ## 2026-04-28 停止输出语义修复（显式取消 + 输入回填）
 
 1. 根因修复对齐：前端“停止”不再只做本地 `AbortController.abort()`，新增调用后端 `POST /api/v1/chat/cancel` 取消指定 `invocation_id`，避免后端继续占用执行槽位导致下一次发送触发 `no available API`。
