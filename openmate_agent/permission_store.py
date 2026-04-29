@@ -19,6 +19,20 @@ class PermissionStore(Protocol):
     def list_user_skill_allows(self) -> list[str]: ...
 
     def add_user_skill_allow(self, *, skill_name: str) -> None: ...
+    def record_topic_policy_audit(
+        self,
+        *,
+        topic_id: str,
+        node_id: str,
+        tool_name: str,
+        decision: str,
+        risk_tags: list[str],
+        requested_capabilities: dict[str, Any] | None = None,
+        matched_rule_id: str = "",
+        reason: str = "",
+        request_id: str = "",
+        duration_ms: int = 0,
+    ) -> None: ...
 
 
 class VosPermissionStore:
@@ -41,8 +55,32 @@ class VosPermissionStore:
                     continue
                 tool_name = str(row.get("tool_name", "")).strip()
                 dir_prefix = normalize_dir_prefix(str(row.get("dir_prefix", "")).strip())
-                if tool_name and dir_prefix:
-                    rules.append(PermissionRule(tool_name=tool_name, normalized_dir_prefix=dir_prefix))
+                read_prefixes = row.get("read_path_prefixes")
+                write_prefixes = row.get("write_path_prefixes")
+                if not isinstance(read_prefixes, list):
+                    read_prefixes = [dir_prefix] if dir_prefix else []
+                if not isinstance(write_prefixes, list):
+                    write_prefixes = [dir_prefix] if dir_prefix else []
+                normalized_read = [normalize_dir_prefix(str(item)) for item in read_prefixes if str(item).strip()]
+                normalized_write = [normalize_dir_prefix(str(item)) for item in write_prefixes if str(item).strip()]
+                risk_level = str(row.get("risk_level", "medium")).strip().lower()
+                if risk_level not in {"low", "medium", "high"}:
+                    risk_level = "medium"
+                if tool_name and (dir_prefix or normalized_read or normalized_write):
+                    rules.append(
+                        PermissionRule(
+                            tool_name=tool_name,
+                            normalized_dir_prefix=dir_prefix,
+                            read_path_prefixes=normalized_read,
+                            write_path_prefixes=normalized_write,
+                            allow_network=bool(row.get("allow_network", False)),
+                            allow_shell_features=bool(row.get("allow_shell_features", False)),
+                            risk_level=risk_level,
+                            created_by=str(row.get("created_by", "")),
+                            created_at=str(row.get("created_at", "")),
+                            last_used_at=str(row.get("last_used_at", "")),
+                        )
+                    )
         return rules
 
     def add_topic_tool_allow(self, *, topic_id: str, tool_name: str, dir_prefix: str) -> None:
@@ -91,6 +129,44 @@ class VosPermissionStore:
             workspace_root=self._workspace_root,
             command=["permission", "user", "add", "--skill-name", skill_name],
         )
+
+    def record_topic_policy_audit(
+        self,
+        *,
+        topic_id: str,
+        node_id: str,
+        tool_name: str,
+        decision: str,
+        risk_tags: list[str],
+        requested_capabilities: dict[str, Any] | None = None,
+        matched_rule_id: str = "",
+        reason: str = "",
+        request_id: str = "",
+        duration_ms: int = 0,
+    ) -> None:
+        command = [
+            "permission",
+            "audit",
+            "add",
+            "--topic-id",
+            topic_id,
+            "--node-id",
+            node_id,
+            "--tool-name",
+            tool_name,
+            "--decision",
+            decision,
+            "--reason",
+            reason,
+            "--request-id",
+            request_id,
+            "--duration-ms",
+            str(duration_ms),
+        ]
+        for tag in risk_tags:
+            if str(tag).strip():
+                command.extend(["--risk-tag", str(tag).strip()])
+        run_vos_cli(workspace_root=self._workspace_root, command=command)
 
 
 def _parse_json(text: str) -> dict[str, Any]:

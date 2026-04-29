@@ -535,3 +535,10 @@ o available API。
 4. 共享契约文档 `architecture/sharedInfo/模块契约.md` 新增“聊天错误码契约”与首批错误码字典，明确新增错误码需前后端同步维护。
 
 
+
+## 2026-04-29 VOS 权限与审计真源收口（Go）
+
+1. 权限记录主结构升级为 capability 语义，支持 `read/write path prefixes + network + shell feature + risk level`，并保留旧 `dir_prefix` 兼容输入。
+2. VOS 新增 Topic policy audit 明细/聚合查询能力（CLI + HTTP），为后续跨模块统一观测与审批复盘提供真源。
+3. Agent 执行侧不再默认依赖 `ToolResult.metadata.policy_evaluation`，改为权限判定后上报审计事件到 VOS。
+4. 回归：Go 权限相关测试通过；Python 侧因本机解释器缺少 `pydantic/pytest` 未完成自动回归。

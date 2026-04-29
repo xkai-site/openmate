@@ -952,3 +952,23 @@ OpenMate LLM gateway CLI. All commands print JSON to stdout. 通过（69 项）�
 
 
 
+
+## 2026-04-29 VOS 权限体系重构（capability 放行 + policy audit）
+
+1. VOS Topic 工具放行记录从 `tool_name + dir_prefix` 扩展为 capability 结构（兼容旧字段读写）：
+   - `id/topic_id/tool_name/dir_prefix/read_path_prefixes/write_path_prefixes/allow_network/allow_shell_features/risk_level/created_by/created_at/last_used_at/enabled`
+2. 服务层新增 policy audit 能力：
+   - 明细：`RecordTopicPolicyAudit`、`ListTopicPolicyAudits`
+   - 聚合：`ListTopicPolicyAuditSummary`（按 `topic_id/tool_name/risk_tag/decision/time_bucket` 维度累计 `count/last_seen_at`）
+3. CLI 升级：
+   - `vos permission topic add` 支持 capability 参数（并保留 `--dir-prefix` 兼容）
+   - 新增 `vos permission audit list|summary|add`
+4. HTTP 升级：
+   - `POST /api/v1/topics/{topic_id}/permissions` 支持 capability 字段并兼容 `dir_prefix`
+   - 新增 `/api/v1/topics/{topic_id}/policy-audits`（GET/POST）与 `/policy-audits/summary`（GET）
+5. Python 侧收敛：
+   - `ToolResult.metadata.policy_evaluation` 不再默认注入。
+   - 工具权限判定后通过 VOS CLI `permission audit add` 上报最小审计上下文。
+6. 验证结果：
+   - Go：`go test ./internal/vos/service/... ./internal/vos/cli/... ./internal/vos/httpapi/...` 通过（仓库内 `GOCACHE/GOMODCACHE`）。
+   - Python：当前执行环境缺少 `pytest`/`pydantic`，未完成 Python 回归执行。

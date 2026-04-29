@@ -84,7 +84,7 @@ class PermissionFlowTests(unittest.TestCase):
                 )
                 self.assertFalse(Path(tmp, "notes", "deny.txt").exists())
         self.assertFalse(result.success)
-        self.assertEqual(result.error_code, "TOOL_ACTION_BLOCKED")
+        self.assertEqual(result.error_code, "POLICY_DENIED")
 
     def test_supplement_does_not_execute(self) -> None:
         store = _FakePermissionStore()
@@ -143,6 +143,37 @@ class PermissionFlowTests(unittest.TestCase):
                 )
         self.assertTrue(result.success)
         self.assertEqual(resolver_calls, [])
+
+    def test_destructive_shell_requires_confirmation(self) -> None:
+        store = _FakePermissionStore()
+        with TemporaryDirectory() as tmp:
+            resolver_calls: list[str] = []
+
+            def resolver(_req: object) -> ApprovalDecision:
+                resolver_calls.append("called")
+                return ApprovalDecision(choice="deny")
+
+            service = AgentCapabilityService(
+                workspace_root=tmp,
+                permission_store=store,  # type: ignore[arg-type]
+                approval_resolver=resolver,
+            )
+            with mock.patch("openmate_agent.tool_runtime.resolve_node_tool_context") as context_mock:
+                context_mock.return_value = mock.Mock(
+                    parent_id=None,
+                    node_name="Node Permission",
+                    topic_id="topic-1",
+                    topic_workspace=tmp,
+                )
+                result = service.run_tool(
+                    node_id="node-1",
+                    tool_name="shell",
+                    payload={"command": "rm -rf ./tmp"},
+                    source="model",
+                )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "POLICY_DENIED")
+        self.assertEqual(resolver_calls, ["called"])
 
 
 if __name__ == "__main__":

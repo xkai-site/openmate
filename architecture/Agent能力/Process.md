@@ -1,4 +1,27 @@
 ﻿# Process 记录
+## 2026-04-29 策略沙盒能力升级（PolicyEngine + 审批能力字段 + 可审计判定）
+
+1. openmate_agent/tooling/permission.py 已从“关键词黑名单 + 简单目录匹配”升级为能力判定：
+   - 引入执行意图抽取（读/写路径、网络、shell 特性、风险标签）。
+   - 规则命中按 capability 语义校验：ead_path_prefixes/write_path_prefixes/allow_network/allow_shell_features。
+   - destructive 能力改为能力级拒绝（返回 POLICY_DENIED），不走审批。
+2. 审批请求契约已扩展：
+   - ApprovalRequest 新增 isk_tags、equested_capabilities。
+   - llow_and_remember 记忆规则保持长期有效（无 TTL 逻辑）。
+3. 策略错误码收敛：
+   - 新增并在 runtime 透传：POLICY_CONFIRM_REQUIRED、POLICY_DENIED、POLICY_SCOPE_VIOLATION。
+4. 可审计执行补强：
+   - 权限判定结果新增 policy_evaluation 元数据（风险标签、请求能力、命中规则、判定结果、时间）。
+   - Tool 执行结果会携带该审计片段，便于后续汇总/治理。
+5. 兼容层处理：
+   - PermissionRule 保留旧 
+ormalized_dir_prefix，并可兼容映射到新 capability 前缀字段。
+   - VosPermissionStore.list_topic_tool_allows 支持读取 capability 字段，旧结构继续可用。
+6. 测试更新：
+   - 	ests/test_permission_flow.py 已对 deny 错误码改为 POLICY_DENIED。
+   - 新增 destructive shell 拦截用例（不触发审批 resolver）。
+7. 当前限制：
+   - 本机运行环境缺少 pydantic（当前解释器 D:\miniconda\python.exe），无法在此会话完成 Python 单测执行；待项目 .venv 可用后需补跑回归。
 ## 2026-04-26 权限确认与放行记忆（执行链路）落地（LangGraph 人机确认接缝）
 
 1. Agent 执行链路已从“`confirm => 直接 blocked`”升级为“可走审批回调并按用户选择执行”：
@@ -723,6 +746,7 @@ ode_name，避免测试桩和灰度期间抖动。
    - `--help` 已补参数说明与示例。
 5. 回归结果：
    - `\.venv\Scripts\python.exe -m unittest tests.test_service tests.test_tool_monitor tests.test_cli.AgentCliTests` 通过（58 项）。
+
 
 
 

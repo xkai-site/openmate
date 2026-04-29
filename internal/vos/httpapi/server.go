@@ -338,6 +338,26 @@ func (server *Server) handleV1TopicRoutes(writer http.ResponseWriter, request *h
 		server.handleV1TopicPermissions(writer, request, topicID)
 		return
 	}
+	if strings.HasSuffix(path, "/policy-audits/summary") {
+		topicID := strings.TrimSuffix(path, "/policy-audits/summary")
+		topicID = strings.TrimSuffix(topicID, "/")
+		if topicID == "" || strings.Contains(topicID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1TopicPolicyAuditsSummary(writer, request, topicID)
+		return
+	}
+	if strings.HasSuffix(path, "/policy-audits") {
+		topicID := strings.TrimSuffix(path, "/policy-audits")
+		topicID = strings.TrimSuffix(topicID, "/")
+		if topicID == "" || strings.Contains(topicID, "/") {
+			server.writeV1Error(writer, http.StatusNotFound, "not found")
+			return
+		}
+		server.handleV1TopicPolicyAudits(writer, request, topicID)
+		return
+	}
 
 	topicID := strings.TrimSuffix(path, "/")
 	if topicID == "" || strings.Contains(topicID, "/") {
@@ -515,6 +535,21 @@ func (server *Server) handleV1TopicPermissions(writer http.ResponseWriter, reque
 			return
 		}
 		item, err := server.service.AddTopicToolPermission(topicID, payload.ToolName, payload.DirPrefix)
+		if err == nil {
+			server.writeV1Success(writer, item)
+			return
+		}
+		item, err = server.service.AddTopicToolPermissionV2(topicID, service.TopicToolPermissionInput{
+			ToolName:           payload.ToolName,
+			DirPrefix:          payload.DirPrefix,
+			ReadPathPrefixes:   payload.ReadPathPrefixes,
+			WritePathPrefixes:  payload.WritePathPrefixes,
+			AllowNetwork:       payload.AllowNetwork,
+			AllowShellFeatures: payload.AllowShellFeatures,
+			RiskLevel:          payload.RiskLevel,
+			CreatedBy:          payload.CreatedBy,
+			Enabled:            payload.Enabled,
+		})
 		if err != nil {
 			server.writeV1ServiceError(writer, err)
 			return
@@ -537,6 +572,56 @@ func (server *Server) handleV1TopicPermissions(writer http.ResponseWriter, reque
 	default:
 		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPost, http.MethodDelete)
 	}
+}
+
+func (server *Server) handleV1TopicPolicyAudits(writer http.ResponseWriter, request *http.Request, topicID string) {
+	switch request.Method {
+	case http.MethodGet:
+		items, err := server.service.ListTopicPolicyAudits(topicID)
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, map[string]any{"topic_id": topicID, "items": items})
+	case http.MethodPost:
+		var payload v1TopicPolicyAuditAddPayload
+		if err := decodeJSON(request.Body, &payload); err != nil {
+			server.writeV1Error(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		item, err := server.service.RecordTopicPolicyAudit(service.PolicyAuditEntry{
+			TopicID:               topicID,
+			NodeID:                payload.NodeID,
+			ToolName:              payload.ToolName,
+			Decision:              payload.Decision,
+			RiskTags:              payload.RiskTags,
+			RequestedCapabilities: payload.RequestedCapabilities,
+			MatchedRuleID:         payload.MatchedRuleID,
+			Reason:                payload.Reason,
+			RequestID:             payload.RequestID,
+			DurationMS:            payload.DurationMS,
+		})
+		if err != nil {
+			server.writeV1ServiceError(writer, err)
+			return
+		}
+		server.writeV1Success(writer, item)
+	default:
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPost)
+	}
+}
+
+func (server *Server) handleV1TopicPolicyAuditsSummary(writer http.ResponseWriter, request *http.Request, topicID string) {
+	if request.Method != http.MethodGet {
+		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet)
+		return
+	}
+	items, err := server.service.ListTopicPolicyAuditSummary(topicID)
+	if err != nil {
+		server.writeV1ServiceError(writer, err)
+		return
+	}
+	server.writeV1Success(writer, map[string]any{"topic_id": topicID, "items": items})
 }
 
 func (server *Server) handleV1UserPermissions(writer http.ResponseWriter, request *http.Request) {
@@ -1490,12 +1575,31 @@ type v1TopicWorkspaceUpdatePayload struct {
 }
 
 type v1TopicPermissionAddPayload struct {
-	ToolName  string `json:"tool_name"`
-	DirPrefix string `json:"dir_prefix"`
+	ToolName           string   `json:"tool_name"`
+	DirPrefix          string   `json:"dir_prefix"`
+	ReadPathPrefixes   []string `json:"read_path_prefixes"`
+	WritePathPrefixes  []string `json:"write_path_prefixes"`
+	AllowNetwork       bool     `json:"allow_network"`
+	AllowShellFeatures bool     `json:"allow_shell_features"`
+	RiskLevel          string   `json:"risk_level"`
+	CreatedBy          string   `json:"created_by"`
+	Enabled            *bool    `json:"enabled"`
 }
 
 type v1TopicPermissionDeletePayload struct {
 	ID string `json:"id"`
+}
+
+type v1TopicPolicyAuditAddPayload struct {
+	NodeID                string         `json:"node_id"`
+	ToolName              string         `json:"tool_name"`
+	Decision              string         `json:"decision"`
+	RiskTags              []string       `json:"risk_tags"`
+	RequestedCapabilities map[string]any `json:"requested_capabilities"`
+	MatchedRuleID         string         `json:"matched_rule_id"`
+	Reason                string         `json:"reason"`
+	RequestID             string         `json:"request_id"`
+	DurationMS            int            `json:"duration_ms"`
 }
 
 type v1UserPermissionAddPayload struct {

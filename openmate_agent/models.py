@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 GuardState = Literal["allow", "deny", "confirm"]
 AgentMode = Literal["execution", "decompose", "priority", "compact"]
 ApprovalChoice = Literal["allow_and_remember", "allow_once", "deny", "supplement"]
+RiskTag = Literal[
+    "filesystem_read",
+    "filesystem_write",
+    "network",
+    "shell_feature",
+    "destructive",
+]
+PolicyDecision = Literal["allow", "deny", "confirm"]
 
 
 class Build(BaseModel):
@@ -57,11 +65,21 @@ class ToolAction(BaseModel):
 class GuardDecision(BaseModel):
     decision: GuardState
     reason: str = ""
+    error_code: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PermissionRule(BaseModel):
     tool_name: str = Field(min_length=1)
-    normalized_dir_prefix: str = Field(min_length=1)
+    normalized_dir_prefix: str = ""
+    read_path_prefixes: list[str] = Field(default_factory=list)
+    write_path_prefixes: list[str] = Field(default_factory=list)
+    allow_network: bool = False
+    allow_shell_features: bool = False
+    risk_level: Literal["low", "medium", "high"] = "medium"
+    created_by: str = ""
+    created_at: str = ""
+    last_used_at: str = ""
 
 
 class ApprovalRequest(BaseModel):
@@ -74,6 +92,8 @@ class ApprovalRequest(BaseModel):
     directories: list[str] = Field(default_factory=list)
     reason: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
+    risk_tags: list[RiskTag] = Field(default_factory=list)
+    requested_capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class ApprovalDecision(BaseModel):

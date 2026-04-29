@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 from openmate_shared.runtime_paths import resolve_workspace_root
@@ -127,8 +128,9 @@ class ToolRuntimeExecutor:
                     ToolResult(
                         tool_name=action.tool_name,
                         success=False,
-                        error_code="TOOL_ACTION_BLOCKED",
+                        error_code=direct_decision.error_code or "TOOL_ACTION_BLOCKED",
                         error=f"tool action blocked: {direct_decision.decision} ({direct_decision.reason})",
+                        metadata=direct_decision.metadata,
                     )
                 )
 
@@ -232,6 +234,15 @@ class ToolRuntimeExecutor:
             allowed_rules=allowed_rules,
             workspace_root=effective_workspace,
         )
+        self._record_policy_audit(
+            topic_id=topic_id,
+            node_id=node_id,
+            action=action,
+            decision=decision.decision,
+            reason=decision.reason,
+            decision_metadata=decision.metadata,
+            request_id=request_id,
+        )
         if decision.decision != "allow":
             if source == "model" and self._approval_resolver is not None and decision.decision == "confirm":
                 approval_request = self._permission_gateway.build_approval_request(
@@ -245,8 +256,12 @@ class ToolRuntimeExecutor:
                 if approval_decision.choice in {"allow_and_remember", "allow_once"}:
                     remembered: list[dict[str, str]] = []
                     if approval_decision.choice == "allow_and_remember" and topic_id is not None:
-                        for directory in approval_request.directories:
-                            normalized = normalize_dir_prefix(directory)
+                        requested = approval_request.requested_capabilities
+                        remember_dirs = requested.get("write_path_prefixes") or requested.get("read_path_prefixes") or approval_request.directories
+                        if not isinstance(remember_dirs, list):
+                            remember_dirs = approval_request.directories
+                        for directory in remember_dirs:
+                            normalized = normalize_dir_prefix(str(directory))
                             if normalized == "":
                                 continue
                             try:
@@ -255,12 +270,7 @@ class ToolRuntimeExecutor:
                                     tool_name=action.tool_name,
                                     dir_prefix=normalized,
                                 )
-                                remembered.append(
-                                    {
-                                        "tool_name": action.tool_name,
-                                        "dir_prefix": normalized,
-                                    }
-                                )
+                                remembered.append({"tool_name": action.tool_name, "dir_prefix": normalized})
                             except Exception:
                                 continue
                     approval_metadata = {
@@ -311,7 +321,7 @@ class ToolRuntimeExecutor:
                     ToolResult(
                         tool_name=action.tool_name,
                         success=False,
-                        error_code="TOOL_ACTION_BLOCKED",
+                        error_code="POLICY_DENIED",
                         error="tool action blocked: deny",
                         metadata={
                             "approval": {
@@ -326,8 +336,9 @@ class ToolRuntimeExecutor:
                 ToolResult(
                     tool_name=action.tool_name,
                     success=False,
-                    error_code="TOOL_ACTION_BLOCKED",
+                    error_code=decision.error_code or "TOOL_ACTION_BLOCKED",
                     error=f"tool action blocked: {decision.decision} ({decision.reason})",
+                    metadata=decision.metadata,
                 )
             )
 
@@ -401,6 +412,34 @@ class ToolRuntimeExecutor:
                 success=success,
                 error_code=error_code,
                 duration_ms=duration_ms,
+            )
+        except Exception:
+            pass
+
+    def _record_policy_audit(
+        self,
+        *,
+        topic_id: str | None,
+        node_id: str,
+        action: ToolAction,
+        decision: str,
+        reason: str,
+        decision_metadata: dict[str, Any],
+        request_id: str | None,
+    ) -> None:
+        if topic_id is None:
+            return
+        try:
+            self._permission_store.record_topic_policy_audit(
+                topic_id=topic_id,
+                node_id=node_id,
+                tool_name=action.tool_name,
+                decision=decision,
+                reason=reason,
+                request_id=request_id or "",
+                risk_tags=list(decision_metadata.get("risk_tags", [])),
+                requested_capabilities=dict(decision_metadata.get("requested_capabilities", {})),
+                matched_rule_id=str((decision_metadata.get("matched_rule") or {}).get("id", "")),
             )
         except Exception:
             pass

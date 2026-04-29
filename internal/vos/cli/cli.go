@@ -689,6 +689,8 @@ func runPermission(svc *service.Service, args []string, stdout, stderr io.Writer
 	switch args[0] {
 	case "topic":
 		return runPermissionTopic(svc, args[1:], stdout, stderr)
+	case "audit":
+		return runPermissionAudit(svc, args[1:], stdout, stderr)
 	case "user":
 		return runPermissionUser(svc, args[1:], stdout, stderr)
 	default:
@@ -726,10 +728,27 @@ func runPermissionTopic(svc *service.Service, args []string, stdout, stderr io.W
 		topicID := fs.String("topic-id", "", "Topic ID")
 		toolName := fs.String("tool-name", "", "Tool name")
 		dirPrefix := fs.String("dir-prefix", "", "Directory prefix")
+		var readPrefixes multiString
+		var writePrefixes multiString
+		allowNetwork := fs.Bool("allow-network", false, "Allow network capability")
+		allowShellFeatures := fs.Bool("allow-shell-features", false, "Allow shell meta-features")
+		riskLevel := fs.String("risk-level", "medium", "Risk level: low|medium|high")
+		createdBy := fs.String("created-by", "", "Created by")
+		fs.Var(&readPrefixes, "read-path-prefix", "Readable path prefix. Repeatable.")
+		fs.Var(&writePrefixes, "write-path-prefix", "Writable path prefix. Repeatable.")
 		if code := parseFlagSet(fs, args[1:]); code >= 0 {
 			return code
 		}
-		item, err := svc.AddTopicToolPermission(*topicID, *toolName, *dirPrefix)
+		item, err := svc.AddTopicToolPermissionV2(*topicID, service.TopicToolPermissionInput{
+			ToolName:           *toolName,
+			DirPrefix:          *dirPrefix,
+			ReadPathPrefixes:   []string(readPrefixes),
+			WritePathPrefixes:  []string(writePrefixes),
+			AllowNetwork:       *allowNetwork,
+			AllowShellFeatures: *allowShellFeatures,
+			RiskLevel:          *riskLevel,
+			CreatedBy:          *createdBy,
+		})
 		if err != nil {
 			return printError(err, stderr)
 		}
@@ -749,6 +768,75 @@ func runPermissionTopic(svc *service.Service, args []string, stdout, stderr io.W
 		return dumpJSON(map[string]any{"topic_id": *topicID, "id": *id, "deleted": deleted}, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown permission topic command: %s\n", args[0])
+		return 2
+	}
+}
+
+func runPermissionAudit(svc *service.Service, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || isHelpToken(args[0]) {
+		fmt.Fprintln(stderr, "Usage:")
+		fmt.Fprintln(stderr, "  vos permission audit <list|summary|add> [flags]")
+		if len(args) > 0 {
+			return 0
+		}
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("vos permission audit list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		topicID := fs.String("topic-id", "", "Topic ID")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		items, err := svc.ListTopicPolicyAudits(*topicID)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"topic_id": *topicID, "items": items}, stdout, stderr)
+	case "summary":
+		fs := flag.NewFlagSet("vos permission audit summary", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		topicID := fs.String("topic-id", "", "Topic ID")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		items, err := svc.ListTopicPolicyAuditSummary(*topicID)
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(map[string]any{"topic_id": *topicID, "items": items}, stdout, stderr)
+	case "add":
+		fs := flag.NewFlagSet("vos permission audit add", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		topicID := fs.String("topic-id", "", "Topic ID")
+		nodeID := fs.String("node-id", "", "Node ID")
+		toolName := fs.String("tool-name", "", "Tool name")
+		decision := fs.String("decision", "", "Decision")
+		reason := fs.String("reason", "", "Reason")
+		requestID := fs.String("request-id", "", "Request ID")
+		durationMS := fs.Int("duration-ms", 0, "Duration milliseconds")
+		var riskTags multiString
+		fs.Var(&riskTags, "risk-tag", "Risk tag. Repeatable.")
+		if code := parseFlagSet(fs, args[1:]); code >= 0 {
+			return code
+		}
+		item, err := svc.RecordTopicPolicyAudit(service.PolicyAuditEntry{
+			TopicID:    *topicID,
+			NodeID:     *nodeID,
+			ToolName:   *toolName,
+			Decision:   *decision,
+			Reason:     *reason,
+			RequestID:  *requestID,
+			DurationMS: *durationMS,
+			RiskTags:   []string(riskTags),
+		})
+		if err != nil {
+			return printError(err, stderr)
+		}
+		return dumpJSON(item, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown permission audit command: %s\n", args[0])
 		return 2
 	}
 }
@@ -816,7 +904,7 @@ func printNodeUsage(writer io.Writer) {
 
 func printPermissionUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage:")
-	fmt.Fprintln(writer, "  vos permission <topic|user> <list|add|delete> [flags]")
+	fmt.Fprintln(writer, "  vos permission <topic|audit|user> <list|add|delete> [flags]")
 }
 
 func parseFlagSet(fs *flag.FlagSet, args []string) int {
