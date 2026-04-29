@@ -334,11 +334,30 @@ class ExecutionAgentService:
             payload["recorded_mtime"] = allow_record.skill_mtime or None
             return {"allowed": False, "payload": payload}
         payload["recorded_mtime"] = allow_record.skill_mtime or None
-        if current_mtime and allow_record.skill_mtime and current_mtime != allow_record.skill_mtime:
-            payload["reason_code"] = "MTIME_MISMATCH"
-            return {"allowed": False, "payload": payload}
+        if current_mtime and allow_record.skill_mtime:
+            current_dt = _parse_utc_timestamp(current_mtime)
+            recorded_dt = _parse_utc_timestamp(allow_record.skill_mtime)
+            if current_dt is None or recorded_dt is None or current_dt != recorded_dt:
+                payload["reason_code"] = "MTIME_MISMATCH"
+                return {"allowed": False, "payload": payload}
         payload["reason_code"] = "ALLOW_MATCHED"
         return {"allowed": True, "payload": payload}
+
+
+def _parse_utc_timestamp(value: str) -> datetime | None:
+    raw = str(value).strip()
+    if not raw:
+        return None
+    normalized = raw
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class DecomposeAgentService:
