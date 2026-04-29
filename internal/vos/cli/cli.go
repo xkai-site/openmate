@@ -778,26 +778,31 @@ func runPermissionUser(svc *service.Service, args []string, stdout, stderr io.Wr
 		fs := flag.NewFlagSet("vos permission user add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		skillName := fs.String("skill-name", "", "Skill name")
+		skillPath := fs.String("skill-path", "", "Skill absolute path")
+		skillMTime := fs.String("skill-mtime", "", "Skill mtime in RFC3339Nano UTC")
+		var allowRoots multiString
+		fs.Var(&allowRoots, "allow-root", "Allowed root absolute path. Repeatable.")
 		if code := parseFlagSet(fs, args[1:]); code >= 0 {
 			return code
 		}
-		skill, err := svc.AddUserSkillPermission(*skillName)
+		skill, err := svc.AddUserSkillPermission(*skillName, *skillPath, *skillMTime, []string(allowRoots))
 		if err != nil {
 			return printError(err, stderr)
 		}
-		return dumpJSON(map[string]any{"skill_name": skill}, stdout, stderr)
+		return dumpJSON(skill, stdout, stderr)
 	case "delete":
 		fs := flag.NewFlagSet("vos permission user delete", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		skillName := fs.String("skill-name", "", "Skill name")
+		skillPath := fs.String("skill-path", "", "Skill absolute path filter")
 		if code := parseFlagSet(fs, args[1:]); code >= 0 {
 			return code
 		}
-		deleted, err := svc.DeleteUserSkillPermission(*skillName)
+		deleted, err := svc.DeleteUserSkillPermission(*skillName, *skillPath)
 		if err != nil {
 			return printError(err, stderr)
 		}
-		return dumpJSON(map[string]any{"skill_name": *skillName, "deleted": deleted}, stdout, stderr)
+		return dumpJSON(map[string]any{"skill_name": *skillName, "skill_path": *skillPath, "deleted": deleted}, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown permission user command: %s\n", args[0])
 		return 2

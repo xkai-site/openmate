@@ -554,26 +554,28 @@ func (server *Server) handleV1UserPermissions(writer http.ResponseWriter, reques
 			server.writeV1Error(writer, http.StatusBadRequest, err.Error())
 			return
 		}
-		name, err := server.service.AddUserSkillPermission(payload.SkillName)
+		item, err := server.service.AddUserSkillPermission(payload.SkillName, payload.SkillPath, payload.SkillMTime, payload.AllowedRoots)
 		if err != nil {
 			server.writeV1ServiceError(writer, err)
 			return
 		}
-		server.writeV1Success(writer, map[string]any{"skill_name": name})
+		server.writeV1Success(writer, item)
 	case http.MethodDelete:
 		skillName := strings.TrimSpace(request.URL.Query().Get("skill_name"))
+		skillPath := strings.TrimSpace(request.URL.Query().Get("skill_path"))
 		if skillName == "" {
 			var payload v1UserPermissionDeletePayload
 			if err := decodeJSON(request.Body, &payload); err == nil {
 				skillName = strings.TrimSpace(payload.SkillName)
+				skillPath = strings.TrimSpace(payload.SkillPath)
 			}
 		}
-		deleted, err := server.service.DeleteUserSkillPermission(skillName)
+		deleted, err := server.service.DeleteUserSkillPermission(skillName, skillPath)
 		if err != nil {
 			server.writeV1ServiceError(writer, err)
 			return
 		}
-		server.writeV1Success(writer, map[string]any{"skill_name": skillName, "deleted": deleted})
+		server.writeV1Success(writer, map[string]any{"skill_name": skillName, "skill_path": skillPath, "deleted": deleted})
 	default:
 		server.writeV1MethodNotAllowed(writer, request.Method, http.MethodGet, http.MethodPost, http.MethodDelete)
 	}
@@ -1499,11 +1501,15 @@ type v1TopicPermissionDeletePayload struct {
 }
 
 type v1UserPermissionAddPayload struct {
-	SkillName string `json:"skill_name"`
+	SkillName    string   `json:"skill_name"`
+	SkillPath    string   `json:"skill_path"`
+	SkillMTime   string   `json:"skill_mtime"`
+	AllowedRoots []string `json:"allowed_roots"`
 }
 
 type v1UserPermissionDeletePayload struct {
 	SkillName string `json:"skill_name"`
+	SkillPath string `json:"skill_path"`
 }
 
 type moveNodePayload struct {

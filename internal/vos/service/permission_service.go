@@ -20,6 +20,13 @@ type TopicToolPermission struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type UserSkillPermission struct {
+	SkillName    string   `json:"skill_name"`
+	SkillPath    string   `json:"skill_path"`
+	SkillMTime   string   `json:"skill_mtime"`
+	AllowedRoots []string `json:"allowed_roots"`
+}
+
 func (service *Service) ListTopicToolPermissions(topicID string) ([]TopicToolPermission, error) {
 	trimmedTopicID := strings.TrimSpace(topicID)
 	if trimmedTopicID == "" {
@@ -123,25 +130,39 @@ func (service *Service) DeleteTopicToolPermission(topicID, permissionID string) 
 	return true, nil
 }
 
-func (service *Service) ListUserSkillPermissions() ([]string, error) {
+func (service *Service) ListUserSkillPermissions() ([]UserSkillPermission, error) {
 	state, err := service.store.Load()
 	if err != nil {
 		return nil, err
 	}
 	if state.User == nil {
-		return []string{}, nil
+		return []UserSkillPermission{}, nil
 	}
-	return decodeUserSkillAllows(state.User.UserPermission), nil
+	return decodeUserSkillAllowRecords(state.User.UserPermission), nil
 }
 
-func (service *Service) AddUserSkillPermission(skillName string) (string, error) {
+func (service *Service) AddUserSkillPermission(skillName, skillPath, skillMTime string, allowedRoots []string) (*UserSkillPermission, error) {
 	trimmedSkillName := strings.TrimSpace(skillName)
 	if trimmedSkillName == "" {
-		return "", domain.ValidationError{Message: "skill_name is required"}
+		return nil, domain.ValidationError{Message: "skill_name is required"}
 	}
+	trimmedSkillPath := normalizeDirPrefix(skillPath)
+	if trimmedSkillPath == "" {
+		return nil, domain.ValidationError{Message: "skill_path is required"}
+	}
+	trimmedSkillMTime := strings.TrimSpace(skillMTime)
+	if trimmedSkillMTime == "" {
+		return nil, domain.ValidationError{Message: "skill_mtime is required"}
+	}
+	parsedMtime, err := time.Parse(time.RFC3339Nano, trimmedSkillMTime)
+	if err != nil {
+		return nil, domain.ValidationError{Message: "skill_mtime must be RFC3339Nano"}
+	}
+	normalizedRoots := normalizeRoots(allowedRoots)
+
 	state, err := service.store.Load()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if state.User == nil {
 		state.User = domain.NewDefaultUser()
@@ -149,25 +170,39 @@ func (service *Service) AddUserSkillPermission(skillName string) (string, error)
 	if state.User.UserPermission == nil {
 		state.User.UserPermission = map[string]any{}
 	}
-	skills := decodeUserSkillAllows(state.User.UserPermission)
-	for _, skill := range skills {
-		if skill == trimmedSkillName {
-			return trimmedSkillName, nil
+
+	records := decodeUserSkillAllowRecords(state.User.UserPermission)
+	candidate := UserSkillPermission{
+		SkillName:    trimmedSkillName,
+		SkillPath:    trimmedSkillPath,
+		SkillMTime:   parsedMtime.UTC().Format(time.RFC3339Nano),
+		AllowedRoots: normalizedRoots,
+	}
+	updated := false
+	for i := range records {
+		if records[i].SkillName == trimmedSkillName {
+			records[i] = candidate
+			updated = true
+			break
 		}
 	}
-	skills = append(skills, trimmedSkillName)
-	state.User.UserPermission[userSkillAllowsKey] = cloneStrings(skills)
-	if err := service.store.Save(state); err != nil {
-		return "", err
+	if !updated {
+		records = append(records, candidate)
 	}
-	return trimmedSkillName, nil
+
+	state.User.UserPermission[userSkillAllowsKey] = encodeUserSkillAllowRecords(records)
+	if err := service.store.Save(state); err != nil {
+		return nil, err
+	}
+	return &candidate, nil
 }
 
-func (service *Service) DeleteUserSkillPermission(skillName string) (bool, error) {
+func (service *Service) DeleteUserSkillPermission(skillName, skillPath string) (bool, error) {
 	trimmedSkillName := strings.TrimSpace(skillName)
 	if trimmedSkillName == "" {
 		return false, domain.ValidationError{Message: "skill_name is required"}
 	}
+	trimmedSkillPath := normalizeDirPrefix(skillPath)
 	state, err := service.store.Load()
 	if err != nil {
 		return false, err
@@ -175,15 +210,19 @@ func (service *Service) DeleteUserSkillPermission(skillName string) (bool, error
 	if state.User == nil {
 		return false, nil
 	}
-	skills := decodeUserSkillAllows(state.User.UserPermission)
-	next := make([]string, 0, len(skills))
+	records := decodeUserSkillAllowRecords(state.User.UserPermission)
+	next := make([]UserSkillPermission, 0, len(records))
 	deleted := false
-	for _, skill := range skills {
-		if skill == trimmedSkillName {
-			deleted = true
+	for _, record := range records {
+		if record.SkillName != trimmedSkillName {
+			next = append(next, record)
 			continue
 		}
-		next = append(next, skill)
+		if trimmedSkillPath != "" && normalizeDirPrefix(record.SkillPath) != trimmedSkillPath {
+			next = append(next, record)
+			continue
+		}
+		deleted = true
 	}
 	if !deleted {
 		return false, nil
@@ -191,7 +230,7 @@ func (service *Service) DeleteUserSkillPermission(skillName string) (bool, error
 	if state.User.UserPermission == nil {
 		state.User.UserPermission = map[string]any{}
 	}
-	state.User.UserPermission[userSkillAllowsKey] = cloneStrings(next)
+	state.User.UserPermission[userSkillAllowsKey] = encodeUserSkillAllowRecords(next)
 	if err := service.store.Save(state); err != nil {
 		return false, err
 	}
@@ -290,34 +329,94 @@ func encodeTopicToolAllows(allows []TopicToolPermission) []any {
 	return rows
 }
 
-func decodeUserSkillAllows(permission map[string]any) []string {
+func decodeUserSkillAllowRecords(permission map[string]any) []UserSkillPermission {
 	if permission == nil {
-		return []string{}
+		return []UserSkillPermission{}
 	}
 	raw, exists := permission[userSkillAllowsKey]
 	if !exists {
-		return []string{}
+		return []UserSkillPermission{}
 	}
 	values, ok := raw.([]any)
-	if ok {
-		result := make([]string, 0, len(values))
-		for _, item := range values {
-			text, ok := item.(string)
-			if !ok {
-				continue
-			}
-			trimmed := strings.TrimSpace(text)
-			if trimmed != "" {
-				result = append(result, trimmed)
-			}
+	if !ok {
+		return []UserSkillPermission{}
+	}
+	result := make([]UserSkillPermission, 0, len(values))
+	for _, item := range values {
+		row, ok := item.(map[string]any)
+		if !ok {
+			continue
 		}
-		return result
+		skillName, _ := row["skill_name"].(string)
+		skillPath, _ := row["skill_path"].(string)
+		skillMTime, _ := row["skill_mtime"].(string)
+		if strings.TrimSpace(skillName) == "" || normalizeDirPrefix(skillPath) == "" || strings.TrimSpace(skillMTime) == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(skillMTime)); err != nil {
+			continue
+		}
+		roots := decodeRoots(row["allowed_roots"])
+		result = append(result, UserSkillPermission{
+			SkillName:    strings.TrimSpace(skillName),
+			SkillPath:    normalizeDirPrefix(skillPath),
+			SkillMTime:   strings.TrimSpace(skillMTime),
+			AllowedRoots: roots,
+		})
 	}
-	typed, ok := raw.([]string)
-	if ok {
-		return cloneStrings(typed)
+	return result
+}
+
+func encodeUserSkillAllowRecords(records []UserSkillPermission) []any {
+	rows := make([]any, 0, len(records))
+	for _, record := range records {
+		if strings.TrimSpace(record.SkillName) == "" {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"skill_name":    strings.TrimSpace(record.SkillName),
+			"skill_path":    normalizeDirPrefix(record.SkillPath),
+			"skill_mtime":   strings.TrimSpace(record.SkillMTime),
+			"allowed_roots": cloneStrings(normalizeRoots(record.AllowedRoots)),
+		})
 	}
-	return []string{}
+	return rows
+}
+
+func decodeRoots(raw any) []string {
+	if raw == nil {
+		return []string{}
+	}
+	if typed, ok := raw.([]string); ok {
+		return normalizeRoots(typed)
+	}
+	values, ok := raw.([]any)
+	if !ok {
+		return []string{}
+	}
+	roots := make([]string, 0, len(values))
+	for _, item := range values {
+		text, ok := item.(string)
+		if !ok {
+			continue
+		}
+		roots = append(roots, text)
+	}
+	return normalizeRoots(roots)
+}
+
+func normalizeRoots(values []string) []string {
+	roots := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		normalized := normalizeDirPrefix(value)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		roots = append(roots, normalized)
+	}
+	return roots
 }
 
 func normalizeDirPrefix(raw string) string {

@@ -77,6 +77,12 @@ class PermissionRule(BaseModel):
     tool_name: str = Field(min_length=1)
     normalized_dir_prefix: str = Field(min_length=1)
 
+class UserSkillAllow(BaseModel):
+    skill_name: str = Field(min_length=1)
+    skill_path: str = ""
+    skill_mtime: str = ""
+    allowed_roots: list[str] = Field(default_factory=list)
+
 
 class ApprovalRequest(BaseModel):
     request_id: str = Field(min_length=1)

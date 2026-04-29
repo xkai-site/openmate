@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -11,6 +12,7 @@ from uuid import uuid4
 _LOGGER = logging.getLogger(__name__)
 
 from openmate_pool.models import InvokeRequest, OpenAIResponsesRequest
+from openmate_shared.runtime_paths import resolve_workspace_root
 
 from .interfaces import LlmGateway
 from .models import (
@@ -30,6 +32,7 @@ from .models import (
     PriorityResponse,
     SkillSpec,
     ToolBundle,
+    UserSkillAllow,
 )
 from .orchestration import ContextTooLargeError, ExecutionOrchestrator
 from .permission_store import PermissionStore
@@ -53,6 +56,7 @@ class ExecutionAgentService:
         self._execution_orchestrator = execution_orchestrator
         self._approval_resolver = approval_resolver
         self._permission_store = permission_store
+        self._workspace_root = resolve_workspace_root(workspace_root or Path.cwd())
         self._skill_catalog = skill_catalog or SkillCatalog(workspace_root=workspace_root or Path.cwd())
         self._skill_monitor = skill_monitor or SkillMonitorService(workspace_root=workspace_root or Path.cwd())
 
@@ -83,12 +87,12 @@ class ExecutionAgentService:
     def _apply_skill_permissions(self, *, build: Build, agent_input: Any) -> Any:
         if not agent_input.skills.skills:
             return agent_input
-        allowed_names: set[str] = set()
+        allow_records: list[UserSkillAllow] = []
         if self._permission_store is not None:
             try:
-                allowed_names = set(self._permission_store.list_user_skill_allows())
+                allow_records = self._permission_store.list_user_skill_allows()
             except Exception:
-                allowed_names = set()
+                allow_records = []
 
         context_payload = self._parse_context_payload(agent_input.context.payload)
         requested = set(self._extract_requested_skills(context_payload))
@@ -99,28 +103,15 @@ class ExecutionAgentService:
                 continue
             if requested and skill.name not in requested:
                 continue
-            if skill.name in allowed_names:
-                approved.append(self._materialize_skill(skill=skill, node_id=build.node_id))
+            record, failed_check = self._find_allow_record(skill=skill, records=allow_records)
+            if record is not None:
+                approved.append(self._materialize_skill(skill=skill, node_id=build.node_id, allow_record=record))
                 continue
-
-            if self._approval_resolver is None:
-                continue
-            request = ApprovalRequest(
-                request_id=f"approval:{build.node_id}:skill:{skill.name}",
-                node_id=build.node_id,
-                target_type="skill",
-                skill_name=skill.name,
-                reason="skill injection requires user confirmation",
-                payload={"config": skill.config},
+            approved_skill = self._materialize_skill_with_approval(
+                skill=skill, node_id=build.node_id, precomputed_check=failed_check
             )
-            decision = self._approval_resolver(request)
-            if decision.choice in {"allow_once", "allow_and_remember"}:
-                approved.append(self._materialize_skill(skill=skill, node_id=build.node_id))
-                if decision.choice == "allow_and_remember" and self._permission_store is not None:
-                    try:
-                        self._permission_store.add_user_skill_allow(skill_name=skill.name)
-                    except Exception:
-                        pass
+            if approved_skill is not None:
+                approved.append(approved_skill)
         next_skills = agent_input.skills.model_copy(update={"skills": approved})
         return agent_input.model_copy(update={"skills": next_skills})
 
@@ -215,13 +206,50 @@ class ExecutionAgentService:
                 result.append(name)
         return result
 
-    def _materialize_skill(self, *, skill: SkillSpec, node_id: str) -> SkillSpec:
+    def _materialize_skill_with_approval(
+        self, *, skill: SkillSpec, node_id: str, precomputed_check: dict[str, Any] | None = None
+    ) -> SkillSpec | None:
+        check = precomputed_check or self._validate_skill_against_allowlist(skill=skill, allow_record=None)
+        if check["allowed"]:
+            return self._materialize_skill(skill=skill, node_id=node_id, allow_record=None)
+        if self._approval_resolver is None:
+            return None
+        request = ApprovalRequest(
+            request_id=f"approval:{node_id}:skill:{skill.name}",
+            node_id=node_id,
+            target_type="skill",
+            skill_name=skill.name,
+            reason="skill injection requires user confirmation",
+            payload=check["payload"],
+        )
+        decision = self._approval_resolver(request)
+        if decision.choice not in {"allow_once", "allow_and_remember"}:
+            return None
+        materialized = self._materialize_skill(skill=skill, node_id=node_id, allow_record=None)
+        if decision.choice == "allow_and_remember" and self._permission_store is not None and materialized is not None:
+            try:
+                payload = check["payload"]
+                self._permission_store.upsert_user_skill_allow(
+                    skill_name=skill.name,
+                    skill_path=str(payload.get("resolved_path", "")),
+                    skill_mtime=str(payload.get("current_mtime", "")),
+                    allowed_roots=[str(self._workspace_root)],
+                )
+            except Exception:
+                pass
+        return materialized
+
+    def _materialize_skill(self, *, skill: SkillSpec, node_id: str, allow_record: UserSkillAllow | None) -> SkillSpec:
         path_raw = skill.config.get("path")
         if not isinstance(path_raw, str) or not path_raw.strip():
             return skill
-        skill_path = Path(path_raw).resolve()
+        resolved_path = self._resolve_skill_path(path_raw)
+        skill_path = resolved_path
         started = time.perf_counter()
         try:
+            check = self._validate_skill_against_allowlist(skill=skill, allow_record=allow_record)
+            if not check["allowed"]:
+                return skill
             self._skill_monitor.record_before(
                 node_id=node_id,
                 source="model",
@@ -256,6 +284,61 @@ class ExecutionAgentService:
                 duration_ms=duration_ms,
             )
             return skill
+
+    def _find_allow_record(self, *, skill: SkillSpec, records: list[UserSkillAllow]) -> tuple[UserSkillAllow | None, dict[str, Any] | None]:
+        best_failed: dict[str, Any] | None = None
+        for record in records:
+            if record.skill_name != skill.name:
+                continue
+            check = self._validate_skill_against_allowlist(skill=skill, allow_record=record)
+            if check["allowed"]:
+                return record, None
+            best_failed = check
+        return None, best_failed
+
+    def _resolve_skill_path(self, raw_path: str) -> Path:
+        candidate = Path(raw_path.strip())
+        if candidate.is_absolute():
+            return candidate.resolve()
+        return (self._workspace_root / candidate).resolve()
+
+    def _validate_skill_against_allowlist(self, *, skill: SkillSpec, allow_record: UserSkillAllow | None) -> dict[str, Any]:
+        path_raw = str(skill.config.get("path", "")).strip()
+        if not path_raw:
+            return {"allowed": True, "payload": {}}
+        resolved_path = self._resolve_skill_path(path_raw)
+        current_mtime = ""
+        try:
+            stat = os.stat(resolved_path)
+            current_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except Exception:
+            pass
+        payload: dict[str, Any] = {
+            "skill_name": skill.name,
+            "path_raw": path_raw,
+            "resolved_path": str(resolved_path),
+            "reason_code": "ALLOW_RECORD_NOT_FOUND",
+            "current_mtime": current_mtime or None,
+            "recorded_mtime": None,
+        }
+        if allow_record is None:
+            return {"allowed": False, "payload": payload}
+        roots = [self._workspace_root, *[Path(root).resolve() for root in allow_record.allowed_roots if root.strip()]]
+        in_root = any(root == resolved_path or root in resolved_path.parents for root in roots)
+        if not in_root:
+            payload["reason_code"] = "PATH_NOT_ALLOWED"
+            payload["recorded_mtime"] = allow_record.skill_mtime or None
+            return {"allowed": False, "payload": payload}
+        if Path(allow_record.skill_path).resolve() != resolved_path:
+            payload["reason_code"] = "PATH_NOT_ALLOWED"
+            payload["recorded_mtime"] = allow_record.skill_mtime or None
+            return {"allowed": False, "payload": payload}
+        payload["recorded_mtime"] = allow_record.skill_mtime or None
+        if current_mtime and allow_record.skill_mtime and current_mtime != allow_record.skill_mtime:
+            payload["reason_code"] = "MTIME_MISMATCH"
+            return {"allowed": False, "payload": payload}
+        payload["reason_code"] = "ALLOW_MATCHED"
+        return {"allowed": True, "payload": payload}
 
 
 class DecomposeAgentService:

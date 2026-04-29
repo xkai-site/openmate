@@ -87,7 +87,10 @@ func TestServerV1UserPermissionsCRUD(t *testing.T) {
 		http.MethodPost,
 		testServer.URL+"/api/v1/user/permissions",
 		map[string]any{
-			"skill_name": "skill.alpha",
+			"skill_name":    "skill.alpha",
+			"skill_path":    "D:/workspace/skills/alpha.md",
+			"skill_mtime":   "2026-04-29T00:00:00Z",
+			"allowed_roots": []string{"D:/workspace"},
 		},
 		http.StatusOK,
 	)
@@ -108,10 +111,12 @@ func TestServerV1UserPermissionsCRUD(t *testing.T) {
 		http.StatusOK,
 	)
 	listed := struct {
-		SkillAllows []string `json:"skill_allows"`
+		SkillAllows []struct {
+			SkillName string `json:"skill_name"`
+		} `json:"skill_allows"`
 	}{}
 	mustDecodeEnvelopeData(t, listEnv, &listed)
-	if len(listed.SkillAllows) != 1 || listed.SkillAllows[0] != "skill.alpha" {
+	if len(listed.SkillAllows) != 1 || listed.SkillAllows[0].SkillName != "skill.alpha" {
 		t.Fatalf("skill_allows = %v, want [skill.alpha]", listed.SkillAllows)
 	}
 

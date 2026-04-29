@@ -65,23 +65,28 @@ func TestUserSkillPermissionCRUD(t *testing.T) {
 		t.Fatalf("len(before) = %d, want 0", len(before))
 	}
 
-	name, err := svc.AddUserSkillPermission("skill.alpha")
+	name, err := svc.AddUserSkillPermission(
+		"skill.alpha",
+		"D:/workspace/skills/alpha.md",
+		"2026-04-29T00:00:00Z",
+		[]string{"D:/workspace"},
+	)
 	if err != nil {
 		t.Fatalf("AddUserSkillPermission() error = %v", err)
 	}
-	if name != "skill.alpha" {
-		t.Fatalf("name = %s, want skill.alpha", name)
+	if name == nil || name.SkillName != "skill.alpha" {
+		t.Fatalf("name = %+v, want skill.alpha record", name)
 	}
 
 	after, err := svc.ListUserSkillPermissions()
 	if err != nil {
 		t.Fatalf("ListUserSkillPermissions(after) error = %v", err)
 	}
-	if len(after) != 1 || after[0] != "skill.alpha" {
+	if len(after) != 1 || after[0].SkillName != "skill.alpha" {
 		t.Fatalf("after = %v, want [skill.alpha]", after)
 	}
 
-	deleted, err := svc.DeleteUserSkillPermission("skill.alpha")
+	deleted, err := svc.DeleteUserSkillPermission("skill.alpha", "")
 	if err != nil {
 		t.Fatalf("DeleteUserSkillPermission() error = %v", err)
 	}
