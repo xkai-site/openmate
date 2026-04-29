@@ -64,7 +64,7 @@ func TestPermissionCLIFlow(t *testing.T) {
 
 	var userAddOut bytes.Buffer
 	if code := cli.Run(
-		append(base, "permission", "user", "add", "--skill-name", "skill.alpha"),
+		append(base, "permission", "user", "add", "--skill-name", "skill.alpha", "--skill-path", "D:/workspace/skills/alpha.md", "--skill-mtime", "2026-04-29T00:00:00Z", "--allow-root", "D:/workspace"),
 		&userAddOut,
 		&bytes.Buffer{},
 	); code != 0 {
@@ -80,12 +80,14 @@ func TestPermissionCLIFlow(t *testing.T) {
 		t.Fatalf("permission user list code = %d, want 0", code)
 	}
 	var userList struct {
-		SkillAllows []string `json:"skill_allows"`
+		SkillAllows []struct {
+			SkillName string `json:"skill_name"`
+		} `json:"skill_allows"`
 	}
 	if err := json.Unmarshal(userListOut.Bytes(), &userList); err != nil {
 		t.Fatalf("json.Unmarshal(userListOut) error = %v", err)
 	}
-	if len(userList.SkillAllows) != 1 || userList.SkillAllows[0] != "skill.alpha" {
+	if len(userList.SkillAllows) != 1 || userList.SkillAllows[0].SkillName != "skill.alpha" {
 		t.Fatalf("user skill_allows = %v, want [skill.alpha]", userList.SkillAllows)
 	}
 }

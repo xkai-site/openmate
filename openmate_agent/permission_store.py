@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from openmate_shared.runtime_paths import resolve_workspace_root
 
 from .approval import normalize_dir_prefix
-from .models import PermissionRule
+from .models import PermissionRule, UserSkillAllow
 from .vos_cli import run_vos_cli
 
 
@@ -16,9 +16,11 @@ class PermissionStore(Protocol):
 
     def add_topic_tool_allow(self, *, topic_id: str, tool_name: str, dir_prefix: str) -> None: ...
 
-    def list_user_skill_allows(self) -> list[str]: ...
+    def list_user_skill_allows(self) -> list[UserSkillAllow]: ...
 
-    def add_user_skill_allow(self, *, skill_name: str) -> None: ...
+    def upsert_user_skill_allow(
+        self, *, skill_name: str, skill_path: str, skill_mtime: str, allowed_roots: list[str]
+    ) -> None: ...
     def record_topic_policy_audit(
         self,
         *,
@@ -102,7 +104,7 @@ class VosPermissionStore:
             ],
         )
 
-    def list_user_skill_allows(self) -> list[str]:
+    def list_user_skill_allows(self) -> list[UserSkillAllow]:
         stdout = run_vos_cli(
             workspace_root=self._workspace_root,
             command=["permission", "user", "list"],
@@ -111,23 +113,44 @@ class VosPermissionStore:
         rows = payload.get("skill_allows")
         if rows is None:
             rows = payload.get("items")
-        names: list[str] = []
+        records: list[UserSkillAllow] = []
         if isinstance(rows, list):
             for row in rows:
-                if isinstance(row, str):
-                    skill_name = row.strip()
-                elif isinstance(row, dict):
-                    skill_name = str(row.get("skill_name", "")).strip()
-                else:
-                    skill_name = ""
-                if skill_name:
-                    names.append(skill_name)
-        return names
+                if not isinstance(row, dict):
+                    continue
+                skill_name = str(row.get("skill_name", "")).strip()
+                skill_path = str(row.get("skill_path", "")).strip()
+                skill_mtime = str(row.get("skill_mtime", "")).strip()
+                roots_raw = row.get("allowed_roots", [])
+                allowed_roots = [str(root).strip() for root in roots_raw] if isinstance(roots_raw, list) else []
+                if skill_name and skill_path and skill_mtime:
+                    records.append(
+                        UserSkillAllow(
+                            skill_name=skill_name,
+                            skill_path=skill_path,
+                            skill_mtime=skill_mtime,
+                            allowed_roots=allowed_roots,
+                        )
+                    )
+        return records
 
-    def add_user_skill_allow(self, *, skill_name: str) -> None:
+    def upsert_user_skill_allow(
+        self, *, skill_name: str, skill_path: str, skill_mtime: str, allowed_roots: list[str]
+    ) -> None:
         run_vos_cli(
             workspace_root=self._workspace_root,
-            command=["permission", "user", "add", "--skill-name", skill_name],
+            command=[
+                "permission",
+                "user",
+                "add",
+                "--skill-name",
+                skill_name,
+                "--skill-path",
+                skill_path,
+                "--skill-mtime",
+                skill_mtime,
+                *[token for root in allowed_roots for token in ("--allow-root", root)],
+            ],
         )
 
     def record_topic_policy_audit(

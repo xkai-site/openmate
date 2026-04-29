@@ -753,4 +753,28 @@ ode_name，避免测试桩和灰度期间抖动。
 
 
 
+## 2026-04-28 Skill 机制方案落地（默认+按需获取，扫描发现 + 用户权限 + 监控）
 
+1. 新增 `SkillCatalog`（`openmate_agent/skill_catalog.py`）：
+   - 扫描来源：`~/.skill`、`--path` 输入目录、`<workspace>/.skill`。
+   - 解析约定：`SKILL.md`（标题+描述）或同目录 `metadata.json(name/description)`。
+   - 缺失元信息/非法文件自动跳过，按 `name` 去重。
+   - 查询策略：`<=10` 全量返回；`>10` 时描述截断到前 25 字符。
+2. 新增类型与注入改造：
+   - `openmate_agent/models.py` 新增 `SkillDescriptor`、`SkillQueryResult`。
+   - `DefaultSkillInjector` 默认注入 `skill_query` 能力（不预注入全部业务 skill）。
+   - `ExecutionAgentService` 在 skill 权限处理中保留 `skill_query`，其余 skill 继续走 `ApprovalRequest(target_type=skill)` + `user_permission.skill_allows`。
+3. 新增 Skill 监控（AOP JSONL）：
+   - 新增 `openmate_agent/skill_monitor.py`，落盘 `.openmate/runtime/skill_monitor.jsonl`。
+   - 记录 `before/after`、`target_type=skill`、`skill_name/skill_path`、`success/error_code/error/duration_ms`。
+   - `ExecutionAgentService` 在读取 skill 文件注入 `config.content` 前后打点，失败也写 after 事件。
+4. CLI 扩展：
+   - `openmate-agent skills query [--path ... --keyword ...]`
+   - `openmate-agent skills monitor list ...`
+   - `openmate-agent skills monitor summary ...`
+5. 测试覆盖：
+   - 新增 `tests/test_skill_catalog.py`（扫描合并/去重/跳过非法/阈值截断）。
+   - 新增 `tests/test_skill_monitor.py`（before/after 记录、失败过滤、聚合）。
+   - 扩展 `tests/test_cli.py`（`skills query` + `skills monitor list/summary`）。
+6. 回归结果：
+   - `\.venv\Scripts\python -m unittest tests.test_skill_catalog tests.test_skill_monitor tests.test_cli tests.test_service tests.test_permission_flow` 通过（73 项）。

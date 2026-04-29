@@ -5,14 +5,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from openmate_agent.models import ApprovalDecision, PermissionRule
+from openmate_agent.models import ApprovalDecision, PermissionRule, UserSkillAllow
 from openmate_agent.service import AgentCapabilityService
 
 
 class _FakePermissionStore:
     def __init__(self) -> None:
         self.topic_rules: dict[str, list[PermissionRule]] = {}
-        self.skill_allows: list[str] = []
+        self.skill_allows: list[UserSkillAllow] = []
         self.add_calls: list[tuple[str, str, str]] = []
 
     def list_topic_tool_allows(self, *, topic_id: str) -> list[PermissionRule]:
@@ -24,12 +24,21 @@ class _FakePermissionStore:
             PermissionRule(tool_name=tool_name, normalized_dir_prefix=dir_prefix)
         )
 
-    def list_user_skill_allows(self) -> list[str]:
+    def list_user_skill_allows(self) -> list[UserSkillAllow]:
         return list(self.skill_allows)
 
-    def add_user_skill_allow(self, *, skill_name: str) -> None:
-        if skill_name not in self.skill_allows:
-            self.skill_allows.append(skill_name)
+    def upsert_user_skill_allow(
+        self, *, skill_name: str, skill_path: str, skill_mtime: str, allowed_roots: list[str]
+    ) -> None:
+        self.skill_allows = [item for item in self.skill_allows if item.skill_name != skill_name]
+        self.skill_allows.append(
+            UserSkillAllow(
+                skill_name=skill_name,
+                skill_path=skill_path,
+                skill_mtime=skill_mtime,
+                allowed_roots=allowed_roots,
+            )
+        )
 
 
 class PermissionFlowTests(unittest.TestCase):
