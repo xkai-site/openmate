@@ -1,115 +1,159 @@
-import { useQuery } from '@tanstack/react-query';
-import { Button, Card, Col, Empty, Progress, Row, Space, Table, Typography } from 'antd';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Button, Card, Descriptions, Empty, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import StatusTag from '@/components/StatusTag';
-import { getTopicLogs, getTopicResults } from '@/services/api/topic';
-import type { ExecutionResultResponse } from '@/types/models';
+import { deleteTopic, listTopicNodes } from '@/services/api/topic';
+import type { NodeResponse } from '@/types/models';
 import { usePollingTopic } from '@/hooks/usePollingTopic';
-import ControlButtons from './ControlButtons';
-import TaskTable from './TaskTable';
 
 interface TopicDetailProps {
   topicId?: string;
   onChanged?: () => void;
 }
 
+function formatTime(value?: string) {
+  return value ? new Date(value).toLocaleString() : '-';
+}
+
 function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
   const navigate = useNavigate();
   const detailQuery = usePollingTopic(topicId);
+
+  const nodesQuery = useQuery({
+    queryKey: ['topic', 'nodes', topicId],
+    queryFn: () => listTopicNodes(topicId as string),
+    enabled: Boolean(topicId),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!topicId) throw new Error('缺少 topicId');
+      return deleteTopic(topicId);
+    },
+    onSuccess: () => {
+      message.success('Topic 已删除');
+      onChanged?.();
+    },
+  });
 
   const openNodeInAITree = (nodeId: string) => {
     navigate(`/aitree?nodeId=${encodeURIComponent(nodeId)}`);
   };
 
-  const resultColumns: ColumnsType<ExecutionResultResponse> = [
-    { title: 'Task ID', dataIndex: 'task_id', key: 'task_id' },
+  const openNodeWorkspace = (nodeId: string) => {
+    navigate(`/workspace/${encodeURIComponent(nodeId)}`);
+  };
+
+  const nodeColumns: ColumnsType<NodeResponse> = [
     {
-      title: 'Node ID',
-      dataIndex: 'node_id',
-      key: 'node_id',
-      render: (value: string) => (
-        <Button type="link" className="!px-0" onClick={() => openNodeInAITree(value)}>
-          {value}
+      title: '节点名称',
+      dataIndex: 'name',
+      key: 'name',
+      ellipsis: true,
+      render: (value: string, record) => (
+        <Button type="link" className="!px-0" onClick={() => openNodeInAITree(record.id)}>
+          {value || record.id}
         </Button>
       ),
     },
     {
-      title: '结果',
-      dataIndex: 'success',
-      key: 'success',
-      render: (v: boolean) => (v ? '成功' : '失败'),
+      title: 'Node ID',
+      dataIndex: 'id',
+      key: 'id',
+      ellipsis: true,
+      render: (value: string) => <Typography.Text code>{value}</Typography.Text>,
     },
-    { title: '错误信息', dataIndex: 'error', key: 'error', render: (v) => v || '-' },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: (value: string) => <StatusTag status={String(value)} />,
+    },
+    {
+      title: '子节点',
+      dataIndex: 'children_ids',
+      key: 'children_ids',
+      render: (value?: string[]) => value?.length ?? 0,
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
+      render: (value: string) => formatTime(value),
+    },
+    {
+      title: '入口',
+      key: 'actions',
+      render: (_, record) => (
+        <Space>
+          <Button size="small" onClick={() => openNodeInAITree(record.id)}>
+            AITree
+          </Button>
+          <Button size="small" onClick={() => openNodeWorkspace(record.id)}>
+            Workspace
+          </Button>
+        </Space>
+      ),
+    },
   ];
-
-  const logsQuery = useQuery({
-    queryKey: ['topic', 'logs', topicId],
-    queryFn: () => getTopicLogs(topicId as string),
-    enabled: Boolean(topicId),
-  });
-
-  const resultsQuery = useQuery({
-    queryKey: ['topic', 'results', topicId],
-    queryFn: () => getTopicResults(topicId as string),
-    enabled: Boolean(topicId),
-  });
 
   if (!topicId) {
     return <Empty description="请先在左侧选择 Topic" />;
   }
 
+  const topic = detailQuery.data;
+
   return (
     <div className="space-y-4">
-      <Card title="Topic 状态">
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Typography.Text type="secondary">Topic ID:</Typography.Text>
-            <Typography.Text code>{detailQuery.data?.id || topicId}</Typography.Text>
-            <StatusTag status={String(detailQuery.data?.status || 'unknown')} />
-          </div>
-          <Progress percent={Math.round(detailQuery.data?.progress_percent ?? 0)} />
-          <Row gutter={[12, 12]}>
-            <Col span={6}><Card size="small">pending: {detailQuery.data?.pending_tasks ?? 0}</Card></Col>
-            <Col span={6}><Card size="small">running: {detailQuery.data?.running_tasks ?? 0}</Card></Col>
-            <Col span={6}><Card size="small">completed: {detailQuery.data?.completed_tasks ?? 0}</Card></Col>
-            <Col span={6}><Card size="small">failed: {detailQuery.data?.failed_tasks ?? 0}</Card></Col>
-          </Row>
-          <Space>
-            <ControlButtons
-              topicId={topicId}
-              disabled={detailQuery.isLoading}
-              onActionDone={() => {
-                void detailQuery.refetch();
-                void logsQuery.refetch();
-                void resultsQuery.refetch();
-                onChanged?.();
-              }}
-            />
-          </Space>
-        </div>
+      <Card
+        title="Topic 详情"
+        extra={
+          <Popconfirm
+            title="删除 Topic"
+            description="将删除该 Topic 及其节点，确认继续？"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => deleteMutation.mutate()}
+          >
+            <Button danger loading={deleteMutation.isPending}>
+              删除
+            </Button>
+          </Popconfirm>
+        }
+      >
+        <Descriptions column={1} size="small" bordered>
+          <Descriptions.Item label="Topic ID">
+            <Typography.Text code>{topic?.id || topicId}</Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="名称">{topic?.name || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Root Node">
+            {topic?.root_node_id ? (
+              <Button type="link" className="!px-0" onClick={() => openNodeInAITree(topic.root_node_id)}>
+                {topic.root_node_id}
+              </Button>
+            ) : (
+              '-'
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="Workspace">{topic?.workspace || '-'}</Descriptions.Item>
+          <Descriptions.Item label="标签">
+            {topic?.tags?.length ? topic.tags.map((tag) => <Tag key={tag}>{tag}</Tag>) : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="描述">{topic?.description || '-'}</Descriptions.Item>
+          <Descriptions.Item label="创建时间">{formatTime(topic?.created_at)}</Descriptions.Item>
+          <Descriptions.Item label="更新时间">{formatTime(topic?.updated_at)}</Descriptions.Item>
+        </Descriptions>
       </Card>
 
-      <Card title="任务日志（支持 Retry）">
-        <TaskTable
-          topicId={topicId}
-          loading={logsQuery.isLoading || logsQuery.isFetching}
-          items={logsQuery.data ?? []}
-          onOpenNode={openNodeInAITree}
-          onRetryDone={() => {
-            void logsQuery.refetch();
-            void detailQuery.refetch();
-          }}
-        />
-      </Card>
-
-      <Card title="执行结果">
-        <Table<ExecutionResultResponse>
-          rowKey="task_id"
-          loading={resultsQuery.isLoading || resultsQuery.isFetching}
-          columns={resultColumns}
-          dataSource={resultsQuery.data?.results ?? []}
-          pagination={false}
+      <Card title="Topic 节点">
+        <Table<NodeResponse>
+          rowKey="id"
+          loading={nodesQuery.isLoading || nodesQuery.isFetching}
+          columns={nodeColumns}
+          dataSource={nodesQuery.data ?? []}
+          pagination={{ pageSize: 10, showSizeChanger: true }}
         />
       </Card>
     </div>

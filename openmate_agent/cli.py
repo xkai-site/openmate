@@ -36,6 +36,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_read.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_write = tool_subparsers.add_parser("write", help="Write a file.")
     tool_write.add_argument("node_id", help="Node identifier.")
@@ -48,6 +49,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_write.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_edit = tool_subparsers.add_parser("edit", help="Replace old string with new string in file.")
     tool_edit.add_argument("node_id", help="Node identifier.")
@@ -61,6 +63,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_edit.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_patch = tool_subparsers.add_parser("patch", help="Apply structured multi-file patch operations.")
     tool_patch.add_argument("node_id", help="Node identifier.")
@@ -72,6 +75,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_patch.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_query = tool_subparsers.add_parser("query", help="Query remote HTTP endpoint.")
     tool_query.add_argument("node_id", help="Node identifier.")
@@ -88,6 +92,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_query.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_grep = tool_subparsers.add_parser("grep", help="Search content by regex.")
     tool_grep.add_argument("node_id", help="Node identifier.")
@@ -102,6 +107,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_grep.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_glob = tool_subparsers.add_parser("glob", help="Search files by glob pattern.")
     tool_glob.add_argument("node_id", help="Node identifier.")
@@ -115,6 +121,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Mark this tool call as read-only.",
     )
+    tool_glob.add_argument("--confirmed", action="store_true", default=False, help="Mark this tool call as already user-confirmed.")
 
     tool_exec = tool_subparsers.add_parser("exec", help="Run structured command without shell string interpolation.")
     tool_exec.add_argument("node_id", help="Node identifier.")
@@ -485,6 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload=payload,
             is_safe=args.is_safe,
             is_read_only=args.is_read_only,
+            is_confirmed=getattr(args, "confirmed", False),
             source="cli",
         )
         print(result.model_dump_json(indent=2))

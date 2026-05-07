@@ -66,6 +66,12 @@ class PermissionGateway:
                 reason="allowed by safety flags",
                 metadata=_evaluation_payload(intent=intent, matched_rule=None, result="allow"),
             )
+        if action.is_safe and action.is_confirmed:
+            return GuardDecision(
+                decision="allow",
+                reason="allowed by explicit confirmation",
+                metadata=_evaluation_payload(intent=intent, matched_rule=None, result="allow"),
+            )
         return GuardDecision(
             decision="confirm",
             reason="user confirmation required",

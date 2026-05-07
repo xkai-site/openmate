@@ -74,6 +74,7 @@ class ToolAction(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     is_safe: bool = False
     is_read_only: bool = False
+    is_confirmed: bool = False
 
 
 class GuardDecision(BaseModel):

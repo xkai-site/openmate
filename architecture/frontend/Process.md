@@ -1,5 +1,26 @@
 # Frontend Process
 
+## 2026-05-07 Topic 接口收敛与 Electron 权限标记修复
+
+1. Topic 页面从旧调度占位接口 `/api/v1/topic*` 收敛到 VOS Topic 接口：
+   - 列表：`GET /api/v1/topics`，前端包装成本地分页结构。
+   - 详情：`GET /api/v1/topics/{topic_id}`。
+   - 节点：`GET /api/v1/topics/{topic_id}/nodes`。
+   - 删除：`DELETE /api/v1/topics/{topic_id}`。
+2. Topic 页面移除旧调度控制、task logs、results、retry 展示，改为 Topic 基本信息、workspace binding 与节点浏览维护入口。
+3. Electron 本地文件工具调用修复权限语义：
+   - `read/list/glob/grep` 标记为 `--is-safe --is-read-only`。
+   - `write/edit/patch` 经过桌面端确认后传 `--is-safe --confirmed`，不再伪造 read-only，工具监控保持非只读记录。
+4. Python tool CLI 增加 `--confirmed` 标记，作为桌面端已完成用户确认的最小显式语义。
+5. 后端 VOS HTTP CORS 允许方法增加 `PUT`，并补齐 Topic nodes 响应中的 `topic_id` 字段，支持跨域更新 `PUT /api/v1/topics/{id}/workspace`。
+6. 验证：
+   - `cd frontend && npm run build` 通过，仍存在既有 `vendor-antd` chunk 超过 700 kB warning。
+   - `cd frontend && node --check electron/main.cjs` 通过。
+   - `cd frontend && node --check electron/preload.cjs` 通过。
+   - 使用工作区内 `GOCACHE/GOMODCACHE` 执行 `go test ./internal/vos/httpapi/...` 通过。
+   - 使用工作区内 `GOCACHE/GOMODCACHE` 执行 `go test ./internal/poolgateway/... ./internal/vos/httpapi/...` 通过。
+   - 追加 Python CLI 单测时发现本工作区不存在 `.venv\Scripts\python.exe`，未切换到 conda 执行。
+
 ## 2026-04-29 停止输出响应性修复（先本地复位，后异步取消）
 
 1. 修复 Home 与 Workspace 的“停止输出”阻塞问题：停止处理函数不再 `await cancelChatInvocation`。

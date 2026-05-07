@@ -189,6 +189,9 @@ async function runAgentTool({
   workspace,
   timeoutMs = TOOL_TIMEOUT_MS,
   retrySeedPaths = [],
+  isSafe = false,
+  isReadOnly = false,
+  isConfirmed = false,
 }) {
   const repoRoot = getRepoRoot();
   const pythonExecutable = detectPythonExecutable(repoRoot);
@@ -199,9 +202,16 @@ async function runAgentTool({
     toolName,
     NODE_ID,
     ...args,
-    "--is-safe",
-    "--is-read-only",
   ];
+  if (isSafe) {
+    finalArgs.push("--is-safe");
+  }
+  if (isReadOnly) {
+    finalArgs.push("--is-read-only");
+  }
+  if (isConfirmed) {
+    finalArgs.push("--confirmed");
+  }
 
   const env = {
     ...process.env,
@@ -242,6 +252,9 @@ async function runAgentTool({
       workspace,
       timeoutMs,
       retrySeedPaths: [],
+      isSafe,
+      isReadOnly,
+      isConfirmed,
     });
   }
 
@@ -271,6 +284,8 @@ async function seedBaseline(workspace, absolutePaths) {
         "1",
       ],
       retrySeedPaths: [],
+      isSafe: true,
+      isReadOnly: true,
     });
   }
 }
@@ -400,6 +415,8 @@ function registerIpcHandlers() {
           "--limit",
           String(Math.max(1, limit)),
         ],
+        isSafe: true,
+        isReadOnly: true,
       });
       return {
         path: absolutePath,
@@ -415,6 +432,8 @@ function registerIpcHandlers() {
         toolName: "read",
         workspace: requireWorkspaceRoot(),
         args: ["--path", absolutePath, "--offset", "0", "--limit", "1"],
+        isSafe: true,
+        isReadOnly: true,
       });
       let entries = [];
       try {
@@ -453,6 +472,8 @@ function registerIpcHandlers() {
         workspace,
         args: ["--path", absolutePath, "--content", finalContent],
         retrySeedPaths,
+        isSafe: true,
+        isConfirmed: true,
       });
 
       return {
@@ -489,6 +510,8 @@ function registerIpcHandlers() {
           newString,
         ],
         retrySeedPaths: [absolutePath],
+        isSafe: true,
+        isConfirmed: true,
       });
       return {
         path: absolutePath,
@@ -531,6 +554,8 @@ function registerIpcHandlers() {
           "--operations",
           JSON.stringify(normalizedOperations),
         ],
+        isSafe: true,
+        isConfirmed: true,
       });
       return {
         output: toolResult.output,
@@ -557,6 +582,8 @@ function registerIpcHandlers() {
           "--max-results",
           String(Math.max(1, maxResults)),
         ],
+        isSafe: true,
+        isReadOnly: true,
       });
       const lines = toolResult.output ? toolResult.output.split(/\r?\n/).filter(Boolean) : [];
       return {
@@ -591,6 +618,8 @@ function registerIpcHandlers() {
         toolName: "grep",
         workspace: requireWorkspaceRoot(),
         args,
+        isSafe: true,
+        isReadOnly: true,
       });
       return {
         scope,

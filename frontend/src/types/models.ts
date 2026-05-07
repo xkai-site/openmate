@@ -60,21 +60,14 @@ export interface PlanListDetailResponse extends PlanListResponse {
 
 export interface TopicStatusResponse {
   id: string;
-  planlist_id: string;
-  priority: number;
-  status: CommonStatus;
-  queue_size: number;
-  pending_tasks: number;
-  running_tasks: number;
-  completed_tasks: number;
-  failed_tasks: number;
-  progress_percent: number;
-  agent_status?: string;
-  planlist_context?: {
-    name?: string;
-    demand?: string;
-    source?: string;
-  };
+  name: string;
+  root_node_id: string;
+  workspace?: string | null;
+  metadata: Record<string, unknown>;
+  description?: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
 }
 
 export interface TopicWorkspaceBinding {

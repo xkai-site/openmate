@@ -1132,6 +1132,7 @@ func (server *Server) buildV1TreeNode(nodeID string) (*v1TreeNodeResponse, error
 func (server *Server) buildV1NodeView(node *domain.Node, include nodeIncludeSet) (map[string]any, error) {
 	view := map[string]any{
 		"id":           node.ID,
+		"topic_id":     node.TopicID,
 		"name":         node.Name,
 		"parent_id":    node.ParentID,
 		"children_ids": cloneStringSlice(node.ChildrenIDs),
@@ -1422,7 +1423,7 @@ func (server *Server) wrapAPIHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if strings.HasPrefix(request.URL.Path, v1Prefix+"/") {
 			writer.Header().Set("Access-Control-Allow-Origin", "*")
-			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
 			if request.Method == http.MethodOptions {
 				writer.WriteHeader(http.StatusNoContent)

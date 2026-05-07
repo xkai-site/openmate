@@ -70,6 +70,7 @@ class ToolRuntimeExecutor:
         payload: dict[str, object] | None = None,
         is_safe: bool = False,
         is_read_only: bool = False,
+        is_confirmed: bool = False,
         source: ToolMonitorSource = "unknown",
         request_id: str | None = None,
     ) -> ToolResult:
@@ -106,6 +107,7 @@ class ToolRuntimeExecutor:
                 payload=payload_data,
                 is_safe=is_safe,
                 is_read_only=is_read_only,
+                is_confirmed=is_confirmed,
             )
         except ValidationError as exc:
             return finalize(

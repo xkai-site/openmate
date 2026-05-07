@@ -213,7 +213,7 @@ class AgentCliTests(unittest.TestCase):
                 "--content",
                 "hello-cli-tool",
                 "--is-safe",
-                "--is-read-only",
+                "--confirmed",
                 cwd=tmp,
             )
             self.assertEqual(write_result.returncode, 0)
@@ -243,7 +243,7 @@ class AgentCliTests(unittest.TestCase):
                 "--new-string",
                 "hello-cli-edited",
                 "--is-safe",
-                "--is-read-only",
+                "--confirmed",
                 cwd=tmp,
             )
             self.assertEqual(edit_result.returncode, 0)
@@ -360,7 +360,7 @@ class AgentCliTests(unittest.TestCase):
                     ]
                 ),
                 "--is-safe",
-                "--is-read-only",
+                "--confirmed",
                 cwd=tmp,
             )
             self.assertEqual(result.returncode, 0)

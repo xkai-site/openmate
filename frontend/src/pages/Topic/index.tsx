@@ -1,19 +1,44 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Card, Col, Row, Table, Typography } from 'antd';
+import { Card, Col, Row, Table, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import StatusTag from '@/components/StatusTag';
 import { usePagination } from '@/hooks/usePagination';
 import { listTopics } from '@/services/api/topic';
 import type { TopicStatusResponse } from '@/types/models';
 import TopicDetail from './components/TopicDetail';
 
 const columns: ColumnsType<TopicStatusResponse> = [
-  { title: 'Topic ID', dataIndex: 'id', key: 'id' },
-  { title: 'PlanList ID', dataIndex: 'planlist_id', key: 'planlist_id' },
-  { title: '状态', dataIndex: 'status', key: 'status', render: (v) => <StatusTag status={String(v)} /> },
-  { title: '队列', dataIndex: 'queue_size', key: 'queue_size' },
-  { title: '进度', dataIndex: 'progress_percent', key: 'progress_percent', render: (v) => `${Math.round(Number(v || 0))}%` },
+  {
+    title: '名称',
+    dataIndex: 'name',
+    key: 'name',
+    ellipsis: true,
+    render: (value: string) => value || '-',
+  },
+  {
+    title: 'Topic ID',
+    dataIndex: 'id',
+    key: 'id',
+    ellipsis: true,
+    render: (value: string) => (
+      <Tooltip title={value}>
+        <Typography.Text code>{value}</Typography.Text>
+      </Tooltip>
+    ),
+  },
+  {
+    title: 'Workspace',
+    dataIndex: 'workspace',
+    key: 'workspace',
+    ellipsis: true,
+    render: (value?: string | null) => value || '-',
+  },
+  {
+    title: '更新时间',
+    dataIndex: 'updated_at',
+    key: 'updated_at',
+    render: (value: string) => (value ? new Date(value).toLocaleString() : '-'),
+  },
 ];
 
 function TopicPage() {
@@ -37,7 +62,7 @@ function TopicPage() {
   return (
     <div className="space-y-4">
       <Typography.Title level={4} className="!mb-0">
-        Topic 指挥中心
+        Topic 浏览维护
       </Typography.Title>
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={10}>
@@ -63,7 +88,13 @@ function TopicPage() {
         </Col>
 
         <Col xs={24} xl={14}>
-          <TopicDetail topicId={selectedTopicId} onChanged={() => { void listQuery.refetch(); }} />
+          <TopicDetail
+            topicId={selectedTopicId}
+            onChanged={() => {
+              setSelectedTopicId(undefined);
+              void listQuery.refetch();
+            }}
+          />
         </Col>
       </Row>
     </div>
