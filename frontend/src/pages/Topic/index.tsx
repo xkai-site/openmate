@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, Col, Row, Table, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -43,6 +43,7 @@ const columns: ColumnsType<TopicStatusResponse> = [
 
 function TopicPage() {
   const [selectedTopicId, setSelectedTopicId] = useState<string>();
+  const [deletedTopicId, setDeletedTopicId] = useState<string>();
   const pagination = usePagination(10);
 
   const listQuery = useQuery({
@@ -52,12 +53,29 @@ function TopicPage() {
   });
 
   const items = listQuery.data?.items ?? [];
+  const visibleItems = useMemo(
+    () => (deletedTopicId ? items.filter((item) => item.id !== deletedTopicId) : items),
+    [deletedTopicId, items]
+  );
 
   useEffect(() => {
-    if (!selectedTopicId && items.length > 0) {
-      setSelectedTopicId(items[0].id);
+    if (deletedTopicId && !items.some((item) => item.id === deletedTopicId)) {
+      setDeletedTopicId(undefined);
     }
-  }, [items, selectedTopicId]);
+  }, [deletedTopicId, items]);
+
+  useEffect(() => {
+    if (visibleItems.length === 0) {
+      if (selectedTopicId) {
+        setSelectedTopicId(undefined);
+      }
+      return;
+    }
+
+    if (!selectedTopicId || !visibleItems.some((item) => item.id === selectedTopicId)) {
+      setSelectedTopicId(visibleItems[0].id);
+    }
+  }, [selectedTopicId, visibleItems]);
 
   return (
     <div className="space-y-4">
@@ -71,7 +89,7 @@ function TopicPage() {
               rowKey="id"
               loading={listQuery.isLoading || listQuery.isFetching}
               columns={columns}
-              dataSource={items}
+              dataSource={visibleItems}
               onRow={(record) => ({
                 onClick: () => setSelectedTopicId(record.id),
               })}
@@ -90,7 +108,8 @@ function TopicPage() {
         <Col xs={24} xl={14}>
           <TopicDetail
             topicId={selectedTopicId}
-            onChanged={() => {
+            onChanged={(deletedTopicId) => {
+              setDeletedTopicId(deletedTopicId);
               setSelectedTopicId(undefined);
               void listQuery.refetch();
             }}

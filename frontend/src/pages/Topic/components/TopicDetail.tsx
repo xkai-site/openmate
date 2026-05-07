@@ -9,7 +9,7 @@ import { usePollingTopic } from '@/hooks/usePollingTopic';
 
 interface TopicDetailProps {
   topicId?: string;
-  onChanged?: () => void;
+  onChanged?: (topicId: string) => void;
 }
 
 function formatTime(value?: string) {
@@ -19,6 +19,8 @@ function formatTime(value?: string) {
 function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
   const navigate = useNavigate();
   const detailQuery = usePollingTopic(topicId);
+  const topic = detailQuery.data;
+  const rootNodeId = topic?.root_node_id;
 
   const nodesQuery = useQuery({
     queryKey: ['topic', 'nodes', topicId],
@@ -27,18 +29,15 @@ function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async () => {
-      if (!topicId) throw new Error('缺少 topicId');
-      return deleteTopic(topicId);
-    },
-    onSuccess: () => {
+    mutationFn: (deleteTopicId: string) => deleteTopic(deleteTopicId),
+    onSuccess: (_, deletedTopicId) => {
       message.success('Topic 已删除');
-      onChanged?.();
+      onChanged?.(deletedTopicId);
     },
   });
 
-  const openNodeInAITree = (nodeId: string) => {
-    navigate(`/aitree?nodeId=${encodeURIComponent(nodeId)}`);
+  const openTopicInAITree = (rootNodeId: string) => {
+    navigate(`/aitree?rootId=${encodeURIComponent(rootNodeId)}`);
   };
 
   const openNodeWorkspace = (nodeId: string) => {
@@ -52,7 +51,12 @@ function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
       key: 'name',
       ellipsis: true,
       render: (value: string, record) => (
-        <Button type="link" className="!px-0" onClick={() => openNodeInAITree(record.id)}>
+        <Button
+          type="link"
+          className="!px-0"
+          disabled={!rootNodeId}
+          onClick={() => rootNodeId && openTopicInAITree(rootNodeId)}
+        >
           {value || record.id}
         </Button>
       ),
@@ -87,7 +91,11 @@ function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
       key: 'actions',
       render: (_, record) => (
         <Space>
-          <Button size="small" onClick={() => openNodeInAITree(record.id)}>
+          <Button
+            size="small"
+            disabled={!rootNodeId}
+            onClick={() => rootNodeId && openTopicInAITree(rootNodeId)}
+          >
             AITree
           </Button>
           <Button size="small" onClick={() => openNodeWorkspace(record.id)}>
@@ -101,9 +109,6 @@ function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
   if (!topicId) {
     return <Empty description="请先在左侧选择 Topic" />;
   }
-
-  const topic = detailQuery.data;
-
   return (
     <div className="space-y-4">
       <Card
@@ -115,7 +120,7 @@ function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
             okText="删除"
             cancelText="取消"
             okButtonProps={{ danger: true }}
-            onConfirm={() => deleteMutation.mutate()}
+            onConfirm={() => topicId && deleteMutation.mutate(topicId)}
           >
             <Button danger loading={deleteMutation.isPending}>
               删除
@@ -130,7 +135,7 @@ function TopicDetail({ topicId, onChanged }: TopicDetailProps) {
           <Descriptions.Item label="名称">{topic?.name || '-'}</Descriptions.Item>
           <Descriptions.Item label="Root Node">
             {topic?.root_node_id ? (
-              <Button type="link" className="!px-0" onClick={() => openNodeInAITree(topic.root_node_id)}>
+              <Button type="link" className="!px-0" onClick={() => openTopicInAITree(topic.root_node_id)}>
                 {topic.root_node_id}
               </Button>
             ) : (
